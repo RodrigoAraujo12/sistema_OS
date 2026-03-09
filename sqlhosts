@@ -1,0 +1,3 @@
+ol_informix15 olsoctcp localhost ol_informix15 
+dr_informix15 drsoctcp localhost dr_informix15
+lo_informix15 olsoctcp 127.0.0.1 lo_informix15
