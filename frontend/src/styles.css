@@ -1479,3 +1479,160 @@ tr:hover td {
   from { transform: scale(0.95); opacity: 0; }
   to { transform: scale(1); opacity: 1; }
 }
+
+/* ─── Relatorios Panel ─────────────────────────────────── */
+
+.relatorios-panel {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.relatorios-panel .section-title {
+  font-size: 1.5rem;
+  color: var(--text-heading);
+  margin-bottom: 4px;
+}
+
+.relatorios-panel .section-subtitle {
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+  font-size: 0.95rem;
+}
+
+.relatorio-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow-card);
+}
+
+.relatorio-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.relatorio-card-header h3 {
+  font-size: 1.15rem;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.relatorio-badge {
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+[data-theme="dark"] .relatorio-badge {
+  background: #1e3a5f;
+  color: #60a5fa;
+}
+
+.relatorio-desc {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.relatorio-filters {
+  margin-bottom: 16px;
+}
+
+.relatorio-filters .filter-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.relatorio-filters .filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 160px;
+}
+
+.relatorio-filters .filter-group.filter-search {
+  flex: 3;
+  min-width: 300px;
+}
+
+.relatorio-filters label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.relatorio-filters select,
+.relatorio-filters input {
+  padding: 8px 12px;
+  border: 1px solid var(--border-input);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.relatorio-filters select:focus,
+.relatorio-filters input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.relatorio-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+.relatorio-actions .btn-primary {
+  background: linear-gradient(135deg, #1a3a6c, #1e4d8c);
+  color: #fff;
+  border: none;
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: opacity 0.2s;
+}
+
+.relatorio-actions .btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.relatorio-actions .btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.relatorio-actions .btn-secondary {
+  background: var(--btn-secondary-bg);
+  color: var(--btn-secondary-text);
+  border: 1px solid var(--border-color);
+  padding: 10px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.2s;
+}
+
+.relatorio-actions .btn-secondary:hover:not(:disabled) {
+  background: var(--btn-secondary-hover);
+}

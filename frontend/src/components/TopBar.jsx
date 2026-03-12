@@ -44,6 +44,12 @@ export default function TopBar({
               <span className="nav-badge">{alertCount}</span>
             )}
           </button>
+          <button
+            className={activeMenu === "relatorios" ? "active" : ""}
+            onClick={() => onMenuChange("relatorios")}
+          >
+            Relatorios
+          </button>
           {authData.role === "admin" && (
             <div className="dropdown">
               <button

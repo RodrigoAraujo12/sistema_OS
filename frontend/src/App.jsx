@@ -37,6 +37,7 @@ import DashboardPanel from "./components/DashboardPanel.jsx";
 import GerenciasAdmin from "./components/GerenciasAdmin.jsx";
 import SupervisoesAdmin from "./components/SupervisoesAdmin.jsx";
 import UsuariosAdmin from "./components/UsuariosAdmin.jsx";
+import RelatoriosPanel from "./components/RelatoriosPanel.jsx";
 
 export default function App() {
   // ─── Auth ───────────────────────────────────────────
@@ -237,6 +238,14 @@ export default function App() {
             onMessage={setMessage}
             onError={setError}
             onResetInfo={setResetInfo}
+          />
+        )}
+
+        {activeMenu === "relatorios" && (
+          <RelatoriosPanel
+            authData={authData}
+            onMessage={setMessage}
+            onError={setError}
           />
         )}
       </div>

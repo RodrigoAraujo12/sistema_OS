@@ -8,13 +8,17 @@ Gerencias, Supervisoes e Usuarios ficam no banco SQLite local.
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from contextlib import asynccontextmanager
+from datetime import date, datetime, timezone
 from sqlite3 import IntegrityError
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from .auth import AuthService, PasswordHasher, TokenStore
 from .config import APP_TITLE, CORS_ORIGINS, DEFAULT_PASSWORD, setup_logging
@@ -538,3 +542,198 @@ def get_dashboard(
     users_list = user_repo.list_users()
 
     return gerar_dashboard(todas_os, gerencias_list, supervisoes_list, users_list)
+
+
+# ─── Relatorios (sob demanda) ──────────────────────────────────
+
+def _calcular_dias_parado(data_ult: str | None) -> int:
+    """Retorna numero de dias desde a ultima movimentacao."""
+    if not data_ult:
+        return 0
+    try:
+        dt = datetime.strptime(data_ult, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return max(0, (datetime.now(timezone.utc) - dt).days)
+    except (ValueError, TypeError):
+        return 0
+
+
+@app.get("/relatorios/ordens")
+def relatorio_ordens_csv(
+    user: dict[str, Any] = Depends(get_current_user),
+    status_filter: str | None = Query(default=None, alias="status"),
+    tipo: str | None = Query(default=None),
+    data_inicio: str | None = Query(default=None),
+    data_fim: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+) -> StreamingResponse:
+    """Gera relatorio CSV das Ordens de Servico visiveis ao usuario, com filtros."""
+    filters = _build_hierarchy_filters(user)
+    rows = listar_ordens_servico(status_filter=status_filter, tipo=tipo, **filters)
+
+    # Filtro por periodo
+    if data_inicio or data_fim:
+        filtered = []
+        for o in rows:
+            dt_ab = o.get("data_abertura", "")
+            if not dt_ab:
+                continue
+            if data_inicio and dt_ab < data_inicio:
+                continue
+            if data_fim and dt_ab > data_fim:
+                continue
+            filtered.append(o)
+        rows = filtered
+
+    # Filtro por texto livre
+    if search:
+        term = search.lower()
+        rows = [
+            o for o in rows
+            if term in o.get("numero", "").lower()
+            or term in o.get("razao_social", "").lower()
+            or term in o.get("ie", "").lower()
+            or term in o.get("matricula_supervisor", "").lower()
+            or any(term in f.lower() for f in o.get("fiscais", []))
+        ]
+
+    # Gerar CSV
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow([
+        "Numero", "Tipo", "IE", "Razao Social", "Matricula Supervisor",
+        "Fiscais", "Status", "Prioridade", "Data Abertura", "Data Ciencia",
+        "Ultima Movimentacao", "Dias Parado",
+    ])
+    for o in rows:
+        dias = _calcular_dias_parado(o.get("data_ultima_movimentacao"))
+        writer.writerow([
+            o.get("numero", ""),
+            o.get("tipo", ""),
+            o.get("ie", ""),
+            o.get("razao_social", ""),
+            o.get("matricula_supervisor", ""),
+            ", ".join(o.get("fiscais", [])),
+            o.get("status", ""),
+            o.get("prioridade", ""),
+            o.get("data_abertura", ""),
+            o.get("data_ciencia", "") or "",
+            o.get("data_ultima_movimentacao", "") or "",
+            dias,
+        ])
+
+    output.seek(0)
+    today = date.today().strftime("%Y-%m-%d")
+    filename = f"relatorio_ordens_{today}.csv"
+    logger.info("Relatorio CSV gerado por '%s': %d registros.", user["username"], len(rows))
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/relatorios/dashboard")
+def relatorio_dashboard_csv(
+    user: dict[str, Any] = Depends(get_current_user),
+    data_inicio: str | None = Query(None),
+    data_fim: str | None = Query(None),
+) -> StreamingResponse:
+    """Gera relatorio CSV do dashboard (desempenho por gerencia/supervisao). Apenas admin."""
+    require_admin(user)
+
+    todas_os = listar_ordens_servico()
+    if data_inicio or data_fim:
+        todas_os = [
+            o for o in todas_os
+            if o.get("data_abertura")
+            and (not data_inicio or o["data_abertura"] >= data_inicio)
+            and (not data_fim or o["data_abertura"] <= data_fim)
+        ]
+
+    gerencias_list = gerencia_repo.list_gerencias()
+    supervisoes_list = supervisao_repo.list_supervisoes()
+    users_list = user_repo.list_users()
+    dashboard = gerar_dashboard(todas_os, gerencias_list, supervisoes_list, users_list)
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+
+    # Resumo geral
+    visao = dashboard.get("visao_geral", {})
+    writer.writerow(["=== RESUMO GERAL ==="])
+    writer.writerow(["Total OS", "Abertas", "Em Andamento", "Concluidas", "Canceladas",
+                      "Dias Parado Medio", "OS Criticas", "OS Sem Ciencia"])
+    writer.writerow([
+        visao.get("total_os", 0),
+        visao.get("os_abertas", 0),
+        visao.get("os_em_andamento", 0),
+        visao.get("os_concluidas", 0),
+        visao.get("os_canceladas", 0),
+        visao.get("dias_parado_medio", 0),
+        visao.get("os_criticas", 0),
+        visao.get("os_sem_ciencia", 0),
+    ])
+    writer.writerow([])
+
+    # Por gerencia
+    writer.writerow(["=== DESEMPENHO POR GERENCIA ==="])
+    writer.writerow([
+        "Gerencia", "Total OS", "Abertas", "Em Andamento", "Concluidas",
+        "Taxa Conclusao (%)", "Dias Parado Medio", "OS Criticas", "Tempo Med. Conclusao",
+    ])
+    for g in dashboard.get("desempenho_gerencias", []):
+        writer.writerow([
+            g.get("nome", ""),
+            g.get("total_os", 0),
+            g.get("abertas", 0),
+            g.get("em_andamento", 0),
+            g.get("concluidas", 0),
+            g.get("taxa_conclusao", 0),
+            g.get("dias_parado_medio", 0),
+            g.get("os_criticas", 0),
+            g.get("tempo_medio_conclusao", 0),
+        ])
+    writer.writerow([])
+
+    # Por supervisao
+    writer.writerow(["=== DESEMPENHO POR SUPERVISAO ==="])
+    writer.writerow([
+        "Supervisao", "Gerencia", "Total OS", "Abertas", "Em Andamento",
+        "Concluidas", "Taxa Conclusao (%)", "Dias Parado Medio", "OS Criticas",
+    ])
+    for s in dashboard.get("desempenho_supervisoes", []):
+        writer.writerow([
+            s.get("nome", ""),
+            s.get("gerencia_nome", ""),
+            s.get("total_os", 0),
+            s.get("abertas", 0),
+            s.get("em_andamento", 0),
+            s.get("concluidas", 0),
+            s.get("taxa_conclusao", 0),
+            s.get("dias_parado_medio", 0),
+            s.get("os_criticas", 0),
+        ])
+    writer.writerow([])
+
+    # Por fiscal
+    writer.writerow(["=== CARGA POR FISCAL ==="])
+    writer.writerow(["Fiscal", "OS Ativas", "Dias Parado Medio", "OS Criticas"])
+    for f in dashboard.get("carga_fiscais", []):
+        writer.writerow([
+            f.get("nome", ""),
+            f.get("os_ativas", 0),
+            f.get("dias_parado_medio", 0),
+            f.get("os_criticas", 0),
+        ])
+
+    output.seek(0)
+    today = date.today().strftime("%Y-%m-%d")
+    filename = f"relatorio_dashboard_{today}.csv"
+    logger.info("Relatorio Dashboard CSV gerado por '%s'.", user["username"])
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

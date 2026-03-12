@@ -163,6 +163,44 @@ class ApiClient {
     const qs = params.toString();
     return this.request(`/admin/dashboard${qs ? `?${qs}` : ""}`);
   }
+
+  // Relatorios (download CSV)
+  async downloadRelatorioOrdens({ status, tipo, dataInicio, dataFim, search } = {}) {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (tipo) params.set("tipo", tipo);
+    if (dataInicio) params.set("data_inicio", dataInicio);
+    if (dataFim) params.set("data_fim", dataFim);
+    if (search) params.set("search", search);
+    const qs = params.toString();
+
+    const headers = {};
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+
+    const response = await fetch(`${this.baseUrl}/relatorios/ordens${qs ? `?${qs}` : ""}`, { headers });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || "Erro ao gerar relatorio");
+    }
+    return response.blob();
+  }
+
+  async downloadRelatorioDashboard({ dataInicio, dataFim } = {}) {
+    const params = new URLSearchParams();
+    if (dataInicio) params.set("data_inicio", dataInicio);
+    if (dataFim) params.set("data_fim", dataFim);
+    const qs = params.toString();
+
+    const headers = {};
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+
+    const response = await fetch(`${this.baseUrl}/relatorios/dashboard${qs ? `?${qs}` : ""}`, { headers });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || "Erro ao gerar relatorio");
+    }
+    return response.blob();
+  }
 }
 
 const apiClient = new ApiClient(API_BASE);
