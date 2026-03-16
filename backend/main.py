@@ -45,6 +45,7 @@ from .schemas import (
     GerenciaUpdateRequest,
     LoginRequest,
     LoginResponse,
+    OSDetalheResponse,
     OSResponse,
     PasswordChangeRequest,
     PasswordResetResponse,
@@ -487,10 +488,10 @@ def list_os(
     return [OSResponse(**row) for row in rows]
 
 
-@app.get("/ordens/{numero}", response_model=OSResponse)
+@app.get("/ordens/{numero}", response_model=OSDetalheResponse)
 def get_os(
     numero: str, user: dict[str, Any] = Depends(get_current_user)
-) -> OSResponse:
+) -> OSDetalheResponse:
     """Busca OS por numero na API externa, verificando permissao hierarquica."""
     ordem = consultar_os_por_numero(numero)
     if not ordem:
@@ -500,7 +501,136 @@ def get_os(
     allowed = _filtrar_por_hierarquia([ordem], **filters)
     if not allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem permissao para esta OS")
-    return OSResponse(**ordem)
+    return OSDetalheResponse(**ordem)
+
+
+@app.get("/ordens/{numero}/pdf")
+def get_os_pdf(
+    numero: str, user: dict[str, Any] = Depends(get_current_user)
+) -> Response:
+    """Gera PDF detalhado de uma OS individual, incluindo movimentacoes."""
+    ordem = consultar_os_por_numero(numero)
+    if not ordem:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OS nao encontrada")
+    filters = _build_hierarchy_filters(user)
+    allowed = _filtrar_por_hierarquia([ordem], **filters)
+    if not allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem permissao para esta OS")
+
+    status_map = {
+        "aberta": "Aberta", "em_andamento": "Em Andamento",
+        "concluida": "Concluida", "cancelada": "Cancelada",
+    }
+
+    pdf = _PDF(f"Ordem de Servico - {ordem['numero']}")
+    pdf.alias_nb_pages()
+    pdf.add_page(orientation="P")
+
+    # --- Cabecalho da OS ---
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 8, ordem["numero"], new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 6, ordem.get("razao_social", ""), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+
+    # --- Informacoes Gerais ---
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_fill_color(240, 240, 245)
+    pdf.cell(0, 7, "  Informacoes Gerais", new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.ln(2)
+
+    def _field(label: str, value: str) -> None:
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(45, 5, label + ":")
+        pdf.set_font("Helvetica", "", 8)
+        pdf.cell(0, 5, _safe(value), new_x="LMARGIN", new_y="NEXT")
+
+    _field("Status", status_map.get(ordem.get("status", ""), ordem.get("status", "")))
+    _field("Tipo", ordem.get("tipo", ""))
+    _field("Prioridade", ordem.get("prioridade", ""))
+    _field("IE", ordem.get("ie", ""))
+    _field("CNPJ", ordem.get("cnpj", ""))
+    _field("Endereco", ordem.get("endereco", ""))
+    _field("Telefone", ordem.get("telefone", ""))
+    valor_est = ordem.get("valor_estimado", 0)
+    _field("Valor Estimado", f"R$ {valor_est:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if valor_est else "-")
+    _field("Supervisor", ordem.get("matricula_supervisor", ""))
+    _field("Fiscais", ", ".join(ordem.get("fiscais", [])))
+    pdf.ln(2)
+
+    # --- Datas ---
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 7, "  Datas", new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.ln(2)
+    _field("Abertura", _fmt_data_br(ordem.get("data_abertura")))
+    _field("Ciencia", _fmt_data_br(ordem.get("data_ciencia")))
+    _field("Ultima Movimentacao", _fmt_data_br(ordem.get("data_ultima_movimentacao")))
+    dias = _calcular_dias_parado(ordem.get("data_ultima_movimentacao"))
+    if ordem.get("status") in ("aberta", "em_andamento"):
+        _field("Dias Parado", str(dias))
+    pdf.ln(2)
+
+    # --- Objeto e Observacoes ---
+    if ordem.get("objeto"):
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 7, "  Objeto da Fiscalizacao", new_x="LMARGIN", new_y="NEXT", fill=True)
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "", 8)
+        pdf.multi_cell(0, 5, _safe(ordem["objeto"]))
+        pdf.ln(2)
+
+    if ordem.get("observacoes"):
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 7, "  Observacoes", new_x="LMARGIN", new_y="NEXT", fill=True)
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "", 8)
+        pdf.multi_cell(0, 5, _safe(ordem["observacoes"]))
+        pdf.ln(2)
+
+    # --- Movimentacoes ---
+    movs = ordem.get("movimentacoes", [])
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 7, f"  Movimentacoes ({len(movs)})", new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.ln(2)
+
+    if movs:
+        m_headers = ["Data", "Tipo", "Descricao", "Responsavel"]
+        m_widths = [22, 25, 100, 40]
+        pdf.set_font("Helvetica", "B", 7)
+        for i, h in enumerate(m_headers):
+            pdf.cell(m_widths[i], 6, h, border=1, align="C")
+        pdf.ln()
+
+        pdf.set_font("Helvetica", "", 7)
+        for mov in movs:
+            x_start = pdf.get_x()
+            y_start = pdf.get_y()
+
+            # Calcular altura necessaria para descricao (multi_cell)
+            desc_text = _safe(mov.get("descricao", ""))
+            # Estimar linhas necessarias
+            desc_width = m_widths[2] - 2
+            n_lines = max(1, len(desc_text) // 55 + 1)
+            row_h = max(5, n_lines * 4.5)
+
+            pdf.cell(m_widths[0], row_h, _fmt_data_br(mov.get("data")), border=1, align="C")
+            pdf.cell(m_widths[1], row_h, _safe(mov.get("tipo", "")), border=1, align="C")
+            pdf.cell(m_widths[2], row_h, desc_text[:70], border=1)
+            pdf.cell(m_widths[3], row_h, _safe(mov.get("responsavel", "")), border=1, align="C")
+            pdf.ln()
+    else:
+        pdf.set_font("Helvetica", "I", 8)
+        pdf.cell(0, 5, "Nenhuma movimentacao registrada.", new_x="LMARGIN", new_y="NEXT")
+
+    pdf_bytes = bytes(pdf.output())
+    filename = f"{ordem['numero']}.pdf"
+    logger.info("PDF da OS %s gerado por '%s'.", numero, user["username"])
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/alertas", response_model=list[AlertaResponse])

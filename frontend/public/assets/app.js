@@ -1084,7 +1084,7 @@
             }
             return dispatcher.useContext(Context);
           }
-          function useState9(initialState) {
+          function useState10(initialState) {
             var dispatcher = resolveDispatcher();
             return dispatcher.useState(initialState);
           }
@@ -1092,11 +1092,11 @@
             var dispatcher = resolveDispatcher();
             return dispatcher.useReducer(reducer, initialArg, init);
           }
-          function useRef2(initialValue) {
+          function useRef3(initialValue) {
             var dispatcher = resolveDispatcher();
             return dispatcher.useRef(initialValue);
           }
-          function useEffect3(create, deps) {
+          function useEffect4(create, deps) {
             var dispatcher = resolveDispatcher();
             return dispatcher.useEffect(create, deps);
           }
@@ -1879,15 +1879,15 @@
           exports.useContext = useContext;
           exports.useDebugValue = useDebugValue;
           exports.useDeferredValue = useDeferredValue;
-          exports.useEffect = useEffect3;
+          exports.useEffect = useEffect4;
           exports.useId = useId;
           exports.useImperativeHandle = useImperativeHandle;
           exports.useInsertionEffect = useInsertionEffect;
           exports.useLayoutEffect = useLayoutEffect;
           exports.useMemo = useMemo4;
           exports.useReducer = useReducer;
-          exports.useRef = useRef2;
-          exports.useState = useState9;
+          exports.useRef = useRef3;
+          exports.useState = useState10;
           exports.useSyncExternalStore = useSyncExternalStore;
           exports.useTransition = useTransition;
           exports.version = ReactVersion;
@@ -2383,9 +2383,9 @@
           if (typeof __REACT_DEVTOOLS_GLOBAL_HOOK__ !== "undefined" && typeof __REACT_DEVTOOLS_GLOBAL_HOOK__.registerInternalModuleStart === "function") {
             __REACT_DEVTOOLS_GLOBAL_HOOK__.registerInternalModuleStart(new Error());
           }
-          var React16 = require_react();
+          var React18 = require_react();
           var Scheduler = require_scheduler();
-          var ReactSharedInternals = React16.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
+          var ReactSharedInternals = React18.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
           var suppressWarning = false;
           function setSuppressWarning(newSuppressWarning) {
             {
@@ -3990,7 +3990,7 @@
             {
               if (props.value == null) {
                 if (typeof props.children === "object" && props.children !== null) {
-                  React16.Children.forEach(props.children, function(child) {
+                  React18.Children.forEach(props.children, function(child) {
                     if (child == null) {
                       return;
                     }
@@ -23530,7 +23530,7 @@
       if (true) {
         (function() {
           "use strict";
-          var React16 = require_react();
+          var React18 = require_react();
           var REACT_ELEMENT_TYPE = Symbol.for("react.element");
           var REACT_PORTAL_TYPE = Symbol.for("react.portal");
           var REACT_FRAGMENT_TYPE = Symbol.for("react.fragment");
@@ -23556,7 +23556,7 @@
             }
             return null;
           }
-          var ReactSharedInternals = React16.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
+          var ReactSharedInternals = React18.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
           function error(format) {
             {
               {
@@ -24429,14 +24429,14 @@
   });
 
   // src/main.jsx
-  var import_react16 = __toESM(require_react(), 1);
+  var import_react18 = __toESM(require_react(), 1);
   var import_client = __toESM(require_client(), 1);
 
   // src/App.jsx
-  var import_react15 = __toESM(require_react(), 1);
+  var import_react17 = __toESM(require_react(), 1);
 
   // src/api.js
-  var API_BASE = typeof API_BASE_URL !== "undefined" ? API_BASE_URL : "http://localhost:8000";
+  var API_BASE = true ? "http://localhost:8000" : "http://localhost:8000";
   var ApiClient = class {
     constructor(baseUrl) {
       this.baseUrl = baseUrl;
@@ -24452,22 +24452,24 @@
      * Lanca Error com a mensagem do backend em caso de falha.
      */
     async request(path, options = {}) {
+      const { headers: customHeaders, ...rest } = options;
       const headers = {
         "Content-Type": "application/json",
-        ...options.headers || {}
+        ...customHeaders || {}
       };
       if (this.token) {
         headers.Authorization = `Bearer ${this.token}`;
       }
       const response = await fetch(`${this.baseUrl}${path}`, {
-        headers,
-        ...options
+        ...rest,
+        headers
       });
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}));
         const message = detail.detail || "Erro na requisicao";
         throw new Error(message);
       }
+      if (response.status === 204) return null;
       return response.json();
     }
     // Auth
@@ -24536,6 +24538,11 @@
         method: "POST"
       });
     }
+    deleteUser(userId) {
+      return this.request(`/admin/users/${userId}`, {
+        method: "DELETE"
+      });
+    }
     // Ordens de Servico (somente consulta - API externa)
     listOrdens(statusFilter = null, tipo = null) {
       const params = new URLSearchParams();
@@ -24547,6 +24554,16 @@
     getOrdem(numero) {
       return this.request(`/ordens/${encodeURIComponent(numero)}`);
     }
+    async downloadOrdemPdf(numero) {
+      const headers = {};
+      if (this.token) headers.Authorization = `Bearer ${this.token}`;
+      const response = await fetch(`${this.baseUrl}/ordens/${encodeURIComponent(numero)}/pdf`, { headers });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || "Erro ao gerar PDF da OS");
+      }
+      return response.blob();
+    }
     listarAlertas() {
       return this.request("/alertas");
     }
@@ -24557,6 +24574,70 @@
       if (dataFim) params.set("data_fim", dataFim);
       const qs = params.toString();
       return this.request(`/admin/dashboard${qs ? `?${qs}` : ""}`);
+    }
+    // Relatorios (download CSV)
+    async downloadRelatorioOrdens({ status, tipo, dataInicio, dataFim, search } = {}) {
+      const params = new URLSearchParams();
+      if (status) params.set("status", status);
+      if (tipo) params.set("tipo", tipo);
+      if (dataInicio) params.set("data_inicio", dataInicio);
+      if (dataFim) params.set("data_fim", dataFim);
+      if (search) params.set("search", search);
+      const qs = params.toString();
+      const headers = {};
+      if (this.token) headers.Authorization = `Bearer ${this.token}`;
+      const response = await fetch(`${this.baseUrl}/relatorios/ordens${qs ? `?${qs}` : ""}`, { headers });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || "Erro ao gerar relatorio");
+      }
+      return response.blob();
+    }
+    async downloadRelatorioDashboard({ dataInicio, dataFim } = {}) {
+      const params = new URLSearchParams();
+      if (dataInicio) params.set("data_inicio", dataInicio);
+      if (dataFim) params.set("data_fim", dataFim);
+      const qs = params.toString();
+      const headers = {};
+      if (this.token) headers.Authorization = `Bearer ${this.token}`;
+      const response = await fetch(`${this.baseUrl}/relatorios/dashboard${qs ? `?${qs}` : ""}`, { headers });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || "Erro ao gerar relatorio");
+      }
+      return response.blob();
+    }
+    // Relatorios (download PDF)
+    async downloadRelatorioOrdensPdf({ status, tipo, dataInicio, dataFim, search } = {}) {
+      const params = new URLSearchParams();
+      if (status) params.set("status", status);
+      if (tipo) params.set("tipo", tipo);
+      if (dataInicio) params.set("data_inicio", dataInicio);
+      if (dataFim) params.set("data_fim", dataFim);
+      if (search) params.set("search", search);
+      const qs = params.toString();
+      const headers = {};
+      if (this.token) headers.Authorization = `Bearer ${this.token}`;
+      const response = await fetch(`${this.baseUrl}/relatorios/ordens/pdf${qs ? `?${qs}` : ""}`, { headers });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || "Erro ao gerar relatorio PDF");
+      }
+      return response.blob();
+    }
+    async downloadRelatorioDashboardPdf({ dataInicio, dataFim } = {}) {
+      const params = new URLSearchParams();
+      if (dataInicio) params.set("data_inicio", dataInicio);
+      if (dataFim) params.set("data_fim", dataFim);
+      const qs = params.toString();
+      const headers = {};
+      if (this.token) headers.Authorization = `Bearer ${this.token}`;
+      const response = await fetch(`${this.baseUrl}/relatorios/dashboard/pdf${qs ? `?${qs}` : ""}`, { headers });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || "Erro ao gerar relatorio PDF");
+      }
+      return response.blob();
     }
   };
   var apiClient = new ApiClient(API_BASE);
@@ -38143,6 +38224,7 @@
 
   // src/components/LoginPage.jsx
   var import_react = __toESM(require_react(), 1);
+  var import_meta = {};
   function LoginPage({ onLogin }) {
     const [loginForm, setLoginForm] = (0, import_react.useState)({ username: "", password: "" });
     const [error, setError] = (0, import_react.useState)("");
@@ -38171,7 +38253,7 @@
         onChange: (e) => setLoginForm({ ...loginForm, password: e.target.value }),
         placeholder: "admin123"
       }
-    )), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit" }, "Entrar")), /* @__PURE__ */ import_react.default.createElement("div", { className: "hint" }, /* @__PURE__ */ import_react.default.createElement("div", null, "Admin: admin / admin123"), /* @__PURE__ */ import_react.default.createElement("div", null, "Supervisor: Patricia Oliveira / temp1234")), error && /* @__PURE__ */ import_react.default.createElement("div", { className: "alert error" }, error)));
+    )), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit" }, "Entrar")), import_meta.env.DEV && /* @__PURE__ */ import_react.default.createElement("div", { className: "hint" }, /* @__PURE__ */ import_react.default.createElement("div", null, "Admin: admin / admin123"), /* @__PURE__ */ import_react.default.createElement("div", null, "Supervisor: Patricia Oliveira / temp1234")), error && /* @__PURE__ */ import_react.default.createElement("div", { className: "alert error" }, error)));
   }
 
   // src/components/ChangePasswordPage.jsx
@@ -38207,9 +38289,10 @@
         type: "password",
         value: form.new_password,
         onChange: (e) => setForm({ ...form, new_password: e.target.value }),
-        required: true
+        required: true,
+        minLength: 4
       }
-    )), /* @__PURE__ */ import_react2.default.createElement("button", { type: "submit" }, "Atualizar Senha"))), message && /* @__PURE__ */ import_react2.default.createElement("div", { className: "alert success" }, message), error && /* @__PURE__ */ import_react2.default.createElement("div", { className: "alert error" }, error)));
+    ), /* @__PURE__ */ import_react2.default.createElement("span", { className: "muted", style: { fontSize: 11 } }, "Minimo 4 caracteres")), /* @__PURE__ */ import_react2.default.createElement("button", { type: "submit" }, "Atualizar Senha"))), message && /* @__PURE__ */ import_react2.default.createElement("div", { className: "alert success" }, message), error && /* @__PURE__ */ import_react2.default.createElement("div", { className: "alert error" }, error)));
   }
 
   // src/components/TopBar.jsx
@@ -38245,6 +38328,13 @@
       },
       "Alertas",
       alertCount > 0 && /* @__PURE__ */ import_react3.default.createElement("span", { className: "nav-badge" }, alertCount)
+    ), /* @__PURE__ */ import_react3.default.createElement(
+      "button",
+      {
+        className: activeMenu === "relatorios" ? "active" : "",
+        onClick: () => onMenuChange("relatorios")
+      },
+      "Relatorios"
     ), authData.role === "admin" && /* @__PURE__ */ import_react3.default.createElement("div", { className: "dropdown" }, /* @__PURE__ */ import_react3.default.createElement(
       "button",
       {
@@ -38289,15 +38379,22 @@
   }
 
   // src/components/OrdensPanel.jsx
+  var PAGE_SIZE = 10;
   function OrdensPanel({ ordens }) {
     const [statusFilter, setStatusFilter] = (0, import_react4.useState)("");
     const [tipoFilter, setTipoFilter] = (0, import_react4.useState)("");
     const [searchText, setSearchText] = (0, import_react4.useState)("");
     const [dataInicio, setDataInicio] = (0, import_react4.useState)("");
     const [dataFim, setDataFim] = (0, import_react4.useState)("");
-    const osAbertas = ordens.filter((o) => o.status === "aberta").length;
-    const osAndamento = ordens.filter((o) => o.status === "em_andamento").length;
-    const osConcluidas = ordens.filter((o) => o.status === "concluida").length;
+    const [page, setPage] = (0, import_react4.useState)(1);
+    const [selectedOS, setSelectedOS] = (0, import_react4.useState)(null);
+    const [loadingDetail, setLoadingDetail] = (0, import_react4.useState)(false);
+    const [detailError, setDetailError] = (0, import_react4.useState)("");
+    const { osAbertas, osAndamento, osConcluidas } = (0, import_react4.useMemo)(() => ({
+      osAbertas: ordens.filter((o) => o.status === "aberta").length,
+      osAndamento: ordens.filter((o) => o.status === "em_andamento").length,
+      osConcluidas: ordens.filter((o) => o.status === "concluida").length
+    }), [ordens]);
     const filteredOrdens = (0, import_react4.useMemo)(() => {
       let result = ordens;
       if (statusFilter) result = result.filter((o) => o.status === statusFilter);
@@ -38316,6 +38413,15 @@
       }
       return result;
     }, [ordens, statusFilter, tipoFilter, searchText, dataInicio, dataFim]);
+    const totalPages = Math.max(1, Math.ceil(filteredOrdens.length / PAGE_SIZE));
+    const safePage = Math.min(page, totalPages);
+    const pagedOrdens = filteredOrdens.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+    function setFilter(setter) {
+      return (e) => {
+        setter(e.target.value);
+        setPage(1);
+      };
+    }
     const hasFilters = statusFilter || tipoFilter || searchText || dataInicio || dataFim;
     function clearFilters() {
       setStatusFilter("");
@@ -38323,6 +38429,42 @@
       setSearchText("");
       setDataInicio("");
       setDataFim("");
+      setPage(1);
+    }
+    async function handleOSClick(numero) {
+      setLoadingDetail(true);
+      setDetailError("");
+      try {
+        const detail = await api_default.getOrdem(numero);
+        setSelectedOS(detail);
+      } catch (err) {
+        setDetailError(err.message || "Erro ao carregar detalhes da OS");
+      } finally {
+        setLoadingDetail(false);
+      }
+    }
+    function closeDetail() {
+      setSelectedOS(null);
+      setDetailError("");
+    }
+    async function handleDownloadPdf(numero) {
+      try {
+        const blob = await api_default.downloadOrdemPdf(numero);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${numero}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        setDetailError(err.message || "Erro ao baixar PDF");
+      }
+    }
+    function formatCurrency(value) {
+      if (!value) return "R$ 0,00";
+      return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
     }
     return /* @__PURE__ */ import_react4.default.createElement(import_react4.default.Fragment, null, /* @__PURE__ */ import_react4.default.createElement("div", { className: "stats-row" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "stat-card normal" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "stat-value" }, osAbertas), /* @__PURE__ */ import_react4.default.createElement("div", { className: "stat-label" }, "Abertas")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "stat-card alta" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "stat-value" }, osAndamento), /* @__PURE__ */ import_react4.default.createElement("div", { className: "stat-label" }, "Em Andamento")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "stat-card concluida" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "stat-value" }, osConcluidas), /* @__PURE__ */ import_react4.default.createElement("div", { className: "stat-label" }, "Concluidas"))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "card filters-card" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "filters-header" }, /* @__PURE__ */ import_react4.default.createElement("h3", { style: { margin: 0, fontSize: 14, fontWeight: 600 } }, "Filtros"), hasFilters && /* @__PURE__ */ import_react4.default.createElement("button", { className: "small secondary", onClick: clearFilters }, "Limpar Filtros")), /* @__PURE__ */ import_react4.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react4.default.createElement(
       "input",
@@ -38330,10 +38472,13 @@
         type: "text",
         placeholder: "Buscar por numero, razao social, IE, matricula ou fiscal...",
         value: searchText,
-        onChange: (e) => setSearchText(e.target.value),
+        onChange: (e) => {
+          setSearchText(e.target.value);
+          setPage(1);
+        },
         style: { width: "100%", padding: "8px 12px", borderRadius: 6, border: "1px solid #d1d5db", fontSize: 13 }
       }
-    )), /* @__PURE__ */ import_react4.default.createElement("div", { className: "filters-grid" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "filter-label" }, "Status"), /* @__PURE__ */ import_react4.default.createElement("select", { value: statusFilter, onChange: (e) => setStatusFilter(e.target.value), className: "filter-select" }, /* @__PURE__ */ import_react4.default.createElement("option", { value: "" }, "Todos"), Object.entries(statusLabels).map(([key, label]) => /* @__PURE__ */ import_react4.default.createElement("option", { key, value: key }, label)))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "filter-label" }, "Tipo"), /* @__PURE__ */ import_react4.default.createElement("select", { value: tipoFilter, onChange: (e) => setTipoFilter(e.target.value), className: "filter-select" }, /* @__PURE__ */ import_react4.default.createElement("option", { value: "" }, "Todos"), Object.entries(tipoLabels).map(([key, label]) => /* @__PURE__ */ import_react4.default.createElement("option", { key, value: key }, label)))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "filter-label" }, "Data Inicio"), /* @__PURE__ */ import_react4.default.createElement("input", { type: "date", value: dataInicio, onChange: (e) => setDataInicio(e.target.value), className: "filter-select" })), /* @__PURE__ */ import_react4.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "filter-label" }, "Data Fim"), /* @__PURE__ */ import_react4.default.createElement("input", { type: "date", value: dataFim, onChange: (e) => setDataFim(e.target.value), className: "filter-select" }))), hasFilters && /* @__PURE__ */ import_react4.default.createElement("div", { className: "active-filters" }, searchText && /* @__PURE__ */ import_react4.default.createElement("span", { className: "filter-tag" }, 'Busca: "', searchText, '"', /* @__PURE__ */ import_react4.default.createElement("button", { onClick: () => setSearchText("") }, "\xD7")), statusFilter && /* @__PURE__ */ import_react4.default.createElement("span", { className: "filter-tag" }, "Status: ", statusLabels[statusFilter], /* @__PURE__ */ import_react4.default.createElement("button", { onClick: () => setStatusFilter("") }, "\xD7")), tipoFilter && /* @__PURE__ */ import_react4.default.createElement("span", { className: "filter-tag" }, "Tipo: ", tipoLabels[tipoFilter], /* @__PURE__ */ import_react4.default.createElement("button", { onClick: () => setTipoFilter("") }, "\xD7")), dataInicio && /* @__PURE__ */ import_react4.default.createElement("span", { className: "filter-tag" }, "Data In\xEDcio: ", formatarData(dataInicio), /* @__PURE__ */ import_react4.default.createElement("button", { onClick: () => setDataInicio("") }, "\xD7")), dataFim && /* @__PURE__ */ import_react4.default.createElement("span", { className: "filter-tag" }, "Data Fim: ", formatarData(dataFim), /* @__PURE__ */ import_react4.default.createElement("button", { onClick: () => setDataFim("") }, "\xD7")))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "card" }, /* @__PURE__ */ import_react4.default.createElement("h2", null, "Ordens de Servico (", filteredOrdens.length, ")"), /* @__PURE__ */ import_react4.default.createElement("p", { className: "muted", style: { marginBottom: 12 } }, "Dados da API externa (servidor Informix). Somente consulta."), filteredOrdens.length === 0 ? /* @__PURE__ */ import_react4.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react4.default.createElement("p", { className: "muted" }, "Nenhuma ordem de servico encontrada.")) : /* @__PURE__ */ import_react4.default.createElement("div", { className: "table-container" }, /* @__PURE__ */ import_react4.default.createElement("table", null, /* @__PURE__ */ import_react4.default.createElement("thead", null, /* @__PURE__ */ import_react4.default.createElement("tr", null, /* @__PURE__ */ import_react4.default.createElement("th", null, "Numero"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Tipo"), /* @__PURE__ */ import_react4.default.createElement("th", null, "IE"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Razao Social"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Matr\xEDcula Supervisor"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Fiscais"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Status"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Abertura"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Ciencia"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Ult. Mov."), /* @__PURE__ */ import_react4.default.createElement("th", null, "Parado"))), /* @__PURE__ */ import_react4.default.createElement("tbody", null, filteredOrdens.map((os) => /* @__PURE__ */ import_react4.default.createElement("tr", { key: os.numero }, /* @__PURE__ */ import_react4.default.createElement("td", null, /* @__PURE__ */ import_react4.default.createElement("strong", null, os.numero)), /* @__PURE__ */ import_react4.default.createElement("td", null, /* @__PURE__ */ import_react4.default.createElement("span", { className: "badge normal" }, os.tipo)), /* @__PURE__ */ import_react4.default.createElement("td", null, os.ie), /* @__PURE__ */ import_react4.default.createElement("td", null, os.razao_social), /* @__PURE__ */ import_react4.default.createElement("td", null, os.matricula_supervisor || "-"), /* @__PURE__ */ import_react4.default.createElement("td", null, os.fiscais && os.fiscais.length > 0 ? os.fiscais.map((f, i) => /* @__PURE__ */ import_react4.default.createElement("div", { key: i, style: { fontSize: 12 } }, f)) : "-"), /* @__PURE__ */ import_react4.default.createElement("td", null, /* @__PURE__ */ import_react4.default.createElement("span", { className: `badge ${os.status}` }, statusLabels[os.status] || os.status)), /* @__PURE__ */ import_react4.default.createElement("td", null, formatarData(os.data_abertura)), /* @__PURE__ */ import_react4.default.createElement("td", null, formatarData(os.data_ciencia)), /* @__PURE__ */ import_react4.default.createElement("td", null, formatarData(os.data_ultima_movimentacao)), /* @__PURE__ */ import_react4.default.createElement("td", null, os.status !== "concluida" && os.status !== "cancelada" ? /* @__PURE__ */ import_react4.default.createElement("span", { className: `badge ${os.dias_parado > 15 ? "cancelada" : os.dias_parado > 7 ? "urgente" : "normal"}` }, os.dias_parado, " dias") : /* @__PURE__ */ import_react4.default.createElement("span", { className: "muted" }, "-")))))))));
+    )), /* @__PURE__ */ import_react4.default.createElement("div", { className: "filters-grid" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "filter-label" }, "Status"), /* @__PURE__ */ import_react4.default.createElement("select", { value: statusFilter, onChange: setFilter(setStatusFilter), className: "filter-select" }, /* @__PURE__ */ import_react4.default.createElement("option", { value: "" }, "Todos"), Object.entries(statusLabels).map(([key, label]) => /* @__PURE__ */ import_react4.default.createElement("option", { key, value: key }, label)))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "filter-label" }, "Tipo"), /* @__PURE__ */ import_react4.default.createElement("select", { value: tipoFilter, onChange: setFilter(setTipoFilter), className: "filter-select" }, /* @__PURE__ */ import_react4.default.createElement("option", { value: "" }, "Todos"), Object.entries(tipoLabels).map(([key, label]) => /* @__PURE__ */ import_react4.default.createElement("option", { key, value: key }, label)))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "filter-label" }, "Data Inicio"), /* @__PURE__ */ import_react4.default.createElement("input", { type: "date", value: dataInicio, onChange: setFilter(setDataInicio), className: "filter-select" })), /* @__PURE__ */ import_react4.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "filter-label" }, "Data Fim"), /* @__PURE__ */ import_react4.default.createElement("input", { type: "date", value: dataFim, onChange: setFilter(setDataFim), className: "filter-select" }))), hasFilters && /* @__PURE__ */ import_react4.default.createElement("div", { className: "active-filters" }, searchText && /* @__PURE__ */ import_react4.default.createElement("span", { className: "filter-tag" }, 'Busca: "', searchText, '"', /* @__PURE__ */ import_react4.default.createElement("button", { onClick: () => setSearchText("") }, "\xD7")), statusFilter && /* @__PURE__ */ import_react4.default.createElement("span", { className: "filter-tag" }, "Status: ", statusLabels[statusFilter], /* @__PURE__ */ import_react4.default.createElement("button", { onClick: () => setStatusFilter("") }, "\xD7")), tipoFilter && /* @__PURE__ */ import_react4.default.createElement("span", { className: "filter-tag" }, "Tipo: ", tipoLabels[tipoFilter], /* @__PURE__ */ import_react4.default.createElement("button", { onClick: () => setTipoFilter("") }, "\xD7")), dataInicio && /* @__PURE__ */ import_react4.default.createElement("span", { className: "filter-tag" }, "Data In\xEDcio: ", formatarData(dataInicio), /* @__PURE__ */ import_react4.default.createElement("button", { onClick: () => setDataInicio("") }, "\xD7")), dataFim && /* @__PURE__ */ import_react4.default.createElement("span", { className: "filter-tag" }, "Data Fim: ", formatarData(dataFim), /* @__PURE__ */ import_react4.default.createElement("button", { onClick: () => setDataFim("") }, "\xD7")))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "card" }, /* @__PURE__ */ import_react4.default.createElement("h2", null, "Ordens de Servico (", filteredOrdens.length, ") \u2014 p\xE1g. ", safePage, "/", totalPages), /* @__PURE__ */ import_react4.default.createElement("p", { className: "muted", style: { marginBottom: 12 } }, "Dados da API externa (servidor Informix). Somente consulta."), filteredOrdens.length === 0 ? /* @__PURE__ */ import_react4.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react4.default.createElement("p", { className: "muted" }, "Nenhuma ordem de servico encontrada.")) : /* @__PURE__ */ import_react4.default.createElement("div", { className: "table-container" }, /* @__PURE__ */ import_react4.default.createElement("table", null, /* @__PURE__ */ import_react4.default.createElement("thead", null, /* @__PURE__ */ import_react4.default.createElement("tr", null, /* @__PURE__ */ import_react4.default.createElement("th", null, "Numero"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Tipo"), /* @__PURE__ */ import_react4.default.createElement("th", null, "IE"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Razao Social"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Matr\xEDcula Supervisor"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Fiscais"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Status"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Abertura"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Ciencia"), /* @__PURE__ */ import_react4.default.createElement("th", null, "Ult. Mov."), /* @__PURE__ */ import_react4.default.createElement("th", null, "Parado"))), /* @__PURE__ */ import_react4.default.createElement("tbody", null, pagedOrdens.map((os) => /* @__PURE__ */ import_react4.default.createElement("tr", { key: os.numero, className: "os-row-clickable", onClick: () => handleOSClick(os.numero), title: "Clique para ver detalhes" }, /* @__PURE__ */ import_react4.default.createElement("td", null, /* @__PURE__ */ import_react4.default.createElement("strong", null, os.numero)), /* @__PURE__ */ import_react4.default.createElement("td", null, /* @__PURE__ */ import_react4.default.createElement("span", { className: "badge normal" }, os.tipo)), /* @__PURE__ */ import_react4.default.createElement("td", null, os.ie), /* @__PURE__ */ import_react4.default.createElement("td", null, os.razao_social), /* @__PURE__ */ import_react4.default.createElement("td", null, os.matricula_supervisor || "-"), /* @__PURE__ */ import_react4.default.createElement("td", null, os.fiscais && os.fiscais.length > 0 ? os.fiscais.map((f, i) => /* @__PURE__ */ import_react4.default.createElement("div", { key: i, style: { fontSize: 12 } }, f)) : "-"), /* @__PURE__ */ import_react4.default.createElement("td", null, /* @__PURE__ */ import_react4.default.createElement("span", { className: `badge ${os.status}` }, statusLabels[os.status] || os.status)), /* @__PURE__ */ import_react4.default.createElement("td", null, formatarData(os.data_abertura)), /* @__PURE__ */ import_react4.default.createElement("td", null, formatarData(os.data_ciencia)), /* @__PURE__ */ import_react4.default.createElement("td", null, formatarData(os.data_ultima_movimentacao)), /* @__PURE__ */ import_react4.default.createElement("td", null, os.status !== "concluida" && os.status !== "cancelada" ? /* @__PURE__ */ import_react4.default.createElement("span", { className: `badge ${os.dias_parado > 15 ? "cancelada" : os.dias_parado > 7 ? "urgente" : "normal"}` }, os.dias_parado, " dias") : /* @__PURE__ */ import_react4.default.createElement("span", { className: "muted" }, "-"))))))), totalPages > 1 && /* @__PURE__ */ import_react4.default.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 16 } }, /* @__PURE__ */ import_react4.default.createElement("button", { className: "small secondary", onClick: () => setPage(1), disabled: safePage === 1 }, "\xAB"), /* @__PURE__ */ import_react4.default.createElement("button", { className: "small secondary", onClick: () => setPage((p) => Math.max(1, p - 1)), disabled: safePage === 1 }, "\u2039 Anterior"), /* @__PURE__ */ import_react4.default.createElement("span", { style: { fontSize: 13, color: "#6b7280" } }, (safePage - 1) * PAGE_SIZE + 1, "\u2013", Math.min(safePage * PAGE_SIZE, filteredOrdens.length), " de ", filteredOrdens.length), /* @__PURE__ */ import_react4.default.createElement("button", { className: "small secondary", onClick: () => setPage((p) => Math.min(totalPages, p + 1)), disabled: safePage === totalPages }, "Pr\xF3xima \u203A"), /* @__PURE__ */ import_react4.default.createElement("button", { className: "small secondary", onClick: () => setPage(totalPages), disabled: safePage === totalPages }, "\xBB"))), loadingDetail && /* @__PURE__ */ import_react4.default.createElement("div", { className: "confirm-overlay" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "confirm-modal" }, /* @__PURE__ */ import_react4.default.createElement("p", null, "Carregando detalhes da OS..."))), detailError && !loadingDetail && /* @__PURE__ */ import_react4.default.createElement("div", { className: "confirm-overlay", onClick: () => setDetailError("") }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "confirm-modal", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "confirm-icon", "data-variant": "danger" }, "!"), /* @__PURE__ */ import_react4.default.createElement("h3", { className: "confirm-title" }, "Erro"), /* @__PURE__ */ import_react4.default.createElement("p", { className: "confirm-message" }, detailError), /* @__PURE__ */ import_react4.default.createElement("div", { className: "confirm-actions" }, /* @__PURE__ */ import_react4.default.createElement("button", { className: "small secondary", onClick: () => setDetailError("") }, "Fechar")))), selectedOS && /* @__PURE__ */ import_react4.default.createElement("div", { className: "confirm-overlay", onClick: closeDetail }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-modal", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-header" }, /* @__PURE__ */ import_react4.default.createElement("div", null, /* @__PURE__ */ import_react4.default.createElement("h2", { style: { margin: 0, fontSize: 18 } }, selectedOS.numero), /* @__PURE__ */ import_react4.default.createElement("p", { style: { margin: "4px 0 0", color: "var(--text-secondary)", fontSize: 13 } }, selectedOS.razao_social)), /* @__PURE__ */ import_react4.default.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ import_react4.default.createElement("span", { className: `badge ${selectedOS.status}` }, statusLabels[selectedOS.status] || selectedOS.status), /* @__PURE__ */ import_react4.default.createElement("button", { className: "small secondary", onClick: closeDetail, style: { fontSize: 18, lineHeight: 1, padding: "4px 10px" } }, "\xD7"))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-body" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-section" }, /* @__PURE__ */ import_react4.default.createElement("h3", { className: "os-detail-section-title" }, "Informacoes da Ordem"), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-grid" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Tipo"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "badge normal" }, selectedOS.tipo))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Prioridade"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: `badge ${selectedOS.prioridade === "urgente" ? "cancelada" : selectedOS.prioridade === "alta" ? "urgente" : "normal"}` }, selectedOS.prioridade || "-"))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "IE"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, selectedOS.ie)), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "CNPJ"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, selectedOS.cnpj || "-")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Endereco"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, selectedOS.endereco || "-")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Telefone"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, selectedOS.telefone || "-")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Valor Estimado"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, formatCurrency(selectedOS.valor_estimado))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Supervisor"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, selectedOS.matricula_supervisor || "-")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Fiscais"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, selectedOS.fiscais?.join(", ") || "-")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Dias Parado"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, selectedOS.status !== "concluida" && selectedOS.status !== "cancelada" ? /* @__PURE__ */ import_react4.default.createElement("span", { className: `badge ${selectedOS.dias_parado > 15 ? "cancelada" : selectedOS.dias_parado > 7 ? "urgente" : "normal"}` }, selectedOS.dias_parado, " dias") : "-"))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-dates" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Abertura"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, formatarData(selectedOS.data_abertura))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Ciencia"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, formatarData(selectedOS.data_ciencia))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-field" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Ult. Movimentacao"), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-value" }, formatarData(selectedOS.data_ultima_movimentacao)))), selectedOS.objeto && /* @__PURE__ */ import_react4.default.createElement("div", { style: { marginTop: 16 } }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Objeto da Fiscalizacao"), /* @__PURE__ */ import_react4.default.createElement("p", { style: { margin: "4px 0 0", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 } }, selectedOS.objeto)), selectedOS.observacoes && /* @__PURE__ */ import_react4.default.createElement("div", { style: { marginTop: 12 } }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-detail-label" }, "Observacoes"), /* @__PURE__ */ import_react4.default.createElement("p", { style: { margin: "4px 0 0", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 } }, selectedOS.observacoes))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-section" }, /* @__PURE__ */ import_react4.default.createElement("h3", { className: "os-detail-section-title" }, "Movimentacoes (", selectedOS.movimentacoes?.length || 0, ")"), selectedOS.movimentacoes && selectedOS.movimentacoes.length > 0 ? /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-movimentacoes-timeline" }, selectedOS.movimentacoes.map((mov, idx) => /* @__PURE__ */ import_react4.default.createElement("div", { key: idx, className: "os-mov-item" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-mov-dot" }), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-mov-content" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-mov-header" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "badge normal", style: { fontSize: 11 } }, mov.tipo), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-mov-date" }, formatarData(mov.data))), /* @__PURE__ */ import_react4.default.createElement("p", { className: "os-mov-desc" }, mov.descricao), /* @__PURE__ */ import_react4.default.createElement("span", { className: "os-mov-resp" }, "Responsavel: ", mov.responsavel))))) : /* @__PURE__ */ import_react4.default.createElement("p", { className: "muted", style: { fontSize: 13 } }, "Nenhuma movimentacao registrada."))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "os-detail-footer" }, /* @__PURE__ */ import_react4.default.createElement("button", { className: "small secondary", onClick: closeDetail }, "Fechar"), /* @__PURE__ */ import_react4.default.createElement("button", { className: "small", style: { background: "#1a3a6c", color: "#fff", border: "none" }, onClick: () => handleDownloadPdf(selectedOS.numero) }, "\u{1F4C4} Baixar PDF")))));
   }
 
   // src/components/AlertasPanel.jsx
@@ -39303,7 +39448,52 @@ OS Criticas: ${f.os_criticas}`;
   }
 
   // src/components/UsuariosAdmin.jsx
+  var import_react15 = __toESM(require_react(), 1);
+
+  // src/components/ConfirmModal.jsx
   var import_react14 = __toESM(require_react(), 1);
+  function ConfirmModal({
+    open,
+    title = "Confirmar a\xE7\xE3o",
+    message,
+    confirmLabel = "Confirmar",
+    cancelLabel = "Cancelar",
+    variant = "danger",
+    onConfirm,
+    onCancel
+  }) {
+    const overlayRef = (0, import_react14.useRef)(null);
+    (0, import_react14.useEffect)(() => {
+      if (!open) return;
+      function handleKey(e) {
+        if (e.key === "Escape") onCancel();
+      }
+      document.addEventListener("keydown", handleKey);
+      return () => document.removeEventListener("keydown", handleKey);
+    }, [open, onCancel]);
+    if (!open) return null;
+    return /* @__PURE__ */ import_react14.default.createElement(
+      "div",
+      {
+        className: "confirm-overlay",
+        ref: overlayRef,
+        onClick: (e) => {
+          if (e.target === overlayRef.current) onCancel();
+        }
+      },
+      /* @__PURE__ */ import_react14.default.createElement("div", { className: "confirm-modal" }, /* @__PURE__ */ import_react14.default.createElement("div", { className: "confirm-icon", "data-variant": variant }, variant === "danger" ? "\u26A0" : "\u2139"), /* @__PURE__ */ import_react14.default.createElement("h3", { className: "confirm-title" }, title), /* @__PURE__ */ import_react14.default.createElement("p", { className: "confirm-message" }, message), /* @__PURE__ */ import_react14.default.createElement("div", { className: "confirm-actions" }, /* @__PURE__ */ import_react14.default.createElement("button", { className: "small secondary", onClick: onCancel }, cancelLabel), /* @__PURE__ */ import_react14.default.createElement(
+        "button",
+        {
+          className: `small ${variant === "danger" ? "danger" : ""}`,
+          onClick: onConfirm
+        },
+        confirmLabel
+      )))
+    );
+  }
+
+  // src/components/UsuariosAdmin.jsx
+  var PAGE_SIZE2 = 10;
   var emptyUserForm = {
     username: "",
     role: "supervisor",
@@ -39320,16 +39510,20 @@ OS Criticas: ${f.os_criticas}`;
     onError,
     onResetInfo
   }) {
-    const [createForm, setCreateForm] = (0, import_react14.useState)({ ...emptyUserForm });
-    const [editId, setEditId] = (0, import_react14.useState)(null);
-    const [editForm, setEditForm] = (0, import_react14.useState)({ ...emptyUserForm });
-    const createSupervisoesFiltradas = (0, import_react14.useMemo)(() => {
+    const [createForm, setCreateForm] = (0, import_react15.useState)({ ...emptyUserForm });
+    const [editId, setEditId] = (0, import_react15.useState)(null);
+    const [editForm, setEditForm] = (0, import_react15.useState)({ ...emptyUserForm });
+    const [searchText, setSearchText] = (0, import_react15.useState)("");
+    const [page, setPage] = (0, import_react15.useState)(1);
+    const [confirmReset, setConfirmReset] = (0, import_react15.useState)(null);
+    const [confirmDelete, setConfirmDelete] = (0, import_react15.useState)(null);
+    const createSupervisoesFiltradas = (0, import_react15.useMemo)(() => {
       if (!createForm.gerencia_id) return supervisoes;
       return supervisoes.filter(
         (s) => String(s.gerencia_id) === String(createForm.gerencia_id)
       );
     }, [supervisoes, createForm.gerencia_id]);
-    const editSupervisoesFiltradas = (0, import_react14.useMemo)(() => {
+    const editSupervisoesFiltradas = (0, import_react15.useMemo)(() => {
       if (!editForm.gerencia_id) return supervisoes;
       return supervisoes.filter(
         (s) => String(s.gerencia_id) === String(editForm.gerencia_id)
@@ -39383,14 +39577,36 @@ OS Criticas: ${f.os_criticas}`;
         onError(err.message);
       }
     }
-    return /* @__PURE__ */ import_react14.default.createElement("div", { className: "card" }, /* @__PURE__ */ import_react14.default.createElement("h2", null, "Usuarios"), /* @__PURE__ */ import_react14.default.createElement("form", { onSubmit: handleCreate, className: "form", style: { maxWidth: 600, marginBottom: 20 } }, /* @__PURE__ */ import_react14.default.createElement("div", { className: "form-row" }, /* @__PURE__ */ import_react14.default.createElement("label", null, "Usuario", /* @__PURE__ */ import_react14.default.createElement(
+    async function handleDeleteUser(userId) {
+      onError("");
+      onMessage("");
+      try {
+        await api_default.deleteUser(userId);
+        onMessage("Usuario removido.");
+        onRefresh();
+      } catch (err) {
+        onError(err.message);
+      }
+    }
+    const nonAdminUsers = (0, import_react15.useMemo)(() => users.filter((u) => u.role !== "admin"), [users]);
+    const filteredUsers = (0, import_react15.useMemo)(() => {
+      if (!searchText) return nonAdminUsers;
+      const term = searchText.toLowerCase();
+      return nonAdminUsers.filter(
+        (u) => u.username.toLowerCase().includes(term) || u.matricula && u.matricula.toLowerCase().includes(term) || u.role && u.role.toLowerCase().includes(term) || u.gerencia_name && u.gerencia_name.toLowerCase().includes(term) || u.supervisao_name && u.supervisao_name.toLowerCase().includes(term)
+      );
+    }, [nonAdminUsers, searchText]);
+    const totalPages = Math.max(1, Math.ceil(filteredUsers.length / PAGE_SIZE2));
+    const safePage = Math.min(page, totalPages);
+    const pagedUsers = filteredUsers.slice((safePage - 1) * PAGE_SIZE2, safePage * PAGE_SIZE2);
+    return /* @__PURE__ */ import_react15.default.createElement("div", { className: "card" }, /* @__PURE__ */ import_react15.default.createElement("h2", null, "Usuarios (", filteredUsers.length, ")"), /* @__PURE__ */ import_react15.default.createElement("form", { onSubmit: handleCreate, className: "form", style: { maxWidth: 600, marginBottom: 20 } }, /* @__PURE__ */ import_react15.default.createElement("div", { className: "form-row" }, /* @__PURE__ */ import_react15.default.createElement("label", null, "Usuario", /* @__PURE__ */ import_react15.default.createElement(
       "input",
       {
         value: createForm.username,
         onChange: (e) => setCreateForm({ ...createForm, username: e.target.value }),
         required: true
       }
-    )), /* @__PURE__ */ import_react14.default.createElement("label", null, "Matr\xEDcula", /* @__PURE__ */ import_react14.default.createElement(
+    )), /* @__PURE__ */ import_react15.default.createElement("label", null, "Matr\xEDcula", /* @__PURE__ */ import_react15.default.createElement(
       "input",
       {
         value: createForm.matricula,
@@ -39398,55 +39614,67 @@ OS Criticas: ${f.os_criticas}`;
         required: true,
         placeholder: "Ex: 12345"
       }
-    )), /* @__PURE__ */ import_react14.default.createElement("label", null, "Cargo", /* @__PURE__ */ import_react14.default.createElement(
+    )), /* @__PURE__ */ import_react15.default.createElement("label", null, "Cargo", /* @__PURE__ */ import_react15.default.createElement(
       "select",
       {
         value: createForm.role,
         onChange: (e) => setCreateForm({ ...createForm, role: e.target.value }),
         required: true
       },
-      roleOptions.map((r) => /* @__PURE__ */ import_react14.default.createElement("option", { key: r.value, value: r.value }, r.label))
-    ))), /* @__PURE__ */ import_react14.default.createElement("div", { className: "form-row" }, /* @__PURE__ */ import_react14.default.createElement("label", null, "Gerencia", /* @__PURE__ */ import_react14.default.createElement(
+      roleOptions.map((r) => /* @__PURE__ */ import_react15.default.createElement("option", { key: r.value, value: r.value }, r.label))
+    ))), /* @__PURE__ */ import_react15.default.createElement("div", { className: "form-row" }, /* @__PURE__ */ import_react15.default.createElement("label", null, "Gerencia", /* @__PURE__ */ import_react15.default.createElement(
       "select",
       {
         value: createForm.gerencia_id,
         onChange: (e) => setCreateForm({ ...createForm, gerencia_id: e.target.value, supervisao_id: "" }),
         required: true
       },
-      /* @__PURE__ */ import_react14.default.createElement("option", { value: "" }, "Selecione"),
-      gerencias.map((g) => /* @__PURE__ */ import_react14.default.createElement("option", { key: g.id, value: g.id }, g.name))
-    )), /* @__PURE__ */ import_react14.default.createElement("label", null, "Supervisao", /* @__PURE__ */ import_react14.default.createElement(
+      /* @__PURE__ */ import_react15.default.createElement("option", { value: "" }, "Selecione"),
+      gerencias.map((g) => /* @__PURE__ */ import_react15.default.createElement("option", { key: g.id, value: g.id }, g.name))
+    )), /* @__PURE__ */ import_react15.default.createElement("label", null, "Supervisao", /* @__PURE__ */ import_react15.default.createElement(
       "select",
       {
         value: createForm.supervisao_id,
         onChange: (e) => setCreateForm({ ...createForm, supervisao_id: e.target.value }),
         required: true
       },
-      /* @__PURE__ */ import_react14.default.createElement("option", { value: "" }, "Selecione"),
-      createSupervisoesFiltradas.map((s) => /* @__PURE__ */ import_react14.default.createElement("option", { key: s.id, value: s.id }, s.name))
-    ))), /* @__PURE__ */ import_react14.default.createElement("p", { className: "muted" }, "Senha padrao: temp1234"), /* @__PURE__ */ import_react14.default.createElement("button", { type: "submit" }, "Criar Usuario")), users.filter((u) => u.role !== "admin").length === 0 ? /* @__PURE__ */ import_react14.default.createElement("p", { className: "muted" }, "Nenhum usuario cadastrado.") : /* @__PURE__ */ import_react14.default.createElement("div", { className: "table-container" }, /* @__PURE__ */ import_react14.default.createElement("table", null, /* @__PURE__ */ import_react14.default.createElement("thead", null, /* @__PURE__ */ import_react14.default.createElement("tr", null, /* @__PURE__ */ import_react14.default.createElement("th", null, "Usuario"), /* @__PURE__ */ import_react14.default.createElement("th", null, "Matr\xEDcula"), /* @__PURE__ */ import_react14.default.createElement("th", null, "Cargo"), /* @__PURE__ */ import_react14.default.createElement("th", null, "Gerencia"), /* @__PURE__ */ import_react14.default.createElement("th", null, "Supervisao"), /* @__PURE__ */ import_react14.default.createElement("th", null, "Acoes"))), /* @__PURE__ */ import_react14.default.createElement("tbody", null, users.filter((u) => u.role !== "admin").map((item) => /* @__PURE__ */ import_react14.default.createElement("tr", { key: item.id }, editId === item.id ? /* @__PURE__ */ import_react14.default.createElement(import_react14.default.Fragment, null, /* @__PURE__ */ import_react14.default.createElement("td", null, /* @__PURE__ */ import_react14.default.createElement(
+      /* @__PURE__ */ import_react15.default.createElement("option", { value: "" }, "Selecione"),
+      createSupervisoesFiltradas.map((s) => /* @__PURE__ */ import_react15.default.createElement("option", { key: s.id, value: s.id }, s.name))
+    ))), /* @__PURE__ */ import_react15.default.createElement("p", { className: "muted" }, "Senha padrao: temp1234"), /* @__PURE__ */ import_react15.default.createElement("button", { type: "submit" }, "Criar Usuario")), /* @__PURE__ */ import_react15.default.createElement("div", { style: { marginBottom: 12, maxWidth: 400 } }, /* @__PURE__ */ import_react15.default.createElement(
+      "input",
+      {
+        type: "text",
+        placeholder: "Buscar por nome, matr\xEDcula, cargo, ger\xEAncia...",
+        value: searchText,
+        onChange: (e) => {
+          setSearchText(e.target.value);
+          setPage(1);
+        },
+        style: { width: "100%", padding: "8px 12px", borderRadius: 6, border: "1px solid #d1d5db", fontSize: 13 }
+      }
+    )), filteredUsers.length === 0 ? /* @__PURE__ */ import_react15.default.createElement("p", { className: "muted" }, "Nenhum usuario encontrado.") : /* @__PURE__ */ import_react15.default.createElement("div", { className: "table-container" }, /* @__PURE__ */ import_react15.default.createElement("table", null, /* @__PURE__ */ import_react15.default.createElement("thead", null, /* @__PURE__ */ import_react15.default.createElement("tr", null, /* @__PURE__ */ import_react15.default.createElement("th", null, "Usuario"), /* @__PURE__ */ import_react15.default.createElement("th", null, "Matr\xEDcula"), /* @__PURE__ */ import_react15.default.createElement("th", null, "Cargo"), /* @__PURE__ */ import_react15.default.createElement("th", null, "Gerencia"), /* @__PURE__ */ import_react15.default.createElement("th", null, "Supervisao"), /* @__PURE__ */ import_react15.default.createElement("th", null, "Acoes"))), /* @__PURE__ */ import_react15.default.createElement("tbody", null, pagedUsers.map((item) => /* @__PURE__ */ import_react15.default.createElement("tr", { key: item.id }, editId === item.id ? /* @__PURE__ */ import_react15.default.createElement(import_react15.default.Fragment, null, /* @__PURE__ */ import_react15.default.createElement("td", null, /* @__PURE__ */ import_react15.default.createElement(
       "input",
       {
         value: editForm.username,
         onChange: (e) => setEditForm({ ...editForm, username: e.target.value }),
         style: { width: "100%" }
       }
-    )), /* @__PURE__ */ import_react14.default.createElement("td", null, /* @__PURE__ */ import_react14.default.createElement(
+    )), /* @__PURE__ */ import_react15.default.createElement("td", null, /* @__PURE__ */ import_react15.default.createElement(
       "input",
       {
         value: editForm.matricula,
         onChange: (e) => setEditForm({ ...editForm, matricula: e.target.value }),
         style: { width: "100%" },
-        placeholder: "Matr\\u00EDcula"
+        placeholder: "Matricula"
       }
-    )), /* @__PURE__ */ import_react14.default.createElement("td", null, /* @__PURE__ */ import_react14.default.createElement(
+    )), /* @__PURE__ */ import_react15.default.createElement("td", null, /* @__PURE__ */ import_react15.default.createElement(
       "select",
       {
         value: editForm.role,
         onChange: (e) => setEditForm({ ...editForm, role: e.target.value })
       },
-      roleOptions.map((r) => /* @__PURE__ */ import_react14.default.createElement("option", { key: r.value, value: r.value }, r.label))
-    )), /* @__PURE__ */ import_react14.default.createElement("td", null, /* @__PURE__ */ import_react14.default.createElement(
+      roleOptions.map((r) => /* @__PURE__ */ import_react15.default.createElement("option", { key: r.value, value: r.value }, r.label))
+    )), /* @__PURE__ */ import_react15.default.createElement("td", null, /* @__PURE__ */ import_react15.default.createElement(
       "select",
       {
         value: editForm.gerencia_id,
@@ -39456,17 +39684,17 @@ OS Criticas: ${f.os_criticas}`;
           supervisao_id: ""
         })
       },
-      /* @__PURE__ */ import_react14.default.createElement("option", { value: "" }, "--"),
-      gerencias.map((g) => /* @__PURE__ */ import_react14.default.createElement("option", { key: g.id, value: g.id }, g.name))
-    )), /* @__PURE__ */ import_react14.default.createElement("td", null, /* @__PURE__ */ import_react14.default.createElement(
+      /* @__PURE__ */ import_react15.default.createElement("option", { value: "" }, "--"),
+      gerencias.map((g) => /* @__PURE__ */ import_react15.default.createElement("option", { key: g.id, value: g.id }, g.name))
+    )), /* @__PURE__ */ import_react15.default.createElement("td", null, /* @__PURE__ */ import_react15.default.createElement(
       "select",
       {
         value: editForm.supervisao_id,
         onChange: (e) => setEditForm({ ...editForm, supervisao_id: e.target.value })
       },
-      /* @__PURE__ */ import_react14.default.createElement("option", { value: "" }, "--"),
-      editSupervisoesFiltradas.map((s) => /* @__PURE__ */ import_react14.default.createElement("option", { key: s.id, value: s.id }, s.name))
-    )), /* @__PURE__ */ import_react14.default.createElement("td", null, /* @__PURE__ */ import_react14.default.createElement("div", { className: "row-actions" }, /* @__PURE__ */ import_react14.default.createElement("button", { className: "small success", onClick: () => handleUpdate(item.id) }, "Salvar"), /* @__PURE__ */ import_react14.default.createElement(
+      /* @__PURE__ */ import_react15.default.createElement("option", { value: "" }, "--"),
+      editSupervisoesFiltradas.map((s) => /* @__PURE__ */ import_react15.default.createElement("option", { key: s.id, value: s.id }, s.name))
+    )), /* @__PURE__ */ import_react15.default.createElement("td", null, /* @__PURE__ */ import_react15.default.createElement("div", { className: "row-actions" }, /* @__PURE__ */ import_react15.default.createElement("button", { className: "small success", onClick: () => handleUpdate(item.id) }, "Salvar"), /* @__PURE__ */ import_react15.default.createElement(
       "button",
       {
         className: "small secondary",
@@ -39476,7 +39704,7 @@ OS Criticas: ${f.os_criticas}`;
         }
       },
       "Cancelar"
-    )))) : /* @__PURE__ */ import_react14.default.createElement(import_react14.default.Fragment, null, /* @__PURE__ */ import_react14.default.createElement("td", null, /* @__PURE__ */ import_react14.default.createElement("strong", null, item.username)), /* @__PURE__ */ import_react14.default.createElement("td", null, item.matricula || "-"), /* @__PURE__ */ import_react14.default.createElement("td", null, /* @__PURE__ */ import_react14.default.createElement("span", { className: "badge normal" }, item.role)), /* @__PURE__ */ import_react14.default.createElement("td", null, item.gerencia_name || "-"), /* @__PURE__ */ import_react14.default.createElement("td", null, item.supervisao_name || "-"), /* @__PURE__ */ import_react14.default.createElement("td", null, /* @__PURE__ */ import_react14.default.createElement("div", { className: "row-actions" }, /* @__PURE__ */ import_react14.default.createElement(
+    )))) : /* @__PURE__ */ import_react15.default.createElement(import_react15.default.Fragment, null, /* @__PURE__ */ import_react15.default.createElement("td", null, /* @__PURE__ */ import_react15.default.createElement("strong", null, item.username)), /* @__PURE__ */ import_react15.default.createElement("td", null, item.matricula || "-"), /* @__PURE__ */ import_react15.default.createElement("td", null, /* @__PURE__ */ import_react15.default.createElement("span", { className: "badge normal" }, item.role)), /* @__PURE__ */ import_react15.default.createElement("td", null, item.gerencia_name || "-"), /* @__PURE__ */ import_react15.default.createElement("td", null, item.supervisao_name || "-"), /* @__PURE__ */ import_react15.default.createElement("td", null, /* @__PURE__ */ import_react15.default.createElement("div", { className: "row-actions" }, /* @__PURE__ */ import_react15.default.createElement(
       "button",
       {
         className: "small ghost",
@@ -39492,14 +39720,171 @@ OS Criticas: ${f.os_criticas}`;
         }
       },
       "Editar"
-    ), /* @__PURE__ */ import_react14.default.createElement(
+    ), /* @__PURE__ */ import_react15.default.createElement(
       "button",
       {
         className: "small secondary",
-        onClick: () => handleResetPassword(item.id)
+        onClick: () => setConfirmReset(item)
       },
       "Resetar Senha"
-    ))))))))));
+    ), /* @__PURE__ */ import_react15.default.createElement(
+      "button",
+      {
+        className: "small danger",
+        onClick: () => setConfirmDelete(item)
+      },
+      "Excluir"
+    ))))))))), totalPages > 1 && /* @__PURE__ */ import_react15.default.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 16 } }, /* @__PURE__ */ import_react15.default.createElement("button", { className: "small secondary", onClick: () => setPage(1), disabled: safePage === 1 }, "\xAB"), /* @__PURE__ */ import_react15.default.createElement("button", { className: "small secondary", onClick: () => setPage((p) => Math.max(1, p - 1)), disabled: safePage === 1 }, "\u2039 Anterior"), /* @__PURE__ */ import_react15.default.createElement("span", { style: { fontSize: 13, color: "#6b7280" } }, (safePage - 1) * PAGE_SIZE2 + 1, "\u2013", Math.min(safePage * PAGE_SIZE2, filteredUsers.length), " de ", filteredUsers.length), /* @__PURE__ */ import_react15.default.createElement("button", { className: "small secondary", onClick: () => setPage((p) => Math.min(totalPages, p + 1)), disabled: safePage === totalPages }, "Pr\xF3xima \u203A"), /* @__PURE__ */ import_react15.default.createElement("button", { className: "small secondary", onClick: () => setPage(totalPages), disabled: safePage === totalPages }, "\xBB")), /* @__PURE__ */ import_react15.default.createElement(
+      ConfirmModal,
+      {
+        open: !!confirmReset,
+        title: "Resetar senha",
+        message: confirmReset ? `Tem certeza que deseja resetar a senha de "${confirmReset.username}"? A senha ser\xE1 redefinida para a padr\xE3o.` : "",
+        confirmLabel: "Resetar Senha",
+        cancelLabel: "Cancelar",
+        variant: "danger",
+        onConfirm: () => {
+          handleResetPassword(confirmReset.id);
+          setConfirmReset(null);
+        },
+        onCancel: () => setConfirmReset(null)
+      }
+    ), /* @__PURE__ */ import_react15.default.createElement(
+      ConfirmModal,
+      {
+        open: !!confirmDelete,
+        title: "Excluir usu\xE1rio",
+        message: confirmDelete ? `Tem certeza que deseja excluir o usu\xE1rio "${confirmDelete.username}"? Esta a\xE7\xE3o n\xE3o pode ser desfeita.` : "",
+        confirmLabel: "Excluir",
+        cancelLabel: "Cancelar",
+        variant: "danger",
+        onConfirm: () => {
+          handleDeleteUser(confirmDelete.id);
+          setConfirmDelete(null);
+        },
+        onCancel: () => setConfirmDelete(null)
+      }
+    ));
+  }
+
+  // src/components/RelatoriosPanel.jsx
+  var import_react16 = __toESM(require_react(), 1);
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  function RelatoriosPanel({ authData, onError, onMessage }) {
+    const [loading, setLoading] = (0, import_react16.useState)(false);
+    const [statusFilter, setStatusFilter] = (0, import_react16.useState)("");
+    const [tipoFilter, setTipoFilter] = (0, import_react16.useState)("");
+    const [dataInicio, setDataInicio] = (0, import_react16.useState)("");
+    const [dataFim, setDataFim] = (0, import_react16.useState)("");
+    const [search, setSearch] = (0, import_react16.useState)("");
+    const [dashDataInicio, setDashDataInicio] = (0, import_react16.useState)("");
+    const [dashDataFim, setDashDataFim] = (0, import_react16.useState)("");
+    async function handleDownloadOrdens() {
+      setLoading(true);
+      try {
+        const blob = await api_default.downloadRelatorioOrdens({
+          status: statusFilter || void 0,
+          tipo: tipoFilter || void 0,
+          dataInicio: dataInicio || void 0,
+          dataFim: dataFim || void 0,
+          search: search || void 0
+        });
+        const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+        downloadBlob(blob, `relatorio_ordens_${today}.csv`);
+        onMessage("Relatorio de Ordens de Servico gerado com sucesso!");
+      } catch (err) {
+        onError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    async function handleDownloadDashboard() {
+      setLoading(true);
+      try {
+        const blob = await api_default.downloadRelatorioDashboard({
+          dataInicio: dashDataInicio || void 0,
+          dataFim: dashDataFim || void 0
+        });
+        const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+        downloadBlob(blob, `relatorio_dashboard_${today}.csv`);
+        onMessage("Relatorio de Dashboard gerado com sucesso!");
+      } catch (err) {
+        onError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    async function handleDownloadOrdensPdf() {
+      setLoading(true);
+      try {
+        const blob = await api_default.downloadRelatorioOrdensPdf({
+          status: statusFilter || void 0,
+          tipo: tipoFilter || void 0,
+          dataInicio: dataInicio || void 0,
+          dataFim: dataFim || void 0,
+          search: search || void 0
+        });
+        const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+        downloadBlob(blob, `relatorio_ordens_${today}.pdf`);
+        onMessage("Relatorio PDF de Ordens de Servico gerado com sucesso!");
+      } catch (err) {
+        onError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    async function handleDownloadDashboardPdf() {
+      setLoading(true);
+      try {
+        const blob = await api_default.downloadRelatorioDashboardPdf({
+          dataInicio: dashDataInicio || void 0,
+          dataFim: dashDataFim || void 0
+        });
+        const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+        downloadBlob(blob, `relatorio_dashboard_${today}.pdf`);
+        onMessage("Relatorio PDF de Desempenho gerado com sucesso!");
+      } catch (err) {
+        onError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    function handleLimparFiltrosOS() {
+      setStatusFilter("");
+      setTipoFilter("");
+      setDataInicio("");
+      setDataFim("");
+      setSearch("");
+    }
+    return /* @__PURE__ */ import_react16.default.createElement("div", { className: "relatorios-panel" }, /* @__PURE__ */ import_react16.default.createElement("h2", { className: "section-title" }, "Gerador de Relatorios"), /* @__PURE__ */ import_react16.default.createElement("p", { className: "section-subtitle" }, "Selecione o tipo de relatorio, configure os filtros e clique em gerar para baixar o arquivo CSV ou PDF."), /* @__PURE__ */ import_react16.default.createElement("div", { className: "relatorio-card" }, /* @__PURE__ */ import_react16.default.createElement("div", { className: "relatorio-card-header" }, /* @__PURE__ */ import_react16.default.createElement("h3", null, "\u{1F4CB} Relatorio de Ordens de Servico"), /* @__PURE__ */ import_react16.default.createElement("div", { style: { display: "flex", gap: "6px" } }, /* @__PURE__ */ import_react16.default.createElement("span", { className: "relatorio-badge" }, "CSV"), /* @__PURE__ */ import_react16.default.createElement("span", { className: "relatorio-badge", style: { background: "#dc2626" } }, "PDF"))), /* @__PURE__ */ import_react16.default.createElement("p", { className: "relatorio-desc" }, "Exporta todas as OS visiveis com filtros aplicados. Inclui numero, tipo, IE, razao social, status, datas e dias parado."), /* @__PURE__ */ import_react16.default.createElement("div", { className: "relatorio-filters" }, /* @__PURE__ */ import_react16.default.createElement("div", { className: "filter-row" }, /* @__PURE__ */ import_react16.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react16.default.createElement("label", null, "Status"), /* @__PURE__ */ import_react16.default.createElement("select", { value: statusFilter, onChange: (e) => setStatusFilter(e.target.value) }, /* @__PURE__ */ import_react16.default.createElement("option", { value: "" }, "Todos"), Object.entries(statusLabels).map(([val, label]) => /* @__PURE__ */ import_react16.default.createElement("option", { key: val, value: val }, label)))), /* @__PURE__ */ import_react16.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react16.default.createElement("label", null, "Tipo"), /* @__PURE__ */ import_react16.default.createElement("select", { value: tipoFilter, onChange: (e) => setTipoFilter(e.target.value) }, /* @__PURE__ */ import_react16.default.createElement("option", { value: "" }, "Todos"), Object.entries(tipoLabels).map(([val, label]) => /* @__PURE__ */ import_react16.default.createElement("option", { key: val, value: val }, label)))), /* @__PURE__ */ import_react16.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react16.default.createElement("label", null, "Data Inicio"), /* @__PURE__ */ import_react16.default.createElement("input", { type: "date", value: dataInicio, onChange: (e) => setDataInicio(e.target.value) })), /* @__PURE__ */ import_react16.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react16.default.createElement("label", null, "Data Fim"), /* @__PURE__ */ import_react16.default.createElement("input", { type: "date", value: dataFim, onChange: (e) => setDataFim(e.target.value) }))), /* @__PURE__ */ import_react16.default.createElement("div", { className: "filter-row" }, /* @__PURE__ */ import_react16.default.createElement("div", { className: "filter-group filter-search" }, /* @__PURE__ */ import_react16.default.createElement("label", null, "Busca livre"), /* @__PURE__ */ import_react16.default.createElement(
+      "input",
+      {
+        type: "text",
+        placeholder: "Numero, razao social, IE, matricula, fiscal...",
+        value: search,
+        onChange: (e) => setSearch(e.target.value)
+      }
+    )))), /* @__PURE__ */ import_react16.default.createElement("div", { className: "relatorio-actions" }, /* @__PURE__ */ import_react16.default.createElement("button", { className: "btn-secondary", onClick: handleLimparFiltrosOS, disabled: loading }, "Limpar Filtros"), /* @__PURE__ */ import_react16.default.createElement("button", { className: "btn-primary", onClick: handleDownloadOrdens, disabled: loading }, loading ? "Gerando..." : "\u2B07 CSV"), /* @__PURE__ */ import_react16.default.createElement("button", { className: "btn-primary", onClick: handleDownloadOrdensPdf, disabled: loading, style: { background: "#dc2626" } }, loading ? "Gerando..." : "\u2B07 PDF"))), authData.role === "admin" && /* @__PURE__ */ import_react16.default.createElement("div", { className: "relatorio-card" }, /* @__PURE__ */ import_react16.default.createElement("div", { className: "relatorio-card-header" }, /* @__PURE__ */ import_react16.default.createElement("h3", null, "\u{1F4CA} Relatorio de Desempenho (Dashboard)"), /* @__PURE__ */ import_react16.default.createElement("div", { style: { display: "flex", gap: "6px" } }, /* @__PURE__ */ import_react16.default.createElement("span", { className: "relatorio-badge" }, "CSV"), /* @__PURE__ */ import_react16.default.createElement("span", { className: "relatorio-badge", style: { background: "#dc2626" } }, "PDF"))), /* @__PURE__ */ import_react16.default.createElement("p", { className: "relatorio-desc" }, "Exporta o resumo geral, desempenho por gerencia, supervisao e carga por fiscal. Ideal para reunioes e acompanhamento gerencial."), /* @__PURE__ */ import_react16.default.createElement("div", { className: "relatorio-filters" }, /* @__PURE__ */ import_react16.default.createElement("div", { className: "filter-row" }, /* @__PURE__ */ import_react16.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react16.default.createElement("label", null, "Data Inicio"), /* @__PURE__ */ import_react16.default.createElement("input", { type: "date", value: dashDataInicio, onChange: (e) => setDashDataInicio(e.target.value) })), /* @__PURE__ */ import_react16.default.createElement("div", { className: "filter-group" }, /* @__PURE__ */ import_react16.default.createElement("label", null, "Data Fim"), /* @__PURE__ */ import_react16.default.createElement("input", { type: "date", value: dashDataFim, onChange: (e) => setDashDataFim(e.target.value) })))), /* @__PURE__ */ import_react16.default.createElement("div", { className: "relatorio-actions" }, /* @__PURE__ */ import_react16.default.createElement(
+      "button",
+      {
+        className: "btn-secondary",
+        onClick: () => {
+          setDashDataInicio("");
+          setDashDataFim("");
+        },
+        disabled: loading
+      },
+      "Limpar Filtros"
+    ), /* @__PURE__ */ import_react16.default.createElement("button", { className: "btn-primary", onClick: handleDownloadDashboard, disabled: loading }, loading ? "Gerando..." : "\u2B07 CSV"), /* @__PURE__ */ import_react16.default.createElement("button", { className: "btn-primary", onClick: handleDownloadDashboardPdf, disabled: loading, style: { background: "#dc2626" } }, loading ? "Gerando..." : "\u2B07 PDF"))));
   }
 
   // src/App.jsx
@@ -39516,32 +39901,47 @@ OS Criticas: ${f.os_criticas}`;
     index
   );
   function App() {
-    const [authData, setAuthData] = (0, import_react15.useState)(null);
-    const [message, setMessage] = (0, import_react15.useState)("");
-    const [error, setError] = (0, import_react15.useState)("");
-    const [ordens, setOrdens] = (0, import_react15.useState)([]);
-    const [gerencias, setGerencias] = (0, import_react15.useState)([]);
-    const [supervisoes, setSupervisoes] = (0, import_react15.useState)([]);
-    const [users, setUsers] = (0, import_react15.useState)([]);
-    const [alertas, setAlertas] = (0, import_react15.useState)([]);
-    const [dashboardData, setDashboardData] = (0, import_react15.useState)(null);
-    const [activeMenu, setActiveMenu] = (0, import_react15.useState)("ordens");
-    const [resetInfo, setResetInfo] = (0, import_react15.useState)("");
-    const [darkMode, setDarkMode] = (0, import_react15.useState)(() => {
+    const [authData, setAuthData] = (0, import_react17.useState)(null);
+    const [message, setMessage] = (0, import_react17.useState)("");
+    const [error, setError] = (0, import_react17.useState)("");
+    const [ordens, setOrdens] = (0, import_react17.useState)([]);
+    const [gerencias, setGerencias] = (0, import_react17.useState)([]);
+    const [supervisoes, setSupervisoes] = (0, import_react17.useState)([]);
+    const [users, setUsers] = (0, import_react17.useState)([]);
+    const [alertas, setAlertas] = (0, import_react17.useState)([]);
+    const [dashboardData, setDashboardData] = (0, import_react17.useState)(null);
+    const [activeMenu, setActiveMenu] = (0, import_react17.useState)("ordens");
+    const [resetInfo, setResetInfo] = (0, import_react17.useState)("");
+    (0, import_react17.useEffect)(() => {
+      if (!message) return;
+      const t = setTimeout(() => setMessage(""), 5e3);
+      return () => clearTimeout(t);
+    }, [message]);
+    (0, import_react17.useEffect)(() => {
+      if (!error) return;
+      const t = setTimeout(() => setError(""), 8e3);
+      return () => clearTimeout(t);
+    }, [error]);
+    (0, import_react17.useEffect)(() => {
+      if (!resetInfo) return;
+      const t = setTimeout(() => setResetInfo(""), 1e4);
+      return () => clearTimeout(t);
+    }, [resetInfo]);
+    const [darkMode, setDarkMode] = (0, import_react17.useState)(() => {
       try {
         return localStorage.getItem("sefaz_dark_mode") === "true";
       } catch {
         return false;
       }
     });
-    (0, import_react15.useEffect)(() => {
+    (0, import_react17.useEffect)(() => {
       document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "light");
       try {
         localStorage.setItem("sefaz_dark_mode", darkMode);
       } catch {
       }
     }, [darkMode]);
-    (0, import_react15.useEffect)(() => {
+    (0, import_react17.useEffect)(() => {
       if (authData) {
         api_default.setToken(authData.token);
         setActiveMenu("ordens");
@@ -39610,12 +40010,12 @@ OS Criticas: ${f.os_criticas}`;
       setError("");
     }
     if (!authData) {
-      return /* @__PURE__ */ import_react15.default.createElement(LoginPage, { onLogin: handleLogin });
+      return /* @__PURE__ */ import_react17.default.createElement(LoginPage, { onLogin: handleLogin });
     }
     if (authData.must_change_password) {
-      return /* @__PURE__ */ import_react15.default.createElement(ChangePasswordPage, { onPasswordChanged: handlePasswordChanged });
+      return /* @__PURE__ */ import_react17.default.createElement(ChangePasswordPage, { onPasswordChanged: handlePasswordChanged });
     }
-    return /* @__PURE__ */ import_react15.default.createElement(import_react15.default.Fragment, null, /* @__PURE__ */ import_react15.default.createElement(
+    return /* @__PURE__ */ import_react17.default.createElement(import_react17.default.Fragment, null, /* @__PURE__ */ import_react17.default.createElement(
       TopBar,
       {
         authData,
@@ -39626,14 +40026,14 @@ OS Criticas: ${f.os_criticas}`;
         onDarkModeToggle: () => setDarkMode(!darkMode),
         onLogout: handleLogout
       }
-    ), /* @__PURE__ */ import_react15.default.createElement("div", { className: "page-content" }, message && /* @__PURE__ */ import_react15.default.createElement("div", { className: "alert success" }, message), error && /* @__PURE__ */ import_react15.default.createElement("div", { className: "alert error" }, error), resetInfo && /* @__PURE__ */ import_react15.default.createElement("div", { className: "alert info" }, resetInfo), authData.role === "admin" && activeMenu === "dashboard" && dashboardData && /* @__PURE__ */ import_react15.default.createElement(
+    ), /* @__PURE__ */ import_react17.default.createElement("div", { className: "page-content" }, message && /* @__PURE__ */ import_react17.default.createElement("div", { className: "alert success" }, message), error && /* @__PURE__ */ import_react17.default.createElement("div", { className: "alert error" }, error), resetInfo && /* @__PURE__ */ import_react17.default.createElement("div", { className: "alert info" }, resetInfo), authData.role === "admin" && activeMenu === "dashboard" && dashboardData && /* @__PURE__ */ import_react17.default.createElement(
       DashboardPanel,
       {
         dashboardData,
         onDashboardDataChange: setDashboardData,
         onError: setError
       }
-    ), activeMenu === "ordens" && /* @__PURE__ */ import_react15.default.createElement(OrdensPanel, { ordens }), activeMenu === "alertas" && /* @__PURE__ */ import_react15.default.createElement(AlertasPanel, { alertas }), authData.role === "admin" && activeMenu === "gerencias" && /* @__PURE__ */ import_react15.default.createElement(
+    ), activeMenu === "ordens" && /* @__PURE__ */ import_react17.default.createElement(OrdensPanel, { ordens }), activeMenu === "alertas" && /* @__PURE__ */ import_react17.default.createElement(AlertasPanel, { alertas }), authData.role === "admin" && activeMenu === "gerencias" && /* @__PURE__ */ import_react17.default.createElement(
       GerenciasAdmin,
       {
         gerencias,
@@ -39641,7 +40041,7 @@ OS Criticas: ${f.os_criticas}`;
         onMessage: setMessage,
         onError: setError
       }
-    ), authData.role === "admin" && activeMenu === "supervisoes" && /* @__PURE__ */ import_react15.default.createElement(
+    ), authData.role === "admin" && activeMenu === "supervisoes" && /* @__PURE__ */ import_react17.default.createElement(
       SupervisoesAdmin,
       {
         supervisoes,
@@ -39650,7 +40050,7 @@ OS Criticas: ${f.os_criticas}`;
         onMessage: setMessage,
         onError: setError
       }
-    ), authData.role === "admin" && activeMenu === "usuarios" && /* @__PURE__ */ import_react15.default.createElement(
+    ), authData.role === "admin" && activeMenu === "usuarios" && /* @__PURE__ */ import_react17.default.createElement(
       UsuariosAdmin,
       {
         users,
@@ -39659,15 +40059,21 @@ OS Criticas: ${f.os_criticas}`;
         onRefresh: refreshAdminLists,
         onMessage: setMessage,
         onError: setError,
-        resetInfo,
         onResetInfo: setResetInfo
+      }
+    ), activeMenu === "relatorios" && /* @__PURE__ */ import_react17.default.createElement(
+      RelatoriosPanel,
+      {
+        authData,
+        onMessage: setMessage,
+        onError: setError
       }
     )));
   }
 
   // src/main.jsx
   (0, import_client.createRoot)(document.getElementById("root")).render(
-    /* @__PURE__ */ import_react16.default.createElement(import_react16.default.StrictMode, null, /* @__PURE__ */ import_react16.default.createElement(App, null))
+    /* @__PURE__ */ import_react18.default.createElement(import_react18.default.StrictMode, null, /* @__PURE__ */ import_react18.default.createElement(App, null))
   );
 })();
 /*! Bundled license information:

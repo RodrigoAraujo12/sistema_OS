@@ -172,6 +172,142 @@ _MOCK_ORDENS: list[dict[str, Any]] = [
     },
 ]
 
+# ─── MOCK: Movimentacoes e detalhes por OS ──────────────────────
+
+_MOCK_DETALHES: dict[str, dict[str, Any]] = {
+    "OS-2026-001": {
+        "objeto": "Verificacao de notas fiscais de entrada e saida do periodo 2025.",
+        "valor_estimado": 125000.00,
+        "endereco": "Rua das Flores, 123 - Centro, Joao Pessoa/PB",
+        "cnpj": "12.345.678/0001-90",
+        "telefone": "(83) 3222-1234",
+        "observacoes": "Contribuinte cooperativo. Documentacao parcialmente entregue.",
+        "movimentacoes": [
+            {"data": "2026-01-10", "tipo": "Abertura", "descricao": "OS aberta pelo supervisor Patricia Oliveira.", "responsavel": "Patricia Oliveira"},
+            {"data": "2026-01-12", "tipo": "Ciencia", "descricao": "Fiscal Carlos Mendes tomou ciencia da OS.", "responsavel": "Carlos Mendes"},
+            {"data": "2026-01-15", "tipo": "Diligencia", "descricao": "Visita ao estabelecimento para coleta de documentos.", "responsavel": "Carlos Mendes"},
+            {"data": "2026-01-20", "tipo": "Analise", "descricao": "Analise dos livros fiscais e notas do periodo.", "responsavel": "Carlos Mendes"},
+            {"data": "2026-01-25", "tipo": "Notificacao", "descricao": "Contribuinte notificado para apresentar documentos complementares.", "responsavel": "Carlos Mendes"},
+        ],
+    },
+    "OS-2026-002": {
+        "objeto": "Fiscalizacao especifica de ICMS-ST sobre produtos importados.",
+        "valor_estimado": 340000.00,
+        "endereco": "Av. Epitacio Pessoa, 4500 - Manaira, Joao Pessoa/PB",
+        "cnpj": "98.765.432/0001-10",
+        "telefone": "(83) 3245-6789",
+        "observacoes": "Denuncia anonima de subfaturamento em importacoes.",
+        "movimentacoes": [
+            {"data": "2026-02-01", "tipo": "Abertura", "descricao": "OS aberta com prioridade urgente por denuncia.", "responsavel": "Joao Silva"},
+            {"data": "2026-02-03", "tipo": "Ciencia", "descricao": "Fiscal Ana Ribeiro tomou ciencia.", "responsavel": "Ana Ribeiro"},
+        ],
+    },
+    "OS-2026-003": {
+        "objeto": "Auditoria simplificada de transporte interestadual.",
+        "valor_estimado": 45000.00,
+        "endereco": "Rod. BR-230, Km 22 - Distrito Industrial, Campina Grande/PB",
+        "cnpj": "55.667.778/0001-30",
+        "telefone": "(83) 3333-7890",
+        "observacoes": "Empresa com historico de irregularidades em CT-e.",
+        "movimentacoes": [
+            {"data": "2026-01-05", "tipo": "Abertura", "descricao": "OS simplificada aberta para verificacao de CT-e.", "responsavel": "Patricia Oliveira"},
+            {"data": "2026-01-08", "tipo": "Ciencia", "descricao": "Fiscal Carlos Mendes tomou ciencia.", "responsavel": "Carlos Mendes"},
+            {"data": "2026-01-12", "tipo": "Diligencia", "descricao": "Verificacao no posto fiscal da BR-230.", "responsavel": "Carlos Mendes"},
+            {"data": "2026-01-20", "tipo": "Relatorio", "descricao": "Relatorio parcial com divergencias encontradas em 3 CT-e.", "responsavel": "Carlos Mendes"},
+        ],
+    },
+    "OS-2026-004": {
+        "objeto": "Verificacao de GIA e EFD do exercicio 2025.",
+        "valor_estimado": 88000.00,
+        "endereco": "Rua Nego, 456 - Tambau, Joao Pessoa/PB",
+        "cnpj": "33.445.556/0001-40",
+        "telefone": "(83) 3214-5678",
+        "observacoes": "Aguardando ciencia do fiscal designado.",
+        "movimentacoes": [
+            {"data": "2026-02-05", "tipo": "Abertura", "descricao": "OS aberta para verificacao de obrigacoes acessorias.", "responsavel": "Joao Silva"},
+        ],
+    },
+    "OS-2026-005": {
+        "objeto": "Verificacao simplificada de creditos de ICMS.",
+        "valor_estimado": 23000.00,
+        "endereco": "Av. Dom Pedro II, 789 - Centro, Joao Pessoa/PB",
+        "cnpj": "77.889.900/0001-50",
+        "telefone": "(83) 3221-0987",
+        "observacoes": "Fiscalizacao concluida sem irregularidades relevantes.",
+        "movimentacoes": [
+            {"data": "2025-12-15", "tipo": "Abertura", "descricao": "OS simplificada aberta.", "responsavel": "Joao Silva"},
+            {"data": "2025-12-18", "tipo": "Ciencia", "descricao": "Fiscal Ana Ribeiro tomou ciencia.", "responsavel": "Ana Ribeiro"},
+            {"data": "2025-12-22", "tipo": "Diligencia", "descricao": "Coleta de documentacao no estabelecimento.", "responsavel": "Ana Ribeiro"},
+            {"data": "2026-01-10", "tipo": "Analise", "descricao": "Analise dos creditos declarados versus comprovados.", "responsavel": "Ana Ribeiro"},
+            {"data": "2026-01-25", "tipo": "Relatorio", "descricao": "Relatorio final elaborado - sem divergencias significativas.", "responsavel": "Ana Ribeiro"},
+            {"data": "2026-01-30", "tipo": "Conclusao", "descricao": "OS concluida e arquivada.", "responsavel": "Joao Silva"},
+        ],
+    },
+    "OS-2026-006": {
+        "objeto": "Fiscalizacao especifica de operacoes com beneficio fiscal.",
+        "valor_estimado": 210000.00,
+        "endereco": "Rua das Flores, 123 - Centro, Joao Pessoa/PB",
+        "cnpj": "12.345.678/0001-90",
+        "telefone": "(83) 3222-1234",
+        "observacoes": "Mesma empresa da OS-2026-001. Foco em incentivos fiscais.",
+        "movimentacoes": [
+            {"data": "2026-02-07", "tipo": "Abertura", "descricao": "OS especifica aberta para verificacao de beneficios de ICMS.", "responsavel": "Patricia Oliveira"},
+            {"data": "2026-02-09", "tipo": "Ciencia", "descricao": "Fiscal Carlos Mendes tomou ciencia.", "responsavel": "Carlos Mendes"},
+        ],
+    },
+    "OS-2026-007": {
+        "objeto": "Auditoria de estoque e inventario fiscal.",
+        "valor_estimado": 175000.00,
+        "endereco": "Av. Epitacio Pessoa, 4500 - Manaira, Joao Pessoa/PB",
+        "cnpj": "98.765.432/0001-10",
+        "telefone": "(83) 3245-6789",
+        "observacoes": "Divergencia detectada entre estoque fisico e escritural.",
+        "movimentacoes": [
+            {"data": "2026-01-15", "tipo": "Abertura", "descricao": "OS aberta para auditoria de estoque.", "responsavel": "Patricia Oliveira"},
+            {"data": "2026-01-18", "tipo": "Ciencia", "descricao": "Fiscal Carlos Mendes tomou ciencia.", "responsavel": "Carlos Mendes"},
+            {"data": "2026-01-22", "tipo": "Diligencia", "descricao": "Contagem fisica de estoque no deposito.", "responsavel": "Carlos Mendes"},
+            {"data": "2026-02-01", "tipo": "Analise", "descricao": "Comparacao entre inventario fisico e Bloco H do SPED.", "responsavel": "Carlos Mendes"},
+        ],
+    },
+    "OS-2026-008": {
+        "objeto": "Revisao simplificada de escrituracao fiscal digital.",
+        "valor_estimado": 15000.00,
+        "endereco": "Rua Nego, 456 - Tambau, Joao Pessoa/PB",
+        "cnpj": "33.445.556/0001-40",
+        "telefone": "(83) 3214-5678",
+        "observacoes": "OS de prioridade baixa. Verificacao de rotina.",
+        "movimentacoes": [
+            {"data": "2025-12-01", "tipo": "Abertura", "descricao": "OS simplificada aberta para revisao de EFD.", "responsavel": "Joao Silva"},
+            {"data": "2025-12-05", "tipo": "Ciencia", "descricao": "Fiscal Ana Ribeiro tomou ciencia.", "responsavel": "Ana Ribeiro"},
+            {"data": "2025-12-10", "tipo": "Analise", "descricao": "Inicio da analise de EFD - periodo 01-06/2025.", "responsavel": "Ana Ribeiro"},
+        ],
+    },
+    "OS-2026-009": {
+        "objeto": "Fiscalizacao especifica de operacoes interestaduais com DIFAL.",
+        "valor_estimado": 290000.00,
+        "endereco": "Rod. BR-230, Km 22 - Distrito Industrial, Campina Grande/PB",
+        "cnpj": "55.667.778/0001-30",
+        "telefone": "(83) 3333-7890",
+        "observacoes": "Urgente: indicio de sonegacao de DIFAL em compras interestaduais.",
+        "movimentacoes": [
+            {"data": "2026-02-08", "tipo": "Abertura", "descricao": "OS urgente aberta por indicio de sonegacao.", "responsavel": "Joao Silva"},
+        ],
+    },
+    "OS-2026-010": {
+        "objeto": "Verificacao de creditos extemporaneos de ICMS.",
+        "valor_estimado": 67000.00,
+        "endereco": "Av. Dom Pedro II, 789 - Centro, Joao Pessoa/PB",
+        "cnpj": "77.889.900/0001-50",
+        "telefone": "(83) 3221-0987",
+        "observacoes": "OS cancelada a pedido da supervisao apos revisao dos indicios.",
+        "movimentacoes": [
+            {"data": "2026-01-20", "tipo": "Abertura", "descricao": "OS aberta para verificacao de creditos extemporaneos.", "responsavel": "Patricia Oliveira"},
+            {"data": "2026-01-22", "tipo": "Ciencia", "descricao": "Fiscal Carlos Mendes tomou ciencia.", "responsavel": "Carlos Mendes"},
+            {"data": "2026-02-05", "tipo": "Cancelamento", "descricao": "OS cancelada - indicios insuficientes apos reavaliacao.", "responsavel": "Patricia Oliveira"},
+        ],
+    },
+}
+
 
 def _calcular_dias_parado(data_ultima_mov: str | None) -> int:
     """Calcula quantos dias a OS esta parada desde a ultima movimentacao."""
@@ -347,7 +483,16 @@ def consultar_os_por_numero(numero: str) -> dict[str, Any] | None:
     logger.debug("Buscando OS %s nos dados MOCK", numero)
     for os in _MOCK_ORDENS:
         if os["numero"] == numero:
-            return _enriquecer_os(os)
+            enriched = _enriquecer_os(os)
+            detalhes = _MOCK_DETALHES.get(numero, {})
+            enriched["objeto"] = detalhes.get("objeto", "")
+            enriched["valor_estimado"] = detalhes.get("valor_estimado", 0)
+            enriched["endereco"] = detalhes.get("endereco", "")
+            enriched["cnpj"] = detalhes.get("cnpj", "")
+            enriched["telefone"] = detalhes.get("telefone", "")
+            enriched["observacoes"] = detalhes.get("observacoes", "")
+            enriched["movimentacoes"] = detalhes.get("movimentacoes", [])
+            return enriched
     return None
 
 

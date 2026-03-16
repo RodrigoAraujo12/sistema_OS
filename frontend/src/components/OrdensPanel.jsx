@@ -3,9 +3,11 @@
  *
  * Exibe OS com filtros (status, tipo, periodo, busca textual).
  * Gerencia seu proprio estado de filtros internamente.
+ * Ao clicar em uma OS, exibe detalhes com movimentacoes.
  */
 
 import React, { useMemo, useState } from "react";
+import apiClient from "../api.js";
 import { statusLabels, tipoLabels, formatarData } from "../constants.js";
 
 const PAGE_SIZE = 10;
@@ -17,6 +19,11 @@ export default function OrdensPanel({ ordens }) {
   const [dataInicio, setDataInicio] = useState("");
   const [dataFim, setDataFim] = useState("");
   const [page, setPage] = useState(1);
+
+  // Detail modal state
+  const [selectedOS, setSelectedOS] = useState(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState("");
 
   const { osAbertas, osAndamento, osConcluidas } = useMemo(() => ({
     osAbertas: ordens.filter((o) => o.status === "aberta").length,
@@ -65,6 +72,45 @@ export default function OrdensPanel({ ordens }) {
     setDataInicio("");
     setDataFim("");
     setPage(1);
+  }
+
+  async function handleOSClick(numero) {
+    setLoadingDetail(true);
+    setDetailError("");
+    try {
+      const detail = await apiClient.getOrdem(numero);
+      setSelectedOS(detail);
+    } catch (err) {
+      setDetailError(err.message || "Erro ao carregar detalhes da OS");
+    } finally {
+      setLoadingDetail(false);
+    }
+  }
+
+  function closeDetail() {
+    setSelectedOS(null);
+    setDetailError("");
+  }
+
+  async function handleDownloadPdf(numero) {
+    try {
+      const blob = await apiClient.downloadOrdemPdf(numero);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${numero}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setDetailError(err.message || "Erro ao baixar PDF");
+    }
+  }
+
+  function formatCurrency(value) {
+    if (!value) return "R$ 0,00";
+    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
   }
 
   return (
@@ -206,7 +252,7 @@ export default function OrdensPanel({ ordens }) {
               </thead>
               <tbody>
                 {pagedOrdens.map((os) => (
-                  <tr key={os.numero}>
+                  <tr key={os.numero} className="os-row-clickable" onClick={() => handleOSClick(os.numero)} title="Clique para ver detalhes">
                     <td><strong>{os.numero}</strong></td>
                     <td><span className="badge normal">{os.tipo}</span></td>
                     <td>{os.ie}</td>
@@ -252,6 +298,176 @@ export default function OrdensPanel({ ordens }) {
           </div>
         )}
       </div>
+
+      {/* Loading overlay */}
+      {loadingDetail && (
+        <div className="confirm-overlay">
+          <div className="confirm-modal">
+            <p>Carregando detalhes da OS...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Error toast */}
+      {detailError && !loadingDetail && (
+        <div className="confirm-overlay" onClick={() => setDetailError("")}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-icon" data-variant="danger">!</div>
+            <h3 className="confirm-title">Erro</h3>
+            <p className="confirm-message">{detailError}</p>
+            <div className="confirm-actions">
+              <button className="small secondary" onClick={() => setDetailError("")}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* OS Detail Modal */}
+      {selectedOS && (
+        <div className="confirm-overlay" onClick={closeDetail}>
+          <div className="os-detail-modal" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="os-detail-header">
+              <div>
+                <h2 style={{ margin: 0, fontSize: 18 }}>{selectedOS.numero}</h2>
+                <p style={{ margin: "4px 0 0", color: "var(--text-secondary)", fontSize: 13 }}>
+                  {selectedOS.razao_social}
+                </p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className={`badge ${selectedOS.status}`}>{statusLabels[selectedOS.status] || selectedOS.status}</span>
+                <button className="small secondary" onClick={closeDetail} style={{ fontSize: 18, lineHeight: 1, padding: "4px 10px" }}>&times;</button>
+              </div>
+            </div>
+
+            {/* Tabs: Info + Movimentacoes */}
+            <div className="os-detail-body">
+              {/* Informacoes da OS */}
+              <div className="os-detail-section">
+                <h3 className="os-detail-section-title">Informacoes da Ordem</h3>
+                <div className="os-detail-grid">
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Tipo</span>
+                    <span className="os-detail-value"><span className="badge normal">{selectedOS.tipo}</span></span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Prioridade</span>
+                    <span className="os-detail-value">
+                      <span className={`badge ${selectedOS.prioridade === "urgente" ? "cancelada" : selectedOS.prioridade === "alta" ? "urgente" : "normal"}`}>
+                        {selectedOS.prioridade || "-"}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">IE</span>
+                    <span className="os-detail-value">{selectedOS.ie}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">CNPJ</span>
+                    <span className="os-detail-value">{selectedOS.cnpj || "-"}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Endereco</span>
+                    <span className="os-detail-value">{selectedOS.endereco || "-"}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Telefone</span>
+                    <span className="os-detail-value">{selectedOS.telefone || "-"}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Valor Estimado</span>
+                    <span className="os-detail-value">{formatCurrency(selectedOS.valor_estimado)}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Supervisor</span>
+                    <span className="os-detail-value">{selectedOS.matricula_supervisor || "-"}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Fiscais</span>
+                    <span className="os-detail-value">{selectedOS.fiscais?.join(", ") || "-"}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Dias Parado</span>
+                    <span className="os-detail-value">
+                      {selectedOS.status !== "concluida" && selectedOS.status !== "cancelada" ? (
+                        <span className={`badge ${selectedOS.dias_parado > 15 ? "cancelada" : selectedOS.dias_parado > 7 ? "urgente" : "normal"}`}>
+                          {selectedOS.dias_parado} dias
+                        </span>
+                      ) : "-"}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Datas */}
+                <div className="os-detail-dates">
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Abertura</span>
+                    <span className="os-detail-value">{formatarData(selectedOS.data_abertura)}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Ciencia</span>
+                    <span className="os-detail-value">{formatarData(selectedOS.data_ciencia)}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Ult. Movimentacao</span>
+                    <span className="os-detail-value">{formatarData(selectedOS.data_ultima_movimentacao)}</span>
+                  </div>
+                </div>
+
+                {/* Objeto */}
+                {selectedOS.objeto && (
+                  <div style={{ marginTop: 16 }}>
+                    <span className="os-detail-label">Objeto da Fiscalizacao</span>
+                    <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 }}>{selectedOS.objeto}</p>
+                  </div>
+                )}
+
+                {/* Observacoes */}
+                {selectedOS.observacoes && (
+                  <div style={{ marginTop: 12 }}>
+                    <span className="os-detail-label">Observacoes</span>
+                    <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 }}>{selectedOS.observacoes}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Movimentacoes */}
+              <div className="os-detail-section">
+                <h3 className="os-detail-section-title">
+                  Movimentacoes ({selectedOS.movimentacoes?.length || 0})
+                </h3>
+                {selectedOS.movimentacoes && selectedOS.movimentacoes.length > 0 ? (
+                  <div className="os-movimentacoes-timeline">
+                    {selectedOS.movimentacoes.map((mov, idx) => (
+                      <div key={idx} className="os-mov-item">
+                        <div className="os-mov-dot" />
+                        <div className="os-mov-content">
+                          <div className="os-mov-header">
+                            <span className="badge normal" style={{ fontSize: 11 }}>{mov.tipo}</span>
+                            <span className="os-mov-date">{formatarData(mov.data)}</span>
+                          </div>
+                          <p className="os-mov-desc">{mov.descricao}</p>
+                          <span className="os-mov-resp">Responsavel: {mov.responsavel}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="muted" style={{ fontSize: 13 }}>Nenhuma movimentacao registrada.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="os-detail-footer">
+              <button className="small secondary" onClick={closeDetail}>Fechar</button>
+              <button className="small" style={{ background: "#1a3a6c", color: "#fff", border: "none" }} onClick={() => handleDownloadPdf(selectedOS.numero)}>
+                &#128196; Baixar PDF
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

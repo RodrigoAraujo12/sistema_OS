@@ -136,6 +136,25 @@ class OSResponse(BaseModel):
     dias_parado: int = 0
 
 
+class MovimentacaoResponse(BaseModel):
+    """Uma movimentacao dentro de uma OS."""
+    data: str
+    tipo: str
+    descricao: str
+    responsavel: str
+
+
+class OSDetalheResponse(OSResponse):
+    """Dados detalhados de uma OS, incluindo movimentacoes e informacoes extras."""
+    objeto: str = ""
+    valor_estimado: float = 0
+    endereco: str = ""
+    cnpj: str = ""
+    telefone: str = ""
+    observacoes: str = ""
+    movimentacoes: list[MovimentacaoResponse] = []
+
+
 class AlertaResponse(BaseModel):
     """Alerta gerado automaticamente a partir das regras de negocio."""
     tipo: str

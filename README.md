@@ -7,6 +7,7 @@ Sistema web para gestao e acompanhamento de Ordens de Servico (OS) da Secretaria
 ## Indice
 
 - [Visao Geral](#visao-geral)
+- [Screenshots](#screenshots)
 - [Tecnologias](#tecnologias)
 - [Pre-requisitos](#pre-requisitos)
 - [Instalacao](#instalacao)
@@ -24,6 +25,42 @@ Sistema web para gestao e acompanhamento de Ordens de Servico (OS) da Secretaria
 - [Configuracao](#configuracao)
 - [Troubleshooting](#troubleshooting)
 - [Notas de Producao](#notas-de-producao)
+
+---
+
+## Visao Geral
+
+## Screenshots
+
+### Primeiro Acesso (Troca de Senha)
+![Primeiro Acesso](docs/screenshots/primeiro_acesso.png)
+
+### Ordens de Servico
+![Ordens de Servico](docs/screenshots/OS.png)
+
+### Detalhes da OS
+![Detalhes da OS](docs/screenshots/detalhes_OS.png)
+
+### Alertas
+![Alertas](docs/screenshots/alertas.png)
+
+### Dashboard
+![Dashboard](docs/screenshots/dashboard.png)
+
+### Termometro e Graficos
+![Termometro e Graficos](docs/screenshots/termo+grafico.png)
+
+### Cadastro de Gerencias
+![Cadastro de Gerencias](docs/screenshots/cadastro_gerencia.png)
+
+### Cadastro de Supervisoes
+![Cadastro de Supervisoes](docs/screenshots/cadastro_superv.png)
+
+### Cadastro de Fiscais
+![Cadastro de Fiscais](docs/screenshots/cadastro_fiscal.png)
+
+### Relatorios
+![Relatorios](docs/screenshots/relatorio.png)
 
 ---
 

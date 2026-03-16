@@ -151,6 +151,18 @@ class ApiClient {
     return this.request(`/ordens/${encodeURIComponent(numero)}`);
   }
 
+  async downloadOrdemPdf(numero) {
+    const headers = {};
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+
+    const response = await fetch(`${this.baseUrl}/ordens/${encodeURIComponent(numero)}/pdf`, { headers });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || "Erro ao gerar PDF da OS");
+    }
+    return response.blob();
+  }
+
   listarAlertas() {
     return this.request("/alertas");
   }
