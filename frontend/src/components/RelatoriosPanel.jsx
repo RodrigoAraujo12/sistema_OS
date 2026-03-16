@@ -71,6 +71,43 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
     }
   }
 
+  async function handleDownloadOrdensPdf() {
+    setLoading(true);
+    try {
+      const blob = await apiClient.downloadRelatorioOrdensPdf({
+        status: statusFilter || undefined,
+        tipo: tipoFilter || undefined,
+        dataInicio: dataInicio || undefined,
+        dataFim: dataFim || undefined,
+        search: search || undefined,
+      });
+      const today = new Date().toISOString().slice(0, 10);
+      downloadBlob(blob, `relatorio_ordens_${today}.pdf`);
+      onMessage("Relatorio PDF de Ordens de Servico gerado com sucesso!");
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleDownloadDashboardPdf() {
+    setLoading(true);
+    try {
+      const blob = await apiClient.downloadRelatorioDashboardPdf({
+        dataInicio: dashDataInicio || undefined,
+        dataFim: dashDataFim || undefined,
+      });
+      const today = new Date().toISOString().slice(0, 10);
+      downloadBlob(blob, `relatorio_dashboard_${today}.pdf`);
+      onMessage("Relatorio PDF de Desempenho gerado com sucesso!");
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function handleLimparFiltrosOS() {
     setStatusFilter("");
     setTipoFilter("");
@@ -83,14 +120,17 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
     <div className="relatorios-panel">
       <h2 className="section-title">Gerador de Relatorios</h2>
       <p className="section-subtitle">
-        Selecione o tipo de relatorio, configure os filtros e clique em gerar para baixar o arquivo CSV.
+        Selecione o tipo de relatorio, configure os filtros e clique em gerar para baixar o arquivo CSV ou PDF.
       </p>
 
       {/* ─── Relatorio de OS ─── */}
       <div className="relatorio-card">
         <div className="relatorio-card-header">
           <h3>📋 Relatorio de Ordens de Servico</h3>
-          <span className="relatorio-badge">CSV</span>
+          <div style={{ display: "flex", gap: "6px" }}>
+            <span className="relatorio-badge">CSV</span>
+            <span className="relatorio-badge" style={{ background: "#dc2626" }}>PDF</span>
+          </div>
         </div>
         <p className="relatorio-desc">
           Exporta todas as OS visiveis com filtros aplicados. Inclui numero, tipo, IE, razao social,
@@ -144,7 +184,10 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
             Limpar Filtros
           </button>
           <button className="btn-primary" onClick={handleDownloadOrdens} disabled={loading}>
-            {loading ? "Gerando..." : "⬇ Gerar Relatorio de OS"}
+            {loading ? "Gerando..." : "⬇ CSV"}
+          </button>
+          <button className="btn-primary" onClick={handleDownloadOrdensPdf} disabled={loading} style={{ background: "#dc2626" }}>
+            {loading ? "Gerando..." : "⬇ PDF"}
           </button>
         </div>
       </div>
@@ -154,7 +197,10 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
         <div className="relatorio-card">
           <div className="relatorio-card-header">
             <h3>📊 Relatorio de Desempenho (Dashboard)</h3>
-            <span className="relatorio-badge">CSV</span>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <span className="relatorio-badge">CSV</span>
+              <span className="relatorio-badge" style={{ background: "#dc2626" }}>PDF</span>
+            </div>
           </div>
           <p className="relatorio-desc">
             Exporta o resumo geral, desempenho por gerencia, supervisao e carga por fiscal.
@@ -183,7 +229,10 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
               Limpar Filtros
             </button>
             <button className="btn-primary" onClick={handleDownloadDashboard} disabled={loading}>
-              {loading ? "Gerando..." : "⬇ Gerar Relatorio de Desempenho"}
+              {loading ? "Gerando..." : "⬇ CSV"}
+            </button>
+            <button className="btn-primary" onClick={handleDownloadDashboardPdf} disabled={loading} style={{ background: "#dc2626" }}>
+              {loading ? "Gerando..." : "⬇ PDF"}
             </button>
           </div>
         </div>

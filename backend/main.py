@@ -13,6 +13,8 @@ import io
 import logging
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
+
+from fpdf import FPDF
 from sqlite3 import IntegrityError
 from typing import Any
 
@@ -557,6 +559,16 @@ def _calcular_dias_parado(data_ult: str | None) -> int:
         return 0
 
 
+def _fmt_data_br(valor: str | None) -> str:
+    """Converte data ISO (YYYY-MM-DD) para formato brasileiro (DD/MM/YYYY)."""
+    if not valor:
+        return ""
+    try:
+        return datetime.strptime(valor[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+    except (ValueError, TypeError):
+        return valor
+
+
 @app.get("/relatorios/ordens")
 def relatorio_ordens_csv(
     user: dict[str, Any] = Depends(get_current_user),
@@ -596,8 +608,9 @@ def relatorio_ordens_csv(
             or any(term in f.lower() for f in o.get("fiscais", []))
         ]
 
-    # Gerar CSV
+    # Gerar CSV com BOM para Excel reconhecer UTF-8
     output = io.StringIO()
+    output.write("\ufeff")
     writer = csv.writer(output, delimiter=";")
     writer.writerow([
         "Numero", "Tipo", "IE", "Razao Social", "Matricula Supervisor",
@@ -615,9 +628,9 @@ def relatorio_ordens_csv(
             ", ".join(o.get("fiscais", [])),
             o.get("status", ""),
             o.get("prioridade", ""),
-            o.get("data_abertura", ""),
-            o.get("data_ciencia", "") or "",
-            o.get("data_ultima_movimentacao", "") or "",
+            _fmt_data_br(o.get("data_abertura")),
+            _fmt_data_br(o.get("data_ciencia")),
+            _fmt_data_br(o.get("data_ultima_movimentacao")),
             dias,
         ])
 
@@ -629,6 +642,251 @@ def relatorio_ordens_csv(
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _filtrar_ordens(user, status_filter, tipo, data_inicio, data_fim, search):
+    """Aplica filtros comuns de OS para reuso entre CSV e PDF."""
+    filters = _build_hierarchy_filters(user)
+    rows = listar_ordens_servico(status_filter=status_filter, tipo=tipo, **filters)
+
+    if data_inicio or data_fim:
+        filtered = []
+        for o in rows:
+            dt_ab = o.get("data_abertura", "")
+            if not dt_ab:
+                continue
+            if data_inicio and dt_ab < data_inicio:
+                continue
+            if data_fim and dt_ab > data_fim:
+                continue
+            filtered.append(o)
+        rows = filtered
+
+    if search:
+        term = search.lower()
+        rows = [
+            o for o in rows
+            if term in o.get("numero", "").lower()
+            or term in o.get("razao_social", "").lower()
+            or term in o.get("ie", "").lower()
+            or term in o.get("matricula_supervisor", "").lower()
+            or any(term in f.lower() for f in o.get("fiscais", []))
+        ]
+    return rows
+
+
+class _PDF(FPDF):
+    """PDF com cabecalho e rodape padrao."""
+
+    def __init__(self, titulo: str):
+        super().__init__(orientation="L", format="A4")
+        self._titulo = titulo
+        self.set_auto_page_break(auto=True, margin=15)
+
+    def header(self):
+        self.set_font("Helvetica", "B", 12)
+        self.cell(0, 8, self._titulo, align="C", new_x="LMARGIN", new_y="NEXT")
+        self.set_font("Helvetica", "", 8)
+        self.cell(0, 5, f"Gerado em {date.today().strftime('%d/%m/%Y')}", align="C", new_x="LMARGIN", new_y="NEXT")
+        self.ln(3)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font("Helvetica", "I", 7)
+        self.cell(0, 10, f"Pagina {self.page_no()}/{{nb}}", align="C")
+
+
+def _safe(val) -> str:
+    """Converte valor para string segura para o PDF."""
+    if val is None:
+        return ""
+    return str(val)
+
+
+@app.get("/relatorios/ordens/pdf")
+def relatorio_ordens_pdf(
+    user: dict[str, Any] = Depends(get_current_user),
+    status_filter: str | None = Query(default=None, alias="status"),
+    tipo: str | None = Query(default=None),
+    data_inicio: str | None = Query(default=None),
+    data_fim: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+) -> Response:
+    """Gera relatorio PDF das Ordens de Servico."""
+    rows = _filtrar_ordens(user, status_filter, tipo, data_inicio, data_fim, search)
+
+    pdf = _PDF("Relatorio de Ordens de Servico")
+    pdf.alias_nb_pages()
+    pdf.add_page()
+
+    # Cabecalho da tabela
+    headers = ["Numero", "Tipo", "IE", "Razao Social", "Status", "Prioridade",
+               "Dt Abertura", "Dt Ciencia", "Ult. Mov.", "Dias Parado"]
+    col_widths = [25, 18, 22, 60, 22, 20, 24, 24, 24, 20]
+
+    pdf.set_font("Helvetica", "B", 7)
+    for i, h in enumerate(headers):
+        pdf.cell(col_widths[i], 6, h, border=1, align="C")
+    pdf.ln()
+
+    # Dados
+    pdf.set_font("Helvetica", "", 6.5)
+    for o in rows:
+        dias = _calcular_dias_parado(o.get("data_ultima_movimentacao"))
+        vals = [
+            _safe(o.get("numero")),
+            _safe(o.get("tipo")),
+            _safe(o.get("ie")),
+            _safe(o.get("razao_social"))[:40],
+            _safe(o.get("status")),
+            _safe(o.get("prioridade")),
+            _fmt_data_br(o.get("data_abertura")),
+            _fmt_data_br(o.get("data_ciencia")),
+            _fmt_data_br(o.get("data_ultima_movimentacao")),
+            str(dias),
+        ]
+        for i, v in enumerate(vals):
+            pdf.cell(col_widths[i], 5, v, border=1, align="C")
+        pdf.ln()
+
+    pdf_bytes = bytes(pdf.output())
+    today = date.today().strftime("%Y-%m-%d")
+    filename = f"relatorio_ordens_{today}.pdf"
+    logger.info("Relatorio PDF OS gerado por '%s': %d registros.", user["username"], len(rows))
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/relatorios/dashboard/pdf")
+def relatorio_dashboard_pdf(
+    user: dict[str, Any] = Depends(get_current_user),
+    data_inicio: str | None = Query(None),
+    data_fim: str | None = Query(None),
+) -> Response:
+    """Gera relatorio PDF do dashboard. Apenas admin."""
+    require_admin(user)
+
+    todas_os = listar_ordens_servico()
+    if data_inicio or data_fim:
+        todas_os = [
+            o for o in todas_os
+            if o.get("data_abertura")
+            and (not data_inicio or o["data_abertura"] >= data_inicio)
+            and (not data_fim or o["data_abertura"] <= data_fim)
+        ]
+
+    gerencias_list = gerencia_repo.list_gerencias()
+    supervisoes_list = supervisao_repo.list_supervisoes()
+    users_list = user_repo.list_users()
+    dashboard = gerar_dashboard(todas_os, gerencias_list, supervisoes_list, users_list)
+
+    pdf = _PDF("Relatorio de Desempenho - Dashboard")
+    pdf.alias_nb_pages()
+    pdf.add_page()
+
+    # ─── Resumo Geral ───
+    visao = dashboard.get("visao_geral", {})
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(0, 7, "Resumo Geral", new_x="LMARGIN", new_y="NEXT")
+    rg_headers = ["Total OS", "Abertas", "Em Andamento", "Concluidas",
+                  "Canceladas", "Dias Parado Med.", "Criticas", "Sem Ciencia"]
+    rg_vals = [
+        visao.get("total_os", 0), visao.get("os_abertas", 0),
+        visao.get("os_em_andamento", 0), visao.get("os_concluidas", 0),
+        visao.get("os_canceladas", 0), visao.get("dias_parado_medio", 0),
+        visao.get("os_criticas", 0), visao.get("os_sem_ciencia", 0),
+    ]
+    w = 33
+    pdf.set_font("Helvetica", "B", 7)
+    for h in rg_headers:
+        pdf.cell(w, 6, h, border=1, align="C")
+    pdf.ln()
+    pdf.set_font("Helvetica", "", 7)
+    for v in rg_vals:
+        pdf.cell(w, 5, str(v), border=1, align="C")
+    pdf.ln(8)
+
+    # ─── Gerencias ───
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(0, 7, "Desempenho por Gerencia", new_x="LMARGIN", new_y="NEXT")
+    g_headers = ["Gerencia", "Total", "Abertas", "Andamento", "Concluidas",
+                 "Taxa (%)", "Dias Par. Med.", "Criticas", "Tempo Med."]
+    g_widths = [55, 20, 22, 25, 25, 22, 30, 22, 30]
+    pdf.set_font("Helvetica", "B", 7)
+    for i, h in enumerate(g_headers):
+        pdf.cell(g_widths[i], 6, h, border=1, align="C")
+    pdf.ln()
+    pdf.set_font("Helvetica", "", 6.5)
+    for g in dashboard.get("desempenho_gerencias", []):
+        vals = [
+            _safe(g.get("nome"))[:35], str(g.get("total_os", 0)),
+            str(g.get("abertas", 0)), str(g.get("em_andamento", 0)),
+            str(g.get("concluidas", 0)), str(g.get("taxa_conclusao", 0)),
+            str(g.get("dias_parado_medio", 0)), str(g.get("os_criticas", 0)),
+            str(g.get("tempo_medio_conclusao", 0)),
+        ]
+        for i, v in enumerate(vals):
+            pdf.cell(g_widths[i], 5, v, border=1, align="C")
+        pdf.ln()
+    pdf.ln(5)
+
+    # ─── Supervisoes ───
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(0, 7, "Desempenho por Supervisao", new_x="LMARGIN", new_y="NEXT")
+    s_headers = ["Supervisao", "Gerencia", "Total", "Abertas", "Andamento",
+                 "Concluidas", "Taxa (%)", "Dias Par. Med.", "Criticas"]
+    s_widths = [50, 50, 20, 22, 25, 25, 22, 30, 22]
+    pdf.set_font("Helvetica", "B", 7)
+    for i, h in enumerate(s_headers):
+        pdf.cell(s_widths[i], 6, h, border=1, align="C")
+    pdf.ln()
+    pdf.set_font("Helvetica", "", 6.5)
+    for s in dashboard.get("desempenho_supervisoes", []):
+        vals = [
+            _safe(s.get("nome"))[:32], _safe(s.get("gerencia_nome"))[:32],
+            str(s.get("total_os", 0)), str(s.get("abertas", 0)),
+            str(s.get("em_andamento", 0)), str(s.get("concluidas", 0)),
+            str(s.get("taxa_conclusao", 0)), str(s.get("dias_parado_medio", 0)),
+            str(s.get("os_criticas", 0)),
+        ]
+        for i, v in enumerate(vals):
+            pdf.cell(s_widths[i], 5, v, border=1, align="C")
+        pdf.ln()
+    pdf.ln(5)
+
+    # ─── Fiscais ───
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(0, 7, "Carga por Fiscal", new_x="LMARGIN", new_y="NEXT")
+    f_headers = ["Fiscal", "OS Ativas", "Dias Parado Med.", "Criticas"]
+    f_widths = [100, 40, 50, 40]
+    pdf.set_font("Helvetica", "B", 7)
+    for i, h in enumerate(f_headers):
+        pdf.cell(f_widths[i], 6, h, border=1, align="C")
+    pdf.ln()
+    pdf.set_font("Helvetica", "", 6.5)
+    for f in dashboard.get("carga_fiscais", []):
+        vals = [
+            _safe(f.get("nome"))[:60], str(f.get("os_ativas", 0)),
+            str(f.get("dias_parado_medio", 0)), str(f.get("os_criticas", 0)),
+        ]
+        for i, v in enumerate(vals):
+            pdf.cell(f_widths[i], 5, v, border=1, align="C")
+        pdf.ln()
+
+    pdf_bytes = bytes(pdf.output())
+    today = date.today().strftime("%Y-%m-%d")
+    filename = f"relatorio_dashboard_{today}.pdf"
+    logger.info("Relatorio Dashboard PDF gerado por '%s'.", user["username"])
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -657,6 +915,7 @@ def relatorio_dashboard_csv(
     dashboard = gerar_dashboard(todas_os, gerencias_list, supervisoes_list, users_list)
 
     output = io.StringIO()
+    output.write("\ufeff")
     writer = csv.writer(output, delimiter=";")
 
     # Resumo geral

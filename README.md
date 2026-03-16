@@ -35,6 +35,7 @@ O Sistema SEFAZ PB permite que auditores fiscais, supervisores, gerentes e admin
 - **Dashboard com KPIs em tempo real**, graficos interativos e comparativo mensal
 - **Termometro da Fiscalizacao** – ranking de saude por gerencia baseado em formula proporcional
 - **Alertas automaticos** para OS urgentes, paradas e sem ciencia
+- **Relatorios exportaveis** em CSV e PDF (OS e Dashboard)
 - **Controle de acesso hierarquico** – cada perfil ve apenas o que lhe compete
 - **Dark mode** com toggle e persistencia no localStorage
 
@@ -47,6 +48,7 @@ O Sistema SEFAZ PB permite que auditores fiscais, supervisores, gerentes e admin
 | Bundler     | esbuild (dev) / Vite (build producao)             | 0.21+        |
 | Banco Local | SQLite (usuarios, gerencias, supervisoes)         | built-in     |
 | Banco Ext.  | IBM Informix via pyodbc (Ordens de Servico)       | ODBC         |
+| PDF         | fpdf2 (geracao de relatorios PDF)                 | 2.8          |
 | Testes      | pytest                                            | 8.x          |
 
 ## Pre-requisitos
@@ -349,7 +351,7 @@ sistema_sefaz/
 |   |-- schemas.py                  # Modelos Pydantic request/response (146 linhas)
 |   |-- informix_db.py              # Conexao ODBC com Informix + reconexao automatica (210 linhas)
 |   |-- config.py                   # Variaveis de ambiente (.env)
-|   +-- requirements.txt            # fastapi, uvicorn, python-dotenv, pyodbc
+|   +-- requirements.txt            # fastapi, uvicorn, python-dotenv, pyodbc, fpdf2
 |-- frontend/                       # SPA React (14 componentes)
 |   |-- src/
 |   |   |-- App.jsx                 # Componente raiz: auth, navegacao, data fetching (245 linhas)
@@ -371,6 +373,7 @@ sistema_sefaz/
 |   |       |-- GerenciasAdmin.jsx  # CRUD de gerencias
 |   |       |-- SupervisoesAdmin.jsx # CRUD de supervisoes
 |   |       |-- UsuariosAdmin.jsx   # CRUD de usuarios com cascata (406 linhas)
+|   |       |-- RelatoriosPanel.jsx  # Gerador de relatorios CSV e PDF com filtros
 |   |       +-- ConfirmModal.jsx    # Modal de confirmacao reutilizavel
 |   |-- public/
 |   |   +-- assets/app.js           # Bundle gerado pelo esbuild
@@ -447,6 +450,15 @@ curl -X POST http://localhost:8000/auth/login \
 ```
 Authorization: Bearer <token>
 ```
+
+### Relatorios
+
+| Metodo | Rota                            | Descricao                          | Auth  |
+| ------ | ------------------------------- | ---------------------------------- | ----- |
+| GET    | `/relatorios/ordens`            | Exporta OS em CSV (com filtros)    | Token |
+| GET    | `/relatorios/ordens/pdf`        | Exporta OS em PDF (com filtros)    | Token |
+| GET    | `/relatorios/dashboard`         | Exporta dashboard em CSV           | Admin |
+| GET    | `/relatorios/dashboard/pdf`     | Exporta dashboard em PDF           | Admin |
 
 ### Administracao (somente Admin)
 
@@ -711,7 +723,7 @@ Para deploy em producao, considerar:
 ### Proximos Passos Sugeridos
 
 1. **Implementar JWT** com refresh tokens para sessoes persistentes
-2. **Exportar relatorios** em PDF/Excel a partir do dashboard
+2. ~~**Exportar relatorios** em PDF/Excel a partir do dashboard~~ ✅ (CSV + PDF implementados)
 3. **Implementar WebSocket** para alertas em tempo real
 4. **Adicionar testes end-to-end** com Playwright ou Cypress
 5. **Migrar banco de usuarios** para PostgreSQL em producao

@@ -201,6 +201,44 @@ class ApiClient {
     }
     return response.blob();
   }
+
+  // Relatorios (download PDF)
+  async downloadRelatorioOrdensPdf({ status, tipo, dataInicio, dataFim, search } = {}) {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (tipo) params.set("tipo", tipo);
+    if (dataInicio) params.set("data_inicio", dataInicio);
+    if (dataFim) params.set("data_fim", dataFim);
+    if (search) params.set("search", search);
+    const qs = params.toString();
+
+    const headers = {};
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+
+    const response = await fetch(`${this.baseUrl}/relatorios/ordens/pdf${qs ? `?${qs}` : ""}`, { headers });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || "Erro ao gerar relatorio PDF");
+    }
+    return response.blob();
+  }
+
+  async downloadRelatorioDashboardPdf({ dataInicio, dataFim } = {}) {
+    const params = new URLSearchParams();
+    if (dataInicio) params.set("data_inicio", dataInicio);
+    if (dataFim) params.set("data_fim", dataFim);
+    const qs = params.toString();
+
+    const headers = {};
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+
+    const response = await fetch(`${this.baseUrl}/relatorios/dashboard/pdf${qs ? `?${qs}` : ""}`, { headers });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || "Erro ao gerar relatorio PDF");
+    }
+    return response.blob();
+  }
 }
 
 const apiClient = new ApiClient(API_BASE);
