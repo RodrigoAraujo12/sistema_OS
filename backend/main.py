@@ -36,6 +36,7 @@ from .external_api import (
     consultar_os_por_numero,
     gerar_alertas,
     gerar_dashboard,
+    listar_ordens_atf,
     listar_ordens_servico,
 )
 from .schemas import (
@@ -45,8 +46,8 @@ from .schemas import (
     GerenciaUpdateRequest,
     LoginRequest,
     LoginResponse,
+    OrdensATFResponse,
     OSDetalheResponse,
-    OSResponse,
     PasswordChangeRequest,
     PasswordResetResponse,
     SupervisaoCreateRequest,
@@ -476,16 +477,31 @@ def _build_hierarchy_filters(user: dict[str, Any]) -> dict[str, Any]:
     return filters
 
 
-@app.get("/ordens", response_model=list[OSResponse])
+@app.get("/ordens", response_model=OrdensATFResponse)
 def list_os(
-    status_filter: str | None = Query(default=None, alias="status"),
-    tipo: str | None = Query(default=None),
-    user: dict[str, Any] = Depends(get_current_user),
-) -> list[OSResponse]:
-    """Lista Ordens de Servico da API externa (Informix), filtradas pela hierarquia."""
-    filters = _build_hierarchy_filters(user)
-    rows = listar_ordens_servico(status_filter=status_filter, tipo=tipo, **filters)
-    return [OSResponse(**row) for row in rows]
+    numero_os: str | None = Query(default=None),
+    modelo: str | None = Query(default=None),
+    ie: str | None = Query(default=None),
+    cnpj: str | None = Query(default=None),
+    razao_social: str | None = Query(default=None),
+    matriculas: str | None = Query(default=None),
+    situacao: list[int] | None = Query(default=None),
+    data_abertura_ini: str | None = Query(default=None),
+    data_abertura_fim: str | None = Query(default=None),
+    data_ciencia_ini: str | None = Query(default=None),
+    data_ciencia_fim: str | None = Query(default=None),
+    pagina: int = Query(default=1, ge=1),
+    limite: int = Query(default=20, ge=1, le=50),
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> OrdensATFResponse:
+    """Lista Ordens de Servico via API ATF (HTTPS + XML) ou MOCK se ATF_BASE_URL nao configurado."""
+    return listar_ordens_atf(
+        numero_os=numero_os, modelo=modelo, ie=ie, cnpj=cnpj,
+        razao_social=razao_social, matriculas=matriculas, situacoes=situacao,
+        data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
+        data_ciencia_ini=data_ciencia_ini, data_ciencia_fim=data_ciencia_fim,
+        pagina=pagina, limite=limite,
+    )
 
 
 @app.get("/ordens/{numero}", response_model=OSDetalheResponse)

@@ -639,6 +639,40 @@ tr:hover td {
   border: 1px solid #fde68a;
 }
 
+/* ─── Password Requirements Checklist ──────────────────── */
+
+.pwd-rules {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.pwd-rules li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+  transition: color 0.2s;
+}
+
+.pwd-rules li.passed {
+  color: #16a34a;
+}
+
+.pwd-rules li.failed {
+  color: #dc2626;
+}
+
+.pwd-rules-icon {
+  font-size: 12px;
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
 /* ─── Miscelaneous ─────────────────────────────────────── */
 
 .hint {

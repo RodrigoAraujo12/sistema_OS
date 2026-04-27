@@ -24,6 +24,11 @@ APP_TITLE: str = os.getenv("APP_TITLE", "Sistema Sefaz")
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 DEFAULT_PASSWORD: str = os.getenv("DEFAULT_PASSWORD", "temp1234")
 
+# ─── ATF API ────────────────────────────────────────────────────
+# URL base do servico ATF. Quando vazia, o sistema usa dados MOCK.
+# Exemplo: https://atf.sefaz.pb.gov.br
+ATF_BASE_URL: str = os.getenv("ATF_BASE_URL", "")
+
 # ─── CORS ───────────────────────────────────────────────────────
 
 _raw_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173")

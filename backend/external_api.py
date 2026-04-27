@@ -915,6 +915,488 @@ def _calcular_carga_fiscais(
     return carga
 
 
+# ─── ATF API Integration ─────────────────────────────────────────
+#
+# Quando ATF_BASE_URL estiver configurado no .env, o sistema faz
+# requisicoes HTTPS ao servico do ATF e parseia o XML retornado.
+# Quando NAO estiver configurado, usa dados MOCK para desenvolvimento.
+#
+# Para ativar: adicione ATF_BASE_URL=https://atf.sefaz.pb.gov.br no .env
+
+_MODELOS_ATF: dict[str, str] = {
+    "1": "NORMAL",
+    "2": "SIMPLIFICADA",
+    "7": "ESPECIAL",
+    "8": "ESPECÍFICA",
+}
+
+_MOCK_ATF_ORDENS: list[dict[str, Any]] = [
+    {
+        "numero_os": "OS-2026-001", "modelo": "NORMAL",
+        "ie": "12.345.678-9", "cnpj": "12.345.678/0001-90",
+        "razao_social": "Distribuidora ABC Ltda",
+        "fiscais": [
+            {"matricula": "34567", "nome": "Carlos Mendes", "data_ciencia": "2026-01-12"},
+            {"matricula": "34568", "nome": "Ana Ribeiro", "data_ciencia": "2026-01-14"},
+        ],
+        "situacao": {"codigo": 1, "descricao": "AUTORIZADA"},
+        "data_abertura": "2026-01-10",
+    },
+    {
+        "numero_os": "OS-2026-002", "modelo": "SIMPLIFICADA",
+        "ie": "98.765.432-1", "cnpj": "98.765.432/0001-10",
+        "razao_social": "Industria Delta S/A",
+        "fiscais": [
+            {"matricula": "34568", "nome": "Ana Ribeiro", "data_ciencia": "2026-02-03"},
+        ],
+        "situacao": {"codigo": 5, "descricao": "BLOQUEADA"},
+        "data_abertura": "2026-02-01",
+    },
+    {
+        "numero_os": "OS-2026-003", "modelo": "ESPECIAL",
+        "ie": "55.667.778-3", "cnpj": "55.667.778/0001-30",
+        "razao_social": "Transportes Rapido Ltda",
+        "fiscais": [
+            {"matricula": "34567", "nome": "Carlos Mendes", "data_ciencia": "2026-01-08"},
+        ],
+        "situacao": {"codigo": 1, "descricao": "AUTORIZADA"},
+        "data_abertura": "2026-01-05",
+    },
+    {
+        "numero_os": "OS-2026-004", "modelo": "NORMAL",
+        "ie": "33.445.556-4", "cnpj": "33.445.556/0001-40",
+        "razao_social": "Supermercado Central Ltda",
+        "fiscais": [
+            {"matricula": "34570", "nome": "Jose Almeida", "data_ciencia": None},
+        ],
+        "situacao": {"codigo": 0, "descricao": "AGUARDANDO AUTORIZAÇÃO"},
+        "data_abertura": "2026-02-05",
+    },
+    {
+        "numero_os": "OS-2026-005", "modelo": "SIMPLIFICADA",
+        "ie": "77.889.900-5", "cnpj": "77.889.900/0001-50",
+        "razao_social": "Farmacia Popular Ltda",
+        "fiscais": [
+            {"matricula": "34568", "nome": "Ana Ribeiro", "data_ciencia": "2025-12-18"},
+            {"matricula": "34571", "nome": "Fernanda Costa", "data_ciencia": "2025-12-20"},
+        ],
+        "situacao": {"codigo": 4, "descricao": "ENCERRADA"},
+        "data_abertura": "2025-12-15",
+    },
+    {
+        "numero_os": "OS-2026-006", "modelo": "ESPECÍFICA",
+        "ie": "12.345.678-9", "cnpj": "12.345.678/0001-90",
+        "razao_social": "Distribuidora ABC Ltda",
+        "fiscais": [
+            {"matricula": "34567", "nome": "Carlos Mendes", "data_ciencia": "2026-02-09"},
+        ],
+        "situacao": {"codigo": 1, "descricao": "AUTORIZADA"},
+        "data_abertura": "2026-02-07",
+    },
+    {
+        "numero_os": "OS-2026-007", "modelo": "NORMAL",
+        "ie": "98.765.432-1", "cnpj": "98.765.432/0001-10",
+        "razao_social": "Industria Delta S/A",
+        "fiscais": [
+            {"matricula": "34569", "nome": "Pedro Nascimento", "data_ciencia": "2026-01-18"},
+        ],
+        "situacao": {"codigo": 1, "descricao": "AUTORIZADA"},
+        "data_abertura": "2026-01-15",
+    },
+    {
+        "numero_os": "OS-2026-008", "modelo": "SIMPLIFICADA",
+        "ie": "33.445.556-4", "cnpj": "33.445.556/0001-40",
+        "razao_social": "Supermercado Central Ltda",
+        "fiscais": [
+            {"matricula": "34570", "nome": "Jose Almeida", "data_ciencia": "2025-12-05"},
+        ],
+        "situacao": {"codigo": 0, "descricao": "AGUARDANDO AUTORIZAÇÃO"},
+        "data_abertura": "2025-12-01",
+    },
+    {
+        "numero_os": "OS-2026-009", "modelo": "ESPECIAL",
+        "ie": "55.667.778-3", "cnpj": "55.667.778/0001-30",
+        "razao_social": "Transportes Rapido Ltda",
+        "fiscais": [
+            {"matricula": "34571", "nome": "Fernanda Costa", "data_ciencia": None},
+        ],
+        "situacao": {"codigo": 5, "descricao": "BLOQUEADA"},
+        "data_abertura": "2026-02-08",
+    },
+    {
+        "numero_os": "OS-2026-010", "modelo": "NORMAL",
+        "ie": "77.889.900-5", "cnpj": "77.889.900/0001-50",
+        "razao_social": "Farmacia Popular Ltda",
+        "fiscais": [
+            {"matricula": "34567", "nome": "Carlos Mendes", "data_ciencia": "2026-01-22"},
+        ],
+        "situacao": {"codigo": 2, "descricao": "CANCELADA"},
+        "data_abertura": "2026-01-20",
+    },
+    {
+        "numero_os": "OS-2026-011", "modelo": "SIMPLIFICADA",
+        "ie": "12.345.678-9", "cnpj": "12.345.678/0001-90",
+        "razao_social": "Distribuidora ABC Ltda",
+        "fiscais": [
+            {"matricula": "34568", "nome": "Ana Ribeiro", "data_ciencia": "2026-03-03"},
+        ],
+        "situacao": {"codigo": 1, "descricao": "AUTORIZADA"},
+        "data_abertura": "2026-03-01",
+    },
+    {
+        "numero_os": "OS-2026-012", "modelo": "ESPECIAL",
+        "ie": "98.765.432-1", "cnpj": "98.765.432/0001-10",
+        "razao_social": "Industria Delta S/A",
+        "fiscais": [
+            {"matricula": "34569", "nome": "Pedro Nascimento", "data_ciencia": "2026-03-07"},
+        ],
+        "situacao": {"codigo": 6, "descricao": "EM ANÁLISE PARA ENCERRAMENTO"},
+        "data_abertura": "2026-03-05",
+    },
+    {
+        "numero_os": "OS-2026-013", "modelo": "NORMAL",
+        "ie": "55.667.778-3", "cnpj": "55.667.778/0001-30",
+        "razao_social": "Transportes Rapido Ltda",
+        "fiscais": [
+            {"matricula": "34567", "nome": "Carlos Mendes", "data_ciencia": "2026-03-12"},
+        ],
+        "situacao": {"codigo": 1, "descricao": "AUTORIZADA"},
+        "data_abertura": "2026-03-10",
+    },
+    {
+        "numero_os": "OS-2026-014", "modelo": "ESPECÍFICA",
+        "ie": "33.445.556-4", "cnpj": "33.445.556/0001-40",
+        "razao_social": "Supermercado Central Ltda",
+        "fiscais": [
+            {"matricula": "34570", "nome": "Jose Almeida", "data_ciencia": "2026-03-15"},
+        ],
+        "situacao": {"codigo": 7, "descricao": "EXECUÇÃO SUSPENSA"},
+        "data_abertura": "2026-03-12",
+    },
+    {
+        "numero_os": "OS-2026-015", "modelo": "NORMAL",
+        "ie": "77.889.900-5", "cnpj": "77.889.900/0001-50",
+        "razao_social": "Farmacia Popular Ltda",
+        "fiscais": [
+            {"matricula": "34571", "nome": "Fernanda Costa", "data_ciencia": "2025-11-25"},
+        ],
+        "situacao": {"codigo": 3, "descricao": "SUBSTITUÍDA"},
+        "data_abertura": "2025-11-20",
+    },
+    {
+        "numero_os": "OS-2026-016", "modelo": "SIMPLIFICADA",
+        "ie": "12.345.678-9", "cnpj": "12.345.678/0001-90",
+        "razao_social": "Distribuidora ABC Ltda",
+        "fiscais": [
+            {"matricula": "34567", "nome": "Carlos Mendes", "data_ciencia": "2025-11-18"},
+        ],
+        "situacao": {"codigo": 4, "descricao": "ENCERRADA"},
+        "data_abertura": "2025-11-15",
+    },
+    {
+        "numero_os": "OS-2026-017", "modelo": "NORMAL",
+        "ie": "98.765.432-1", "cnpj": "98.765.432/0001-10",
+        "razao_social": "Industria Delta S/A",
+        "fiscais": [
+            {"matricula": "34568", "nome": "Ana Ribeiro", "data_ciencia": "2026-03-22"},
+            {"matricula": "34569", "nome": "Pedro Nascimento", "data_ciencia": "2026-03-23"},
+        ],
+        "situacao": {"codigo": 1, "descricao": "AUTORIZADA"},
+        "data_abertura": "2026-03-20",
+    },
+    {
+        "numero_os": "OS-2026-018", "modelo": "ESPECIAL",
+        "ie": "55.667.778-3", "cnpj": "55.667.778/0001-30",
+        "razao_social": "Transportes Rapido Ltda",
+        "fiscais": [
+            {"matricula": "34567", "nome": "Carlos Mendes", "data_ciencia": None},
+        ],
+        "situacao": {"codigo": 0, "descricao": "AGUARDANDO AUTORIZAÇÃO"},
+        "data_abertura": "2026-04-01",
+    },
+    {
+        "numero_os": "OS-2026-019", "modelo": "NORMAL",
+        "ie": "33.445.556-4", "cnpj": "33.445.556/0001-40",
+        "razao_social": "Supermercado Central Ltda",
+        "fiscais": [
+            {"matricula": "34570", "nome": "Jose Almeida", "data_ciencia": "2026-03-27"},
+        ],
+        "situacao": {"codigo": 1, "descricao": "AUTORIZADA"},
+        "data_abertura": "2026-03-25",
+    },
+    {
+        "numero_os": "OS-2026-020", "modelo": "ESPECÍFICA",
+        "ie": "77.889.900-5", "cnpj": "77.889.900/0001-50",
+        "razao_social": "Farmacia Popular Ltda",
+        "fiscais": [
+            {"matricula": "34571", "nome": "Fernanda Costa", "data_ciencia": "2026-02-17"},
+        ],
+        "situacao": {"codigo": 2, "descricao": "CANCELADA"},
+        "data_abertura": "2026-02-14",
+    },
+    {
+        "numero_os": "OS-2026-021", "modelo": "SIMPLIFICADA",
+        "ie": "12.345.678-9", "cnpj": "12.345.678/0001-90",
+        "razao_social": "Distribuidora ABC Ltda",
+        "fiscais": [
+            {"matricula": "34567", "nome": "Carlos Mendes", "data_ciencia": "2026-02-23"},
+        ],
+        "situacao": {"codigo": 5, "descricao": "BLOQUEADA"},
+        "data_abertura": "2026-02-20",
+    },
+    {
+        "numero_os": "OS-2026-022", "modelo": "NORMAL",
+        "ie": "98.765.432-1", "cnpj": "98.765.432/0001-10",
+        "razao_social": "Industria Delta S/A",
+        "fiscais": [
+            {"matricula": "34568", "nome": "Ana Ribeiro", "data_ciencia": "2026-03-30"},
+        ],
+        "situacao": {"codigo": 1, "descricao": "AUTORIZADA"},
+        "data_abertura": "2026-03-28",
+    },
+    {
+        "numero_os": "OS-2026-023", "modelo": "ESPECIAL",
+        "ie": "55.667.778-3", "cnpj": "55.667.778/0001-30",
+        "razao_social": "Transportes Rapido Ltda",
+        "fiscais": [
+            {"matricula": "34569", "nome": "Pedro Nascimento", "data_ciencia": "2025-10-15"},
+        ],
+        "situacao": {"codigo": 4, "descricao": "ENCERRADA"},
+        "data_abertura": "2025-10-10",
+    },
+    {
+        "numero_os": "OS-2026-024", "modelo": "SIMPLIFICADA",
+        "ie": "33.445.556-4", "cnpj": "33.445.556/0001-40",
+        "razao_social": "Supermercado Central Ltda",
+        "fiscais": [
+            {"matricula": "34570", "nome": "Jose Almeida", "data_ciencia": "2026-04-07"},
+        ],
+        "situacao": {"codigo": 1, "descricao": "AUTORIZADA"},
+        "data_abertura": "2026-04-05",
+    },
+    {
+        "numero_os": "OS-2026-025", "modelo": "NORMAL",
+        "ie": "77.889.900-5", "cnpj": "77.889.900/0001-50",
+        "razao_social": "Farmacia Popular Ltda",
+        "fiscais": [
+            {"matricula": "34571", "nome": "Fernanda Costa", "data_ciencia": "2026-04-13"},
+        ],
+        "situacao": {"codigo": 6, "descricao": "EM ANÁLISE PARA ENCERRAMENTO"},
+        "data_abertura": "2026-04-10",
+    },
+]
+
+
+def _filtrar_mock_atf(
+    numero_os: str | None = None,
+    modelo: str | None = None,
+    ie: str | None = None,
+    cnpj: str | None = None,
+    razao_social: str | None = None,
+    matriculas: str | None = None,
+    situacoes: list[int] | None = None,
+    data_abertura_ini: str | None = None,
+    data_abertura_fim: str | None = None,
+    data_ciencia_ini: str | None = None,
+    data_ciencia_fim: str | None = None,
+    pagina: int = 1,
+    limite: int = 20,
+) -> dict[str, Any]:
+    """Filtra o mock ATF e retorna paginacao + ordens."""
+    resultados = list(_MOCK_ATF_ORDENS)
+
+    if numero_os:
+        resultados = [o for o in resultados if o["numero_os"] == numero_os]
+    if modelo:
+        nome_modelo = _MODELOS_ATF.get(str(modelo))
+        resultados = [o for o in resultados if o["modelo"] == nome_modelo] if nome_modelo else []
+    if ie:
+        resultados = [o for o in resultados if o["ie"] == ie]
+    if cnpj:
+        resultados = [o for o in resultados if o.get("cnpj") == cnpj]
+    if razao_social:
+        term = razao_social.lower()
+        resultados = [o for o in resultados if term in o["razao_social"].lower()]
+    if matriculas:
+        mats = {m.strip() for m in matriculas.split(",") if m.strip()}
+        resultados = [o for o in resultados if any(f["matricula"] in mats for f in o["fiscais"])]
+    if situacoes:
+        situacoes_set = set(situacoes)
+        resultados = [o for o in resultados if o["situacao"]["codigo"] in situacoes_set]
+    if data_abertura_ini:
+        resultados = [o for o in resultados if o["data_abertura"] >= data_abertura_ini]
+    if data_abertura_fim:
+        resultados = [o for o in resultados if o["data_abertura"] <= data_abertura_fim]
+    if data_ciencia_ini or data_ciencia_fim:
+        def _ciencia_in_range(os_item: dict) -> bool:
+            dates = [f["data_ciencia"] for f in os_item["fiscais"] if f.get("data_ciencia")]
+            if not dates:
+                return False
+            earliest = min(dates)
+            if data_ciencia_ini and earliest < data_ciencia_ini:
+                return False
+            if data_ciencia_fim and earliest > data_ciencia_fim:
+                return False
+            return True
+        resultados = [o for o in resultados if _ciencia_in_range(o)]
+
+    total = len(resultados)
+    total_paginas = max(1, (total + limite - 1) // limite)
+    inicio = (pagina - 1) * limite
+    pagina_data = resultados[inicio: inicio + limite]
+
+    return {
+        "paginacao": {
+            "pagina_atual": pagina,
+            "limite_por_pagina": limite,
+            "total_paginas": total_paginas,
+            "total_registros": total,
+        },
+        "ordens": pagina_data,
+    }
+
+
+def _parse_xml_atf(xml_text: str) -> dict[str, Any]:
+    """Parseia o XML retornado pelo ATF para o formato interno da API."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml_text)
+
+    pag_el = root.find("paginacao")
+    paginacao = {
+        "pagina_atual": int(pag_el.findtext("pagina_atual", "1") or 1),
+        "limite_por_pagina": int(pag_el.findtext("limite_por_pagina", "20") or 20),
+        "total_paginas": int(pag_el.findtext("total_paginas", "1") or 1),
+        "total_registros": int(pag_el.findtext("total_registros", "0") or 0),
+    }
+
+    ordens = []
+    for ordem_el in root.findall("ordens/ordem"):
+        fiscais = []
+        for f_el in ordem_el.findall("fiscais/fiscal"):
+            fiscais.append({
+                "matricula": f_el.findtext("matricula", ""),
+                "nome": f_el.findtext("nome", ""),
+                "data_ciencia": f_el.findtext("data_ciencia"),
+            })
+
+        sit_el = ordem_el.find("situacao")
+        situacao = {
+            "codigo": int(sit_el.findtext("codigo", "0") or 0),
+            "descricao": sit_el.findtext("descricao", ""),
+        } if sit_el is not None else {"codigo": 0, "descricao": "AGUARDANDO AUTORIZAÇÃO"}
+
+        ordens.append({
+            "numero_os": ordem_el.findtext("numero_os", ""),
+            "modelo": ordem_el.findtext("modelo", ""),
+            "ie": ordem_el.findtext("ie", ""),
+            "cnpj": ordem_el.findtext("cnpj"),
+            "razao_social": ordem_el.findtext("razao_social", ""),
+            "fiscais": fiscais,
+            "situacao": situacao,
+            "data_abertura": ordem_el.findtext("data_abertura", ""),
+        })
+
+    return {"paginacao": paginacao, "ordens": ordens}
+
+
+def _chamar_atf_https(
+    base_url: str,
+    numero_os: str | None = None,
+    modelo: str | None = None,
+    ie: str | None = None,
+    cnpj: str | None = None,
+    razao_social: str | None = None,
+    matriculas: str | None = None,
+    situacoes: list[int] | None = None,
+    data_abertura_ini: str | None = None,
+    data_abertura_fim: str | None = None,
+    data_ciencia_ini: str | None = None,
+    data_ciencia_fim: str | None = None,
+    pagina: int = 1,
+    limite: int = 20,
+) -> dict[str, Any]:
+    """Chama o endpoint HTTPS do ATF e retorna os dados parseados do XML."""
+    import requests
+
+    params: list[tuple[str, Any]] = [("pagina", pagina), ("limite", limite)]
+    if numero_os:
+        params.append(("numero_os", numero_os))
+    if modelo:
+        params.append(("modelo", modelo))
+    if ie:
+        params.append(("ie", ie))
+    if cnpj:
+        params.append(("cnpj", cnpj))
+    if razao_social:
+        params.append(("razao_social", razao_social))
+    if matriculas:
+        params.append(("matriculas", matriculas))
+    if situacoes:
+        for s in situacoes:
+            params.append(("situacao", s))
+    if data_abertura_ini:
+        params.append(("data_abertura_ini", data_abertura_ini))
+    if data_abertura_fim:
+        params.append(("data_abertura_fim", data_abertura_fim))
+    if data_ciencia_ini:
+        params.append(("data_ciencia_ini", data_ciencia_ini))
+    if data_ciencia_fim:
+        params.append(("data_ciencia_fim", data_ciencia_fim))
+
+    try:
+        resp = requests.get(f"{base_url}/ordens", params=params, timeout=30)
+        resp.raise_for_status()
+        return _parse_xml_atf(resp.text)
+    except Exception:
+        logger.exception("Erro ao chamar API ATF em %s", base_url)
+        raise
+
+
+def listar_ordens_atf(
+    numero_os: str | None = None,
+    modelo: str | None = None,
+    ie: str | None = None,
+    cnpj: str | None = None,
+    razao_social: str | None = None,
+    matriculas: str | None = None,
+    situacoes: list[int] | None = None,
+    data_abertura_ini: str | None = None,
+    data_abertura_fim: str | None = None,
+    data_ciencia_ini: str | None = None,
+    data_ciencia_fim: str | None = None,
+    pagina: int = 1,
+    limite: int = 20,
+) -> dict[str, Any]:
+    """
+    Lista OS via API ATF.
+
+    Se ATF_BASE_URL estiver configurado no .env, chama o servico real via HTTPS.
+    Caso contrario, usa dados MOCK para desenvolvimento/teste.
+    """
+    from .config import ATF_BASE_URL
+
+    if ATF_BASE_URL:
+        logger.debug("Chamando API ATF: %s", ATF_BASE_URL)
+        return _chamar_atf_https(
+            ATF_BASE_URL,
+            numero_os=numero_os, modelo=modelo, ie=ie, cnpj=cnpj,
+            razao_social=razao_social, matriculas=matriculas, situacoes=situacoes,
+            data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
+            data_ciencia_ini=data_ciencia_ini, data_ciencia_fim=data_ciencia_fim,
+            pagina=pagina, limite=limite,
+        )
+
+    logger.debug("ATF_BASE_URL nao configurado – usando dados MOCK ATF (%d registros)", len(_MOCK_ATF_ORDENS))
+    return _filtrar_mock_atf(
+        numero_os=numero_os, modelo=modelo, ie=ie, cnpj=cnpj,
+        razao_social=razao_social, matriculas=matriculas, situacoes=situacoes,
+        data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
+        data_ciencia_ini=data_ciencia_ini, data_ciencia_fim=data_ciencia_fim,
+        pagina=pagina, limite=limite,
+    )
+
+
 def _calcular_evolucao_mensal(todas_os: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Calcula evolucao mensal de OS abertas e concluidas (para grafico linha/barra)."""
     os_por_mes: dict[str, dict[str, int]] = defaultdict(lambda: {"abertas": 0, "concluidas": 0})
