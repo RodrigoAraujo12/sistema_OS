@@ -9,7 +9,27 @@ export const roleOptions = [
   { value: "fiscal", label: "Fiscal" },
 ];
 
-/** Mapeamento de status da OS para exibicao. */
+/** Situacoes reais da OS no ATF (codigo => descricao). */
+export const situacaoLabels = {
+  0: "AGUARDANDO AUTORIZAÇÃO",
+  1: "AUTORIZADA",
+  2: "CANCELADA",
+  3: "SUBSTITUÍDA",
+  4: "ENCERRADA",
+  5: "BLOQUEADA",
+  6: "EM ANÁLISE PARA ENCERRAMENTO",
+  7: "EXECUÇÃO SUSPENSA",
+};
+
+/** Modelos de OS com seus codigos numericos no ATF. */
+export const modeloLabels = {
+  1: "NORMAL",
+  2: "SIMPLIFICADA",
+  7: "ESPECIAL",
+  8: "ESPECÍFICA",
+};
+
+/** Mantido para compatibilidade com componentes de dashboard. */
 export const statusLabels = {
   aberta: "Aberta",
   em_andamento: "Em Andamento",
@@ -17,7 +37,7 @@ export const statusLabels = {
   cancelada: "Cancelada",
 };
 
-/** Mapeamento de tipo da OS para exibicao. */
+/** Mantido para compatibilidade com componentes de dashboard. */
 export const tipoLabels = {
   Normal: "Normal",
   Especifico: "Especifico",

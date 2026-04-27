@@ -1,77 +1,131 @@
-/**
- * OrdensPanel.jsx – Painel de Ordens de Servico.
- *
- * Exibe OS com filtros (status, tipo, periodo, busca textual).
- * Gerencia seu proprio estado de filtros internamente.
- * Ao clicar em uma OS, exibe detalhes com movimentacoes.
- */
-
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import apiClient from "../api.js";
-import { statusLabels, tipoLabels, formatarData } from "../constants.js";
+import { situacaoLabels, modeloLabels, formatarData } from "../constants.js";
 
-const PAGE_SIZE = 10;
+const LIMITE_POR_PAGINA = 20;
+const SITUACOES = Object.entries(situacaoLabels); // [[0, "AGUARDANDO..."], ...]
 
-export default function OrdensPanel({ ordens }) {
-  const [statusFilter, setStatusFilter] = useState("");
-  const [tipoFilter, setTipoFilter] = useState("");
-  const [searchText, setSearchText] = useState("");
-  const [dataInicio, setDataInicio] = useState("");
-  const [dataFim, setDataFim] = useState("");
-  const [page, setPage] = useState(1);
+const EMPTY_FILTERS = {
+  numero: "",
+  modelo: "",
+  ie: "",
+  cnpj: "",
+  razao_social: "",
+  matriculas: "",
+  situacoes: [],
+  data_abertura_inicio: "",
+  data_abertura_fim: "",
+  data_ciencia_inicio: "",
+  data_ciencia_fim: "",
+};
 
-  // Detail modal state
+export default function OrdensPanel() {
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [ordens, setOrdens] = useState(null); // null = ainda nao pesquisou
+  const [paginacao, setPaginacao] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [searchError, setSearchError] = useState("");
+
   const [selectedOS, setSelectedOS] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState("");
 
-  const { osAbertas, osAndamento, osConcluidas } = useMemo(() => ({
-    osAbertas: ordens.filter((o) => o.status === "aberta").length,
-    osAndamento: ordens.filter((o) => o.status === "em_andamento").length,
-    osConcluidas: ordens.filter((o) => o.status === "concluida").length,
-  }), [ordens]);
-
-  const filteredOrdens = useMemo(() => {
-    let result = ordens;
-    if (statusFilter) result = result.filter((o) => o.status === statusFilter);
-    if (tipoFilter) result = result.filter((o) => o.tipo === tipoFilter);
-    if (searchText) {
-      const term = searchText.toLowerCase();
-      result = result.filter(
-        (o) =>
-          o.numero.toLowerCase().includes(term) ||
-          o.razao_social.toLowerCase().includes(term) ||
-          o.ie.toLowerCase().includes(term) ||
-          (o.matricula_supervisor && o.matricula_supervisor.toLowerCase().includes(term)) ||
-          (o.fiscais && o.fiscais.some((f) => f.toLowerCase().includes(term)))
-      );
-    }
-    if (dataInicio) {
-      result = result.filter((o) => o.data_abertura && o.data_abertura >= dataInicio);
-    }
-    if (dataFim) {
-      result = result.filter((o) => o.data_abertura && o.data_abertura <= dataFim);
-    }
-    return result;
-  }, [ordens, statusFilter, tipoFilter, searchText, dataInicio, dataFim]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredOrdens.length / PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const pagedOrdens = filteredOrdens.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
-
-  function setFilter(setter) {
-    return (e) => { setter(e.target.value); setPage(1); };
+  function handleFilterChange(e) {
+    const { name, value } = e.target;
+    setFilters(prev => ({ ...prev, [name]: value }));
   }
 
-  const hasFilters = statusFilter || tipoFilter || searchText || dataInicio || dataFim;
+  function handleSituacaoToggle(codigo) {
+    const cod = Number(codigo);
+    setFilters(prev => {
+      const already = prev.situacoes.includes(cod);
+      return {
+        ...prev,
+        situacoes: already
+          ? prev.situacoes.filter(s => s !== cod)
+          : [...prev.situacoes, cod],
+      };
+    });
+  }
 
-  function clearFilters() {
-    setStatusFilter("");
-    setTipoFilter("");
-    setSearchText("");
-    setDataInicio("");
-    setDataFim("");
-    setPage(1);
+  function validate() {
+    const f = filters;
+
+    const hasFilter =
+      f.numero ||
+      f.modelo ||
+      f.ie ||
+      f.cnpj ||
+      (f.razao_social && f.razao_social.length >= 6) ||
+      f.matriculas ||
+      f.situacoes.length > 0 ||
+      f.data_abertura_inicio ||
+      f.data_abertura_fim ||
+      f.data_ciencia_inicio ||
+      f.data_ciencia_fim;
+
+    if (!hasFilter) return "Informe ao menos um filtro para pesquisar.";
+    if (f.razao_social && f.razao_social.length < 6)
+      return "Razão Social: mínimo de 6 caracteres.";
+    if (f.modelo && (!f.data_abertura_inicio || !f.data_abertura_fim))
+      return "Ao informar o Modelo, o período de abertura (início e fim) é obrigatório.";
+
+    return null;
+  }
+
+  async function fetchOrdens(page) {
+    const error = validate();
+    if (error) {
+      setSearchError(error);
+      return;
+    }
+
+    setLoading(true);
+    setSearchError("");
+    try {
+      const data = await apiClient.listOrdens({
+        numero: filters.numero || null,
+        modelo: filters.modelo || null,
+        ie: filters.ie || null,
+        cnpj: filters.cnpj || null,
+        razao_social: filters.razao_social || null,
+        matriculas: filters.matriculas || null,
+        situacoes: filters.situacoes.length > 0 ? filters.situacoes : null,
+        data_abertura_inicio: filters.data_abertura_inicio || null,
+        data_abertura_fim: filters.data_abertura_fim || null,
+        data_ciencia_inicio: filters.data_ciencia_inicio || null,
+        data_ciencia_fim: filters.data_ciencia_fim || null,
+        pagina: page,
+        limite: LIMITE_POR_PAGINA,
+      });
+      setOrdens(data.ordens ?? data);
+      setPaginacao(data.paginacao ?? null);
+      setCurrentPage(page);
+    } catch (err) {
+      setSearchError(err.message || "Erro ao buscar ordens");
+      setOrdens([]);
+      setPaginacao(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleSearch(e) {
+    e.preventDefault();
+    fetchOrdens(1);
+  }
+
+  function handlePageChange(newPage) {
+    fetchOrdens(newPage);
+  }
+
+  function handleClear() {
+    setFilters(EMPTY_FILTERS);
+    setOrdens(null);
+    setPaginacao(null);
+    setCurrentPage(1);
+    setSearchError("");
   }
 
   async function handleOSClick(numero) {
@@ -113,193 +167,262 @@ export default function OrdensPanel({ ordens }) {
     return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
   }
 
+  function renderFiscais(fiscais) {
+    if (!fiscais || fiscais.length === 0) return "-";
+    return fiscais.map((f, i) => (
+      <div key={i} style={{ fontSize: 12, lineHeight: 1.5 }}>
+        {typeof f === "object"
+          ? `${f.nome} (${f.matricula})${f.data_ciencia ? ` — ${formatarData(f.data_ciencia)}` : ""}`
+          : f}
+      </div>
+    ));
+  }
+
+  function renderSituacao(os) {
+    if (os.situacao) {
+      return <span className="badge normal">{os.situacao.codigo} — {os.situacao.descricao}</span>;
+    }
+    return <span className="badge normal">{os.status || "-"}</span>;
+  }
+
+  const totalPages = paginacao?.total_paginas ?? (ordens ? 1 : 1);
+  const totalRegistros = paginacao?.total_registros ?? (ordens?.length ?? 0);
+
   return (
     <>
-      {/* Stats */}
-      <div className="stats-row">
-        <div className="stat-card normal">
-          <div className="stat-value">{osAbertas}</div>
-          <div className="stat-label">Abertas</div>
-        </div>
-        <div className="stat-card alta">
-          <div className="stat-value">{osAndamento}</div>
-          <div className="stat-label">Em Andamento</div>
-        </div>
-        <div className="stat-card concluida">
-          <div className="stat-value">{osConcluidas}</div>
-          <div className="stat-label">Concluidas</div>
-        </div>
-      </div>
-
-      {/* Filters */}
+      {/* Filtros */}
       <div className="card filters-card">
         <div className="filters-header">
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Filtros</h3>
-          {hasFilters && (
-            <button className="small secondary" onClick={clearFilters}>
-              Limpar Filtros
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Filtros de Pesquisa</h3>
+          <button className="small secondary" type="button" onClick={handleClear}>Limpar</button>
+        </div>
+
+        <form onSubmit={handleSearch}>
+          {/* Linha 1: numero, modelo, ie, cnpj */}
+          <div className="filters-grid" style={{ marginBottom: 10 }}>
+            <div className="filter-group">
+              <label className="filter-label">N&uacute;mero OS</label>
+              <input
+                type="text"
+                name="numero"
+                value={filters.numero}
+                onChange={handleFilterChange}
+                placeholder="Ex: OS-2026-001"
+                className="filter-select"
+              />
+            </div>
+            <div className="filter-group">
+              <label className="filter-label">
+                Modelo
+                {filters.modelo && (!filters.data_abertura_inicio || !filters.data_abertura_fim) && (
+                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>*requer período de abertura</span>
+                )}
+              </label>
+              <select name="modelo" value={filters.modelo} onChange={handleFilterChange} className="filter-select">
+                <option value="">Todos</option>
+                {Object.entries(modeloLabels).map(([code, label]) => (
+                  <option key={code} value={code}>{code} — {label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="filter-group">
+              <label className="filter-label">IE</label>
+              <input
+                type="text"
+                name="ie"
+                value={filters.ie}
+                onChange={handleFilterChange}
+                placeholder="Inscri&ccedil;&atilde;o Estadual"
+                className="filter-select"
+              />
+            </div>
+            <div className="filter-group">
+              <label className="filter-label">CNPJ</label>
+              <input
+                type="text"
+                name="cnpj"
+                value={filters.cnpj}
+                onChange={handleFilterChange}
+                placeholder="CNPJ do contribuinte"
+                className="filter-select"
+              />
+            </div>
+          </div>
+
+          {/* Linha 2: razao_social, matriculas */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+            <div className="filter-group">
+              <label className="filter-label">
+                Raz&atilde;o Social
+                {filters.razao_social.length > 0 && filters.razao_social.length < 6 && (
+                  <span style={{ color: "#e53e3e", marginLeft: 8, fontSize: 11 }}>
+                    m&iacute;n. 6 caracteres ({filters.razao_social.length}/6)
+                  </span>
+                )}
+              </label>
+              <input
+                type="text"
+                name="razao_social"
+                value={filters.razao_social}
+                onChange={handleFilterChange}
+                placeholder="Parte do nome (m&iacute;n. 6 chars)"
+                className="filter-select"
+              />
+            </div>
+            <div className="filter-group">
+              <label className="filter-label">Matr&iacute;culas dos Fiscais</label>
+              <input
+                type="text"
+                name="matriculas"
+                value={filters.matriculas}
+                onChange={handleFilterChange}
+                placeholder="Ex: 123456, 789012"
+                className="filter-select"
+              />
+            </div>
+          </div>
+
+          {/* Linha 3: datas */}
+          <div className="filters-grid" style={{ marginBottom: 10 }}>
+            <div className="filter-group">
+              <label className="filter-label">
+                Abertura — In&iacute;cio
+                {filters.modelo && !filters.data_abertura_inicio && (
+                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>*obrigat&oacute;rio</span>
+                )}
+              </label>
+              <input type="date" name="data_abertura_inicio" value={filters.data_abertura_inicio} onChange={handleFilterChange} className="filter-select" />
+            </div>
+            <div className="filter-group">
+              <label className="filter-label">
+                Abertura — Fim
+                {filters.modelo && !filters.data_abertura_fim && (
+                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>*obrigat&oacute;rio</span>
+                )}
+              </label>
+              <input type="date" name="data_abertura_fim" value={filters.data_abertura_fim} onChange={handleFilterChange} className="filter-select" />
+            </div>
+            <div className="filter-group">
+              <label className="filter-label">Ci&ecirc;ncia — In&iacute;cio</label>
+              <input type="date" name="data_ciencia_inicio" value={filters.data_ciencia_inicio} onChange={handleFilterChange} className="filter-select" />
+            </div>
+            <div className="filter-group">
+              <label className="filter-label">Ci&ecirc;ncia — Fim</label>
+              <input type="date" name="data_ciencia_fim" value={filters.data_ciencia_fim} onChange={handleFilterChange} className="filter-select" />
+            </div>
+          </div>
+
+          {/* Situacoes: checkboxes */}
+          <div style={{ marginBottom: 14 }}>
+            <label className="filter-label" style={{ display: "block", marginBottom: 6 }}>Situa&ccedil;&atilde;o</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 20px" }}>
+              {SITUACOES.map(([cod, desc]) => (
+                <label
+                  key={cod}
+                  style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer", userSelect: "none" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={filters.situacoes.includes(Number(cod))}
+                    onChange={() => handleSituacaoToggle(cod)}
+                  />
+                  <span>{cod} — {desc}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button
+              type="submit"
+              disabled={loading}
+              style={{ background: "#1a3a6c", color: "#fff", border: "none", padding: "8px 24px", borderRadius: 6, fontWeight: 600, fontSize: 13, cursor: loading ? "not-allowed" : "pointer" }}
+            >
+              {loading ? "Pesquisando..." : "Pesquisar"}
             </button>
-          )}
-        </div>
-
-        {/* Search */}
-        <div style={{ marginBottom: 12 }}>
-          <input
-            type="text"
-            placeholder="Buscar por numero, razao social, IE, matricula ou fiscal..."
-            value={searchText}
-            onChange={(e) => { setSearchText(e.target.value); setPage(1); }}
-            style={{ width: "100%", padding: "8px 12px", borderRadius: 6, border: "1px solid #d1d5db", fontSize: 13 }}
-          />
-        </div>
-
-        <div className="filters-grid">
-          <div className="filter-group">
-            <label className="filter-label">Status</label>
-            <select value={statusFilter} onChange={setFilter(setStatusFilter)} className="filter-select">
-              <option value="">Todos</option>
-              {Object.entries(statusLabels).map(([key, label]) => (
-                <option key={key} value={key}>{label}</option>
-              ))}
-            </select>
           </div>
+        </form>
 
-          <div className="filter-group">
-            <label className="filter-label">Tipo</label>
-            <select value={tipoFilter} onChange={setFilter(setTipoFilter)} className="filter-select">
-              <option value="">Todos</option>
-              {Object.entries(tipoLabels).map(([key, label]) => (
-                <option key={key} value={key}>{label}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="filter-group">
-            <label className="filter-label">Data Inicio</label>
-            <input type="date" value={dataInicio} onChange={setFilter(setDataInicio)} className="filter-select" />
-          </div>
-
-          <div className="filter-group">
-            <label className="filter-label">Data Fim</label>
-            <input type="date" value={dataFim} onChange={setFilter(setDataFim)} className="filter-select" />
-          </div>
-        </div>
-
-        {/* Active filter tags */}
-        {hasFilters && (
-          <div className="active-filters">
-            {searchText && (
-              <span className="filter-tag">
-                Busca: &quot;{searchText}&quot;
-                <button onClick={() => setSearchText("")}>&times;</button>
-              </span>
-            )}
-            {statusFilter && (
-              <span className="filter-tag">
-                Status: {statusLabels[statusFilter]}
-                <button onClick={() => setStatusFilter("")}>&times;</button>
-              </span>
-            )}
-            {tipoFilter && (
-              <span className="filter-tag">
-                Tipo: {tipoLabels[tipoFilter]}
-                <button onClick={() => setTipoFilter("")}>&times;</button>
-              </span>
-            )}
-            {dataInicio && (
-              <span className="filter-tag">
-                Data In&iacute;cio: {formatarData(dataInicio)}
-                <button onClick={() => setDataInicio("")}>&times;</button>
-              </span>
-            )}
-            {dataFim && (
-              <span className="filter-tag">
-                Data Fim: {formatarData(dataFim)}
-                <button onClick={() => setDataFim("")}>&times;</button>
-              </span>
-            )}
-          </div>
+        {searchError && (
+          <div className="alert error" style={{ marginTop: 10 }}>{searchError}</div>
         )}
       </div>
 
-      {/* OS Table */}
+      {/* Resultado */}
       <div className="card">
-        <h2>Ordens de Servico ({filteredOrdens.length}) — pág. {safePage}/{totalPages}</h2>
-        <p className="muted" style={{ marginBottom: 12 }}>
-          Dados da API externa (servidor Informix). Somente consulta.
-        </p>
-        {filteredOrdens.length === 0 ? (
+        {ordens === null ? (
           <div className="empty-state">
-            <p className="muted">Nenhuma ordem de servico encontrada.</p>
+            <p className="muted">Preencha os filtros acima e clique em <strong>Pesquisar</strong> para carregar as ordens.</p>
           </div>
         ) : (
-          <div className="table-container">
-            <table>
-              <thead>
-                <tr>
-                  <th>Numero</th>
-                  <th>Tipo</th>
-                  <th>IE</th>
-                  <th>Razao Social</th>
-                  <th>Matr&iacute;cula Supervisor</th>
-                  <th>Fiscais</th>
-                  <th>Status</th>
-                  <th>Abertura</th>
-                  <th>Ciencia</th>
-                  <th>Ult. Mov.</th>
-                  <th>Parado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pagedOrdens.map((os) => (
-                  <tr key={os.numero} className="os-row-clickable" onClick={() => handleOSClick(os.numero)} title="Clique para ver detalhes">
-                    <td><strong>{os.numero}</strong></td>
-                    <td><span className="badge normal">{os.tipo}</span></td>
-                    <td>{os.ie}</td>
-                    <td>{os.razao_social}</td>
-                    <td>{os.matricula_supervisor || "-"}</td>
-                    <td>
-                      {os.fiscais && os.fiscais.length > 0
-                        ? os.fiscais.map((f, i) => (
-                            <div key={i} style={{ fontSize: 12 }}>{f}</div>
-                          ))
-                        : "-"}
-                    </td>
-                    <td><span className={`badge ${os.status}`}>{statusLabels[os.status] || os.status}</span></td>
-                    <td>{formatarData(os.data_abertura)}</td>
-                    <td>{formatarData(os.data_ciencia)}</td>
-                    <td>{formatarData(os.data_ultima_movimentacao)}</td>
-                    <td>
-                      {os.status !== "concluida" && os.status !== "cancelada" ? (
-                        <span className={`badge ${os.dias_parado > 15 ? "cancelada" : os.dias_parado > 7 ? "urgente" : "normal"}`}>
-                          {os.dias_parado} dias
-                        </span>
-                      ) : (
-                        <span className="muted">-</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+          <>
+            <h2>
+              Ordens de Servi&ccedil;o ({totalRegistros} registros) &mdash; p&aacute;g. {currentPage}/{totalPages}
+            </h2>
+            <p className="muted" style={{ marginBottom: 12 }}>
+              Dados do Informix. Somente consulta.
+            </p>
+            {ordens.length === 0 ? (
+              <div className="empty-state">
+                <p className="muted">Nenhuma ordem de servi&ccedil;o encontrada para os filtros informados.</p>
+              </div>
+            ) : (
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>N&uacute;mero</th>
+                      <th>Modelo</th>
+                      <th>IE</th>
+                      <th>CNPJ</th>
+                      <th>Raz&atilde;o Social</th>
+                      <th>Fiscais (matr&iacute;cula / ci&ecirc;ncia)</th>
+                      <th>Situa&ccedil;&atilde;o</th>
+                      <th>Abertura</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ordens.map((os) => {
+                      const numeroOS = os.numero_os || os.numero;
+                      return (
+                        <tr
+                          key={numeroOS}
+                          className="os-row-clickable"
+                          onClick={() => handleOSClick(numeroOS)}
+                          title="Clique para ver detalhes"
+                        >
+                          <td><strong>{numeroOS}</strong></td>
+                          <td>{os.modelo || os.tipo || "-"}</td>
+                          <td>{os.ie}</td>
+                          <td>{os.cnpj || "-"}</td>
+                          <td>{os.razao_social}</td>
+                          <td>{renderFiscais(os.fiscais)}</td>
+                          <td>{renderSituacao(os)}</td>
+                          <td>{formatarData(os.data_abertura)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
-        {/* Pagination controls */}
-        {totalPages > 1 && (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 16 }}>
-            <button className="small secondary" onClick={() => setPage(1)} disabled={safePage === 1}>«</button>
-            <button className="small secondary" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={safePage === 1}>‹ Anterior</button>
-            <span style={{ fontSize: 13, color: "#6b7280" }}>
-              {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, filteredOrdens.length)} de {filteredOrdens.length}
-            </span>
-            <button className="small secondary" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={safePage === totalPages}>Próxima ›</button>
-            <button className="small secondary" onClick={() => setPage(totalPages)} disabled={safePage === totalPages}>»</button>
-          </div>
+            {totalPages > 1 && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 16 }}>
+                <button className="small secondary" onClick={() => handlePageChange(1)} disabled={currentPage === 1 || loading}>«</button>
+                <button className="small secondary" onClick={() => handlePageChange(currentPage - 1)} disabled={currentPage === 1 || loading}>‹ Anterior</button>
+                <span style={{ fontSize: 13, color: "#6b7280" }}>
+                  P&aacute;gina {currentPage} de {totalPages} &mdash; {totalRegistros} registros
+                </span>
+                <button className="small secondary" onClick={() => handlePageChange(currentPage + 1)} disabled={currentPage === totalPages || loading}>Pr&oacute;xima ›</button>
+                <button className="small secondary" onClick={() => handlePageChange(totalPages)} disabled={currentPage === totalPages || loading}>»</button>
+              </div>
+            )}
+          </>
         )}
       </div>
 
-      {/* Loading overlay */}
+      {/* Loading overlay detalhes */}
       {loadingDetail && (
         <div className="confirm-overlay">
           <div className="confirm-modal">
@@ -329,34 +452,28 @@ export default function OrdensPanel({ ordens }) {
             {/* Header */}
             <div className="os-detail-header">
               <div>
-                <h2 style={{ margin: 0, fontSize: 18 }}>{selectedOS.numero}</h2>
+                <h2 style={{ margin: 0, fontSize: 18 }}>{selectedOS.numero_os || selectedOS.numero}</h2>
                 <p style={{ margin: "4px 0 0", color: "var(--text-secondary)", fontSize: 13 }}>
                   {selectedOS.razao_social}
                 </p>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span className={`badge ${selectedOS.status}`}>{statusLabels[selectedOS.status] || selectedOS.status}</span>
+                {selectedOS.situacao
+                  ? <span className="badge normal">{selectedOS.situacao.codigo} — {selectedOS.situacao.descricao}</span>
+                  : <span className="badge normal">{selectedOS.status || "-"}</span>
+                }
                 <button className="small secondary" onClick={closeDetail} style={{ fontSize: 18, lineHeight: 1, padding: "4px 10px" }}>&times;</button>
               </div>
             </div>
 
-            {/* Tabs: Info + Movimentacoes */}
+            {/* Body */}
             <div className="os-detail-body">
-              {/* Informacoes da OS */}
               <div className="os-detail-section">
-                <h3 className="os-detail-section-title">Informacoes da Ordem</h3>
+                <h3 className="os-detail-section-title">Informa&ccedil;&otilde;es da Ordem</h3>
                 <div className="os-detail-grid">
                   <div className="os-detail-field">
-                    <span className="os-detail-label">Tipo</span>
-                    <span className="os-detail-value"><span className="badge normal">{selectedOS.tipo}</span></span>
-                  </div>
-                  <div className="os-detail-field">
-                    <span className="os-detail-label">Prioridade</span>
-                    <span className="os-detail-value">
-                      <span className={`badge ${selectedOS.prioridade === "urgente" ? "cancelada" : selectedOS.prioridade === "alta" ? "urgente" : "normal"}`}>
-                        {selectedOS.prioridade || "-"}
-                      </span>
-                    </span>
+                    <span className="os-detail-label">Modelo</span>
+                    <span className="os-detail-value">{selectedOS.modelo || selectedOS.tipo || "-"}</span>
                   </div>
                   <div className="os-detail-field">
                     <span className="os-detail-label">IE</span>
@@ -367,7 +484,7 @@ export default function OrdensPanel({ ordens }) {
                     <span className="os-detail-value">{selectedOS.cnpj || "-"}</span>
                   </div>
                   <div className="os-detail-field">
-                    <span className="os-detail-label">Endereco</span>
+                    <span className="os-detail-label">Endere&ccedil;o</span>
                     <span className="os-detail-value">{selectedOS.endereco || "-"}</span>
                   </div>
                   <div className="os-detail-field">
@@ -384,59 +501,47 @@ export default function OrdensPanel({ ordens }) {
                   </div>
                   <div className="os-detail-field">
                     <span className="os-detail-label">Fiscais</span>
-                    <span className="os-detail-value">{selectedOS.fiscais?.join(", ") || "-"}</span>
-                  </div>
-                  <div className="os-detail-field">
-                    <span className="os-detail-label">Dias Parado</span>
                     <span className="os-detail-value">
-                      {selectedOS.status !== "concluida" && selectedOS.status !== "cancelada" ? (
-                        <span className={`badge ${selectedOS.dias_parado > 15 ? "cancelada" : selectedOS.dias_parado > 7 ? "urgente" : "normal"}`}>
-                          {selectedOS.dias_parado} dias
-                        </span>
-                      ) : "-"}
+                      {selectedOS.fiscais?.length > 0
+                        ? selectedOS.fiscais.map((f, i) => (
+                            <div key={i}>
+                              {typeof f === "object"
+                                ? `${f.nome} — Mat. ${f.matricula}${f.data_ciencia ? ` (ci&ecirc;ncia: ${formatarData(f.data_ciencia)})` : ""}`
+                                : f}
+                            </div>
+                          ))
+                        : "-"}
                     </span>
                   </div>
                 </div>
 
-                {/* Datas */}
                 <div className="os-detail-dates">
                   <div className="os-detail-field">
                     <span className="os-detail-label">Abertura</span>
                     <span className="os-detail-value">{formatarData(selectedOS.data_abertura)}</span>
                   </div>
-                  <div className="os-detail-field">
-                    <span className="os-detail-label">Ciencia</span>
-                    <span className="os-detail-value">{formatarData(selectedOS.data_ciencia)}</span>
-                  </div>
-                  <div className="os-detail-field">
-                    <span className="os-detail-label">Ult. Movimentacao</span>
-                    <span className="os-detail-value">{formatarData(selectedOS.data_ultima_movimentacao)}</span>
-                  </div>
                 </div>
 
-                {/* Objeto */}
                 {selectedOS.objeto && (
                   <div style={{ marginTop: 16 }}>
-                    <span className="os-detail-label">Objeto da Fiscalizacao</span>
+                    <span className="os-detail-label">Objeto da Fiscaliza&ccedil;&atilde;o</span>
                     <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 }}>{selectedOS.objeto}</p>
                   </div>
                 )}
-
-                {/* Observacoes */}
                 {selectedOS.observacoes && (
                   <div style={{ marginTop: 12 }}>
-                    <span className="os-detail-label">Observacoes</span>
+                    <span className="os-detail-label">Observa&ccedil;&otilde;es</span>
                     <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 }}>{selectedOS.observacoes}</p>
                   </div>
                 )}
               </div>
 
-              {/* Movimentacoes */}
-              <div className="os-detail-section">
-                <h3 className="os-detail-section-title">
-                  Movimentacoes ({selectedOS.movimentacoes?.length || 0})
-                </h3>
-                {selectedOS.movimentacoes && selectedOS.movimentacoes.length > 0 ? (
+              {/* Movimentacoes — exibidas apenas se o endpoint de detalhe retornar */}
+              {selectedOS.movimentacoes && selectedOS.movimentacoes.length > 0 && (
+                <div className="os-detail-section">
+                  <h3 className="os-detail-section-title">
+                    Movimenta&ccedil;&otilde;es ({selectedOS.movimentacoes.length})
+                  </h3>
                   <div className="os-movimentacoes-timeline">
                     {selectedOS.movimentacoes.map((mov, idx) => (
                       <div key={idx} className="os-mov-item">
@@ -447,21 +552,23 @@ export default function OrdensPanel({ ordens }) {
                             <span className="os-mov-date">{formatarData(mov.data)}</span>
                           </div>
                           <p className="os-mov-desc">{mov.descricao}</p>
-                          <span className="os-mov-resp">Responsavel: {mov.responsavel}</span>
+                          <span className="os-mov-resp">Respons&aacute;vel: {mov.responsavel}</span>
                         </div>
                       </div>
                     ))}
                   </div>
-                ) : (
-                  <p className="muted" style={{ fontSize: 13 }}>Nenhuma movimentacao registrada.</p>
-                )}
-              </div>
+                </div>
+              )}
             </div>
 
             {/* Footer */}
             <div className="os-detail-footer">
               <button className="small secondary" onClick={closeDetail}>Fechar</button>
-              <button className="small" style={{ background: "#1a3a6c", color: "#fff", border: "none" }} onClick={() => handleDownloadPdf(selectedOS.numero)}>
+              <button
+                className="small"
+                style={{ background: "#1a3a6c", color: "#fff", border: "none" }}
+                onClick={() => handleDownloadPdf(selectedOS.numero_os || selectedOS.numero)}
+              >
                 &#128196; Baixar PDF
               </button>
             </div>

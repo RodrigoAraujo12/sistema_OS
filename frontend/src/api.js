@@ -139,12 +139,36 @@ class ApiClient {
   }
 
   // Ordens de Servico (somente consulta - API externa)
-  listOrdens(statusFilter = null, tipo = null) {
+  listOrdens({
+    numero = null,
+    modelo = null,
+    ie = null,
+    cnpj = null,
+    razao_social = null,
+    matriculas = null,
+    situacoes = null,       // array de codigos numericos ex: [0, 1, 4]
+    data_abertura_inicio = null,
+    data_abertura_fim = null,
+    data_ciencia_inicio = null,
+    data_ciencia_fim = null,
+    pagina = 1,
+    limite = 20,
+  } = {}) {
     const params = new URLSearchParams();
-    if (statusFilter) params.set("status", statusFilter);
-    if (tipo) params.set("tipo", tipo);
-    const qs = params.toString();
-    return this.request(`/ordens${qs ? `?${qs}` : ""}`);
+    if (numero) params.set("numero_os", numero);
+    if (modelo) params.set("modelo", modelo);
+    if (ie) params.set("ie", ie);
+    if (cnpj) params.set("cnpj", cnpj);
+    if (razao_social) params.set("razao_social", razao_social);
+    if (matriculas) params.set("matriculas", matriculas);
+    if (situacoes && situacoes.length > 0) situacoes.forEach(s => params.append("situacao", s));
+    if (data_abertura_inicio) params.set("data_abertura_ini", data_abertura_inicio);
+    if (data_abertura_fim) params.set("data_abertura_fim", data_abertura_fim);
+    if (data_ciencia_inicio) params.set("data_ciencia_ini", data_ciencia_inicio);
+    if (data_ciencia_fim) params.set("data_ciencia_fim", data_ciencia_fim);
+    params.set("pagina", pagina);
+    params.set("limite", limite);
+    return this.request(`/ordens?${params.toString()}`);
   }
 
   getOrdem(numero) {

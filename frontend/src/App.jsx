@@ -46,7 +46,6 @@ export default function App() {
   const [error, setError] = useState("");
 
   // ─── Data ───────────────────────────────────────────
-  const [ordens, setOrdens] = useState([]);
   const [gerencias, setGerencias] = useState([]);
   const [supervisoes, setSupervisoes] = useState([]);
   const [users, setUsers] = useState([]);
@@ -101,11 +100,7 @@ export default function App() {
     if (!authData) return;
     setError("");
     try {
-      const [ordensData, alertasData] = await Promise.all([
-        apiClient.listOrdens(),
-        apiClient.listarAlertas()
-      ]);
-      setOrdens(ordensData);
+      const alertasData = await apiClient.listarAlertas();
       setAlertas(alertasData);
 
       if (authData.role === "admin") {
@@ -156,7 +151,6 @@ export default function App() {
   function handleLogout() {
     setAuthData(null);
     apiClient.setToken(null);
-    setOrdens([]);
     setGerencias([]);
     setSupervisoes([]);
     setUsers([]);
@@ -203,7 +197,7 @@ export default function App() {
         )}
 
         {activeMenu === "ordens" && (
-          <OrdensPanel ordens={ordens} />
+          <OrdensPanel />
         )}
 
         {activeMenu === "alertas" && (

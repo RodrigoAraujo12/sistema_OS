@@ -8,7 +8,7 @@ da documentacao Swagger/OpenAPI.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ─── Autenticacao ───────────────────────────────────────────────
@@ -110,7 +110,25 @@ class UserResponse(BaseModel):
 class PasswordChangeRequest(BaseModel):
     """Payload para troca de senha (usuario autenticado)."""
     current_password: str
-    new_password: str = Field(min_length=4)
+    new_password: str = Field(min_length=6)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        errors: list[str] = []
+        if len(v) < 6:
+            errors.append("mínimo 6 caracteres")
+        if not any(c.isupper() for c in v):
+            errors.append("pelo menos 1 letra maiúscula")
+        if not any(c.islower() for c in v):
+            errors.append("pelo menos 1 letra minúscula")
+        if not any(c.isdigit() for c in v):
+            errors.append("pelo menos 1 número")
+        if not any(c in "!@#$%^&*()_+-=[]{}|;:',.<>?/~`" for c in v):
+            errors.append("pelo menos 1 caractere especial")
+        if errors:
+            raise ValueError("Senha fraca: " + "; ".join(errors))
+        return v
 
 
 class PasswordResetResponse(BaseModel):
@@ -163,3 +181,44 @@ class AlertaResponse(BaseModel):
     descricao: str
     referencia: str
     data: str
+
+
+# ─── Formato ATF (novo endpoint de listagem de OS) ──────────────
+
+class FiscalATF(BaseModel):
+    """Fiscal com ciencia registrada na OS."""
+    matricula: str
+    nome: str
+    data_ciencia: str | None = None
+
+
+class SituacaoATF(BaseModel):
+    """Situacao da OS no ATF (codigo + descricao)."""
+    codigo: int
+    descricao: str
+
+
+class OSListagemATF(BaseModel):
+    """OS retornada pelo endpoint de listagem do ATF."""
+    numero_os: str
+    modelo: str
+    ie: str
+    cnpj: str | None = None
+    razao_social: str
+    fiscais: list[FiscalATF] = []
+    situacao: SituacaoATF
+    data_abertura: str
+
+
+class PaginacaoATF(BaseModel):
+    """Metadados de paginacao retornados pelo ATF."""
+    pagina_atual: int
+    limite_por_pagina: int
+    total_paginas: int
+    total_registros: int
+
+
+class OrdensATFResponse(BaseModel):
+    """Resposta completa do endpoint de listagem de OS (paginacao + lista)."""
+    paginacao: PaginacaoATF
+    ordens: list[OSListagemATF]
