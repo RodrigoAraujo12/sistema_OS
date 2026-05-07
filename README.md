@@ -78,15 +78,16 @@ O Sistema SEFAZ PB permite que auditores fiscais, supervisores, gerentes e admin
 
 ## Tecnologias
 
-| Camada      | Tecnologia                                       | Versao       |
-| ----------- | ------------------------------------------------ | ------------ |
-| Backend     | Python + FastAPI + Uvicorn                        | 3.13 / 0.111 |
-| Frontend    | React + Chart.js + react-chartjs-2                | 18.3 / 4.5   |
-| Bundler     | esbuild (dev) / Vite (build producao)             | 0.21+        |
-| Banco Local | SQLite (usuarios, gerencias, supervisoes)         | built-in     |
-| Banco Ext.  | IBM Informix via pyodbc (Ordens de Servico)       | ODBC         |
-| PDF         | fpdf2 (geracao de relatorios PDF)                 | 2.8          |
-| Testes      | pytest                                            | 8.x          |
+| Camada      | Tecnologia                                                     | Versao       |
+| ----------- | -------------------------------------------------------------- | ------------ |
+| Backend     | Python + FastAPI + Uvicorn                                     | 3.12 / 0.111 |
+| Frontend    | React + Chart.js + react-chartjs-2                             | 18.3 / 4.5   |
+| Bundler     | Vite                                                           | 5.4          |
+| Banco Local | SQLite (usuarios, gerencias, supervisoes)                      | built-in     |
+| Banco Ext.  | ATF REST/XML API (OS) + IBM Informix via pyodbc (legado)       | HTTPS / ODBC |
+| HTTP Client | requests (chamadas HTTPS ao ATF)                               | 2.31+        |
+| PDF         | fpdf2 (geracao de relatorios PDF)                              | 2.8.3        |
+| Testes      | pytest                                                         | 8.x          |
 
 ## Pre-requisitos
 
@@ -143,14 +144,6 @@ npm --prefix .\frontend run dev
 ### Build do Frontend (producao)
 
 ```powershell
-# Via esbuild (leve, rapido)
-cd frontend
-npx esbuild src/main.jsx --bundle --outfile=public/assets/app.js --loader:.jsx=jsx --loader:.css=css
-
-# Com URL de API customizada
-npx esbuild src/main.jsx --bundle --outfile=public/assets/app.js --loader:.jsx=jsx --loader:.css=css --define:API_BASE_URL='"https://api.sefaz.pb.gov.br"'
-
-# Ou via Vite
 npm --prefix .\frontend run build
 ```
 
@@ -245,11 +238,13 @@ Admin (acesso total)
 - Reset de senha pelo admin (gera senha temporaria)
 
 ### Painel de Ordens de Servico
-- Listagem com filtros: status, tipo, periodo (datas), busca textual (razao social, IE, numero)
+- Listagem com filtros via API ATF: numero da OS, modelo, IE, CNPJ, razao social, matriculas do fiscal/supervisor
+- **Situacoes ATF**: 0-Aguardando Autorizacao, 1-Autorizada, 2-Cancelada, 3-Substituida, 4-Encerrada, 5-Bloqueada, 6-Em Analise para Encerramento, 7-Execucao Suspensa
+- **Modelos**: 1-Normal, 2-Simplificada, 7-Especial, 8-Especifica
+- Filtro por periodo de abertura e por periodo de ciencia (datas inicio/fim)
+- **Paginacao servidor**: 20 registros por pagina (limite maximo: 50)
 - Datas exibidas no formato brasileiro (DD/MM/AAAA)
-- Badges coloridos por prioridade e status
-- Indicador visual de dias parado
-- **Filtro por periodo**: botoes predefinidos (7d, 30d, 90d, 6m, 1ano) + datas customizadas
+- Download de PDF individual de cada OS
 
 ### Alertas Automaticos
 Gerados em tempo real a partir das OS visiveis ao usuario:
@@ -347,22 +342,21 @@ As constantes da formula estao definidas em `backend/external_api.py`:
 |  Frontend     | <---------------> |  Backend (API)     |
 |  React SPA    |   JSON + Bearer   |  FastAPI/Uvicorn   |
 |  Chart.js     |                   |                    |
-+---------------+                   +--------+-----------+
-                                    |        |           |
-                                    | SQLite | Informix  |
-                                    | (local)| (remoto)  |
-                                    |        |           |
-                                    | users  | ordens_   |
-                                    | geren. | servico   |
-                                    | superv.|           |
-                                    +--------+-----------+
++---------------+                   +---+--------+-------+
+                                        |        |
+                                    SQLite    ATF API / Informix
+                                    (local)   (remoto – OS)
+                                        |        |
+                                    users    ordens_
+                                    geren.   servico
+                                    superv.
 ```
 
 ### Fluxo de Dados
 
 1. **Frontend** -> `api.js` -> requisicao HTTP com token Bearer
 2. **Backend** -> `main.py` -> valida token -> chama servico adequado
-3. **Dados de OS** -> `external_api.py` -> tenta Informix via `informix_db.py` -> fallback MOCK
+3. **Dados de OS** -> `external_api.py` -> se `ATF_BASE_URL` configurado: chama API ATF via HTTPS + parse XML -> senao: dados MOCK; Informix permanece como integracao legada
 4. **Dados de usuarios** -> `db.py` -> SQLite local (`app.db`)
 5. **Autenticacao** -> `auth.py` -> PBKDF2 hash + token UUID em memoria
 
@@ -381,35 +375,35 @@ As constantes da formula estao definidas em `backend/external_api.py`:
 ```
 sistema_sefaz/
 |-- backend/                        # API FastAPI (Python)
-|   |-- main.py                     # Endpoints REST, middlewares, seed (540 linhas)
-|   |-- external_api.py             # OS, alertas, dashboard com helpers decompostos (845 linhas)
+|   |-- main.py                     # Endpoints REST, middlewares, seed (1144 linhas)
+|   |-- external_api.py             # OS via ATF/Informix/MOCK, alertas, dashboard (1472 linhas)
 |   |-- auth.py                     # PBKDF2 hash, tokens, login/registro (141 linhas)
 |   |-- db.py                       # SQLite repos: User, Gerencia, Supervisao (335 linhas)
-|   |-- schemas.py                  # Modelos Pydantic request/response (146 linhas)
-|   |-- informix_db.py              # Conexao ODBC com Informix + reconexao automatica (210 linhas)
-|   |-- config.py                   # Variaveis de ambiente (.env)
-|   +-- requirements.txt            # fastapi, uvicorn, python-dotenv, pyodbc, fpdf2
-|-- frontend/                       # SPA React (14 componentes)
+|   |-- schemas.py                  # Modelos Pydantic request/response (224 linhas)
+|   |-- informix_db.py              # Conexao ODBC com Informix + reconexao automatica (legado)
+|   |-- config.py                   # Variaveis de ambiente (.env) incl. ATF_BASE_URL
+|   +-- requirements.txt            # fastapi, uvicorn, python-dotenv, pyodbc, fpdf2, requests
+|-- frontend/                       # SPA React (15 componentes)
 |   |-- src/
-|   |   |-- App.jsx                 # Componente raiz: auth, navegacao, data fetching (245 linhas)
+|   |   |-- App.jsx                 # Componente raiz: auth, navegacao, data fetching (248 linhas)
 |   |   |-- api.js                  # Cliente HTTP (ApiClient, URL configuravel)
 |   |   |-- main.jsx                # Entry point React
-|   |   |-- constants.js            # Labels, formatacao de data
-|   |   |-- styles.css              # CSS com variaveis + dark mode (1481 linhas)
+|   |   |-- constants.js            # Labels, situacaoLabels, modeloLabels, formatarData
+|   |   |-- styles.css              # CSS com variaveis + dark mode
 |   |   +-- components/
 |   |       |-- LoginPage.jsx       # Tela de login
 |   |       |-- ChangePasswordPage.jsx # Troca de senha obrigatoria
 |   |       |-- TopBar.jsx          # Barra superior com navegacao e dark mode
-|   |       |-- OrdensPanel.jsx     # Painel de OS com filtros e paginacao (257 linhas)
+|   |       |-- OrdensPanel.jsx     # Painel de OS com filtros ATF e paginacao servidor (580 linhas)
 |   |       |-- AlertasPanel.jsx    # Painel de alertas
-|   |       |-- DashboardPanel.jsx  # Orquestrador do dashboard com abas e filtros (386 linhas)
-|   |       |-- DashboardGeral.jsx  # Aba Visao Geral: termometro, pizza, evolucao (295 linhas)
+|   |       |-- DashboardPanel.jsx  # Orquestrador do dashboard com abas e filtros
+|   |       |-- DashboardGeral.jsx  # Aba Visao Geral: termometro, pizza, evolucao
 |   |       |-- DashboardGerencias.jsx  # Aba Gerencias: tabela + grafico
 |   |       |-- DashboardSupervisoes.jsx # Aba Supervisoes: tabela + grafico
 |   |       |-- DashboardFiscais.jsx    # Aba Fiscais: carga de trabalho
 |   |       |-- GerenciasAdmin.jsx  # CRUD de gerencias
 |   |       |-- SupervisoesAdmin.jsx # CRUD de supervisoes
-|   |       |-- UsuariosAdmin.jsx   # CRUD de usuarios com cascata (406 linhas)
+|   |       |-- UsuariosAdmin.jsx   # CRUD de usuarios com cascata
 |   |       |-- RelatoriosPanel.jsx  # Gerador de relatorios CSV e PDF com filtros
 |   |       +-- ConfirmModal.jsx    # Modal de confirmacao reutilizavel
 |   |-- public/
@@ -421,16 +415,9 @@ sistema_sefaz/
 |   |-- test_db.py                  # CRUD usuarios, gerencias, supervisoes – SQLite in-memory (16 testes)
 |   |-- test_schemas.py             # Validacao Pydantic, campos obrigatorios/opcionais (14 testes)
 |   |-- test_external_api.py        # Alertas, dashboard, filtros hierarquicos, dias parado (27 testes)
-|   |-- test_integration.py         # Testes E2E com TestClient FastAPI (67 testes)
-|   +-- test_informix.py            # Script standalone de diagnostico Informix (nao coletado pelo pytest)
-|-- database/
-|   |-- schema.sql                  # Schema canonico do Informix (30 OS de exemplo)
-|   +-- queries_teste.sql           # Queries uteis para debug
+|   +-- test_integration.py         # Testes E2E com TestClient FastAPI (67 testes)
 |-- docs/
-|   +-- diagrama-er.md              # Diagrama ER (Mermaid) – SQLite + Informix
-|-- scripts/
-|   |-- informix_setup.ps1          # Setup do ambiente Informix
-|   +-- populate_informix.py        # Popula Informix com 30 OS variadas
+|   +-- diagrama-er.md              # Diagrama ER (Mermaid) – SQLite + ATF
 |-- .github/
 |   +-- copilot-instructions.md     # Instrucoes para GitHub Copilot
 |-- start.bat                       # Inicia backend + frontend (Windows)
@@ -477,11 +464,30 @@ curl -X POST http://localhost:8000/auth/login \
 
 ### Ordens de Servico (somente leitura)
 
-| Metodo | Rota               | Descricao                          | Auth  |
-| ------ | ------------------ | ---------------------------------- | ----- |
-| GET    | `/ordens`          | Lista OS (filtros: status, tipo)   | Token |
-| GET    | `/ordens/{numero}` | Busca OS por numero                | Token |
-| GET    | `/alertas`         | Lista alertas gerados              | Token |
+| Metodo | Rota                   | Descricao                                       | Auth  |
+| ------ | ---------------------- | ----------------------------------------------- | ----- |
+| GET    | `/ordens`              | Lista OS via ATF (com filtros e paginacao)      | Token |
+| GET    | `/ordens/{numero}`     | Busca OS por numero (com verificacao hierarquica) | Token |
+| GET    | `/ordens/{numero}/pdf` | Gera e baixa PDF detalhado de uma OS            | Token |
+| GET    | `/alertas`             | Lista alertas gerados                           | Token |
+
+**Query params de `/ordens`:**
+
+| Parametro          | Tipo        | Descricao                                              |
+| ------------------ | ----------- | ------------------------------------------------------ |
+| `numero_os`        | string      | Numero exato da OS                                     |
+| `modelo`           | string      | Codigo do modelo: 1-Normal, 2-Simplificada, 7-Especial, 8-Especifica |
+| `ie`               | string      | Inscricao Estadual                                     |
+| `cnpj`             | string      | CNPJ do contribuinte                                   |
+| `razao_social`     | string      | Parte do nome (minimo 6 caracteres)                    |
+| `matriculas`       | string      | Matriculas separadas por virgula (fiscal/supervisor)   |
+| `situacao`         | int[]       | Codigos de situacao: 0-Aguardando, 1-Autorizada, 2-Cancelada, 3-Substituida, 4-Encerrada, 5-Bloqueada, 6-Em Analise, 7-Execucao Suspensa |
+| `data_abertura_ini`| string YYYY-MM-DD | Data inicial de abertura                       |
+| `data_abertura_fim`| string YYYY-MM-DD | Data final de abertura                         |
+| `data_ciencia_ini` | string YYYY-MM-DD | Data inicial de ciencia                        |
+| `data_ciencia_fim` | string YYYY-MM-DD | Data final de ciencia                          |
+| `pagina`           | int (>=1)   | Pagina atual (default: 1)                              |
+| `limite`           | int (1-50)  | Registros por pagina (default: 20)                     |
 
 **Headers obrigatorios:**
 ```
@@ -621,63 +627,35 @@ python -m pytest tests/test_auth.py -v
 python -m pytest tests/ --cov=backend --cov-report=term-missing
 ```
 
-## Integracao Informix
+## Integracao ATF
 
-O sistema conecta ao **IBM Informix** para ler Ordens de Servico. Se nao configurado, usa **30 OS MOCK** automaticamente (10 fixas + 20 populadas via script). A conexao possui **reconexao automatica** — em caso de falha, tenta reconectar uma vez antes de reportar erro.
+O sistema consulta a **API ATF (SEFAZ PB)** via HTTPS para ler Ordens de Servico no formato XML. Se `ATF_BASE_URL` nao estiver configurado, usa **dados MOCK** automaticamente.
 
-### Configuracao
-
-1. Instale o **IBM Informix ODBC Driver** (Client SDK)
-2. Preencha as variaveis `INFORMIX_*` no `.env`:
+### Configuracao ATF
 
 ```bash
-INFORMIX_SERVER=ol_informix1170
-INFORMIX_DATABASE=sefaz_db
-INFORMIX_HOST=192.168.1.100
-INFORMIX_PORT=9088
-INFORMIX_USER=informix
-INFORMIX_PASSWORD=SuaSenha
-INFORMIX_PROTOCOL=onsoctcp
+ATF_BASE_URL=https://atf.sefaz.pb.gov.br
 ```
 
-3. Teste a conexao:
-```powershell
-python tests\test_informix.py
-```
+### Situacoes e Modelos (ATF)
 
-### Populando Dados de Teste (Informix)
+| Codigo | Situacao                         |
+| ------ | -------------------------------- |
+| 0      | Aguardando Autorizacao           |
+| 1      | Autorizada                       |
+| 2      | Cancelada                        |
+| 3      | Substituida                      |
+| 4      | Encerrada                        |
+| 5      | Bloqueada                        |
+| 6      | Em Analise para Encerramento     |
+| 7      | Execucao Suspensa                |
 
-```powershell
-# Cria 30 OS variadas no Informix com datas distribuidas em 6 meses
-python scripts\populate_informix.py
-```
-
-### Schema da Tabela (Informix)
-
-```sql
-CREATE TABLE ordens_servico (
-    numero       VARCHAR(20)  PRIMARY KEY,
-    tipo         VARCHAR(20)  NOT NULL,        -- Normal, Especifico, Simplificado
-    ie           VARCHAR(20)  NOT NULL,        -- Inscricao Estadual
-    razao_social VARCHAR(200) NOT NULL,
-    matricula_supervisor VARCHAR(20) NOT NULL,  -- Vincula ao supervisor (users.matricula)
-    fiscais      LVARCHAR(500),                -- Nomes separados por virgula
-    status       VARCHAR(20)  DEFAULT 'aberta', -- aberta/em_andamento/concluida/cancelada
-    prioridade   VARCHAR(20)  DEFAULT 'normal', -- baixa/normal/alta/urgente
-    data_abertura DATE NOT NULL,
-    data_ciencia  DATE,
-    data_ultima_movimentacao DATE NOT NULL
-);
-```
-
-### Teste Local (Informix Developer Edition)
-
-Para testar localmente sem servidor real:
-
-1. Instale o **Informix Developer Edition** (gratuito)
-2. Crie o banco: `dbaccess - database\schema.sql`
-3. Configure `.env` apontando para `localhost`
-4. Use o script `scripts\informix_setup.ps1` para configurar o ambiente
+| Codigo | Modelo        |
+| ------ | ------------- |
+| 1      | Normal        |
+| 2      | Simplificada  |
+| 7      | Especial      |
+| 8      | Especifica    |
 
 ## Configuracao
 
@@ -689,22 +667,19 @@ Todas as variaveis ficam no arquivo `.env` (copiado de `.env.example`):
 | `LOG_LEVEL`          | Nivel de log (DEBUG/INFO/WARNING)      | `INFO`                     |
 | `DEFAULT_PASSWORD`   | Senha temporaria para novos usuarios   | `temp1234`                 |
 | `CORS_ORIGINS`       | Origens permitidas (separadas por `,`) | `http://localhost:5173`    |
-| `INFORMIX_SERVER`    | Servidor Informix                      | (vazio = usa MOCK)         |
-| `INFORMIX_DATABASE`  | Nome do banco                          | —                          |
-| `INFORMIX_HOST`      | Host do servidor                       | —                          |
-| `INFORMIX_PORT`      | Porta ODBC                             | `9088`                     |
-| `INFORMIX_USER`      | Usuario do banco                       | —                          |
-| `INFORMIX_PASSWORD`  | Senha do banco                         | —                          |
-| `INFORMIX_PROTOCOL`  | Protocolo de conexao                   | `onsoctcp`                 |
+| `ATF_BASE_URL`       | URL base da API ATF (vazio = usa MOCK) | `""` (vazio)               |
+| `INFORMIX_SERVER`    | Servidor Informix (legado)             | (vazio = nao usa Informix) |
+| `INFORMIX_DATABASE`  | Nome do banco Informix                 | —                          |
+| `INFORMIX_HOST`      | Host do servidor Informix              | —                          |
+| `INFORMIX_PORT`      | Porta ODBC Informix                    | `9088`                     |
+| `INFORMIX_USER`      | Usuario do banco Informix              | —                          |
+| `INFORMIX_PASSWORD`  | Senha do banco Informix                | —                          |
+| `INFORMIX_PROTOCOL`  | Protocolo de conexao Informix          | `onsoctcp`                 |
 
 ### Variaveis do Frontend (build)
 
-A URL da API pode ser configurada no build via `--define`:
-```powershell
-npx esbuild src/main.jsx --bundle --outfile=public/assets/app.js --define:API_BASE_URL='"https://api.sefaz.pb.gov.br"'
-```
-
-Se `API_BASE_URL` nao for definida no build, o padrao e `http://localhost:8000`.
+A URL da API e configurada automaticamente pelo Vite via `import.meta.env.VITE_API_BASE_URL`.
+Se nao definida, o padrao e `http://localhost:8000`.
 
 ## Troubleshooting
 
@@ -712,6 +687,7 @@ Se `API_BASE_URL` nao for definida no build, o padrao e `http://localhost:8000`.
 | ------------------------------ | ------------------------------------------------------------ |
 | Backend nao inicia             | Verificar se venv esta ativo e porta 8000 livre              |
 | Frontend nao carrega           | Verificar se backend esta rodando e CORS configurado         |
+| Dados MOCK em vez de ATF       | Verificar se `ATF_BASE_URL` esta definido no `.env`          |
 | Informix nao conecta           | Executar `python tests\test_informix.py` para diagnostico    |
 | Dados MOCK em vez de Informix  | Verificar variaveis `INFORMIX_*` no `.env`                   |
 | Dashboard sem dados            | Logar como `admin` – dashboard e exclusivo para admin        |

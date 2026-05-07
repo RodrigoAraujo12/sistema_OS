@@ -114,15 +114,11 @@ export default function DashboardGeral({
                     <span className="termometro-metrica-label">OS</span>
                   </div>
                   <div className="termometro-metrica">
-                    <span className={`termometro-metrica-valor ${g.pct_criticas > 20 ? "text-danger" : g.pct_criticas > 0 ? "text-warning" : ""}`}>{g.pct_criticas}%</span>
-                    <span className="termometro-metrica-label">Criticas ({g.os_criticas})</span>
+                    <span className={`termometro-metrica-valor ${g.pct_sem_ciencia > 20 ? "text-danger" : g.pct_sem_ciencia > 0 ? "text-warning" : ""}`}>{g.pct_sem_ciencia}%</span>
+                    <span className="termometro-metrica-label">Sem Ciencia ({g.os_sem_ciencia})</span>
                   </div>
                   <div className="termometro-metrica">
-                    <span className={`termometro-metrica-valor ${g.dias_parado_medio > 15 ? "text-danger" : g.dias_parado_medio > 7 ? "text-warning" : ""}`}>{g.dias_parado_medio}d</span>
-                    <span className="termometro-metrica-label">Parado</span>
-                  </div>
-                  <div className="termometro-metrica">
-                    <span className="termometro-metrica-valor">{g.taxa_conclusao}%</span>
+                    <span className={`termometro-metrica-valor ${g.taxa_conclusao < 25 ? "text-danger" : g.taxa_conclusao < 50 ? "text-warning" : ""}`}>{g.taxa_conclusao}%</span>
                     <span className="termometro-metrica-label">Concluido</span>
                   </div>
                 </div>
@@ -269,7 +265,7 @@ export default function DashboardGeral({
                         const idx = ctx[0].dataIndex;
                         const g = gerenciasParaChart[idx];
                         if (!g) return "";
-                        return `Total: ${g.total_os} | Taxa: ${g.taxa_conclusao}%\nDias parado: ${g.dias_parado_medio} | Criticas: ${g.os_criticas}`;
+                        return `Total: ${g.total_os} | Taxa: ${g.taxa_conclusao}%\nSem ciencia: ${g.os_sem_ciencia}`;
                       },
                     },
                   },
