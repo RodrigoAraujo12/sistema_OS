@@ -1,16 +1,10 @@
 """
-Servico de dados externos - Ordens de Servico do Informix.
+Servico de dados externos - Ordens de Servico.
 
-Este modulo consulta o banco Informix remoto para obter dados de OS.
-Se o Informix nao estiver configurado, usa dados MOCK para desenvolvimento.
-
-Configuracao do Informix via .env:
-- INFORMIX_SERVER, INFORMIX_DATABASE, INFORMIX_HOST, etc.
-
-Tabela: ordens_servico
-Colunas: numero, tipo, ie, razao_social, matricula_supervisor, fiscais,
-         status, prioridade, data_abertura, data_ciencia,
-         data_ultima_movimentacao
+Fontes de dados (por prioridade):
+1. API ATF via HTTPS + XML (quando ATF_BASE_URL configurado)
+2. IBM Informix via ODBC (legado, quando INFORMIX_* configurados)
+3. Dados MOCK (desenvolvimento)
 """
 
 from __future__ import annotations
@@ -26,14 +20,12 @@ logger = logging.getLogger("sefaz.external_api")
 
 # ─── Constantes de negocio ──────────────────────────────────────
 
-DIAS_CRITICO_THRESHOLD = 15  # OS parada > N dias e considerada critica
 STATUSES_ATIVOS = ("aberta", "em_andamento")
+DIAS_CRITICO_THRESHOLD = 15  # Reservado para uso futuro em alertas
 
 # Pesos da formula de indice de saude (score 0-100 por gerencia)
-PESO_CRITICAS = 0.40       # % de OS criticas → ate -40 pts
-PESO_DIAS_PARADO = 0.5     # Cada dia medio parado → -0.5 pt
-PESO_TAXA_CONCLUSAO = 0.20 # (100 - taxa%) * 0.20 → ate -20 pts
-PESO_SEM_CIENCIA = 0.20    # % sem ciencia → ate -20 pts
+PESO_TAXA_CONCLUSAO = 0.50 # (100 - taxa%) * 0.50 → ate -50 pts
+PESO_SEM_CIENCIA = 0.50    # % sem ciencia * 0.50 → ate -50 pts
 
 
 # ─── MOCK: Ordens de Servico ────────────────────────────────────
@@ -309,35 +301,16 @@ _MOCK_DETALHES: dict[str, dict[str, Any]] = {
 }
 
 
-def _calcular_dias_parado(data_ultima_mov: str | None) -> int:
-    """Calcula quantos dias a OS esta parada desde a ultima movimentacao."""
-    if not data_ultima_mov:
-        return 0
-    try:
-        dt = datetime.strptime(data_ultima_mov, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        delta = datetime.now(timezone.utc) - dt
-        return max(0, delta.days)
-    except (ValueError, TypeError):
-        return 0
-
-
-def _enriquecer_os(os_dict: dict[str, Any]) -> dict[str, Any]:
-    """Adiciona campo calculado dias_parado."""
-    return {
-        **os_dict,
-        "dias_parado": _calcular_dias_parado(os_dict.get("data_ultima_movimentacao")),
-    }
 
 
 # ─── Constantes e helpers Informix ───────────────────────────────
 
 _OS_COLUMNS = """
     numero, tipo, ie, razao_social, matricula_supervisor,
-    fiscais, status, prioridade, data_abertura,
-    data_ciencia, data_ultima_movimentacao
+    fiscais, status, prioridade, data_abertura, data_ciencia
 """
 
-_DATE_FIELDS = ("data_abertura", "data_ciencia", "data_ultima_movimentacao")
+_DATE_FIELDS = ("data_abertura", "data_ciencia")
 
 
 def _normalizar_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -352,7 +325,7 @@ def _normalizar_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _listar_ordens_informix(
-    status_filter: str | None = None,
+    situacao_filter: str | None = None,
     tipo: str | None = None,
 ) -> list[dict[str, Any]] | None:
     """Consulta todas as OS no Informix com filtros opcionais."""
@@ -363,16 +336,13 @@ def _listar_ordens_informix(
     query = f"SELECT {_OS_COLUMNS} FROM ordens_servico WHERE 1=1"
     params: list[str] = []
 
-    if status_filter:
-        query += " AND status = ?"
-        params.append(status_filter)
     if tipo:
         query += " AND tipo = ?"
         params.append(tipo)
 
     try:
         rows = conn.execute_query(query, tuple(params))
-        return [_enriquecer_os(_normalizar_row(row)) for row in rows]
+        return [_normalizar_row(row) for row in rows]
     except Exception:
         logger.exception("Erro ao consultar Informix")
         return None
@@ -421,7 +391,7 @@ def _filtrar_por_hierarquia(
 
 
 def listar_ordens_servico(
-    status_filter: str | None = None,
+    situacao_filter: str | None = None,
     tipo: str | None = None,
     user_role: str | None = None,
     user_matricula: str | None = None,
@@ -435,19 +405,23 @@ def listar_ordens_servico(
     Se nao configurado ou falhar, usa dados MOCK.
     Apos obter os dados, aplica filtro de hierarquia conforme o papel do usuario.
     """
-    result = _listar_ordens_informix(status_filter, tipo)
+    result = _listar_ordens_informix(situacao_filter, tipo)
     if result is not None:
         logger.debug("Dados carregados do Informix: %d OS", len(result))
-        return _filtrar_por_hierarquia(result, user_role, user_matricula, user_name, supervisor_matriculas)
+        ordens = result
+        if situacao_filter is not None:
+            codigo = int(situacao_filter)
+            ordens = [o for o in ordens if o.get("situacao", {}).get("codigo") == codigo]
+        return _filtrar_por_hierarquia(ordens, user_role, user_matricula, user_name, supervisor_matriculas)
 
     logger.debug("Usando dados MOCK (Informix nao configurado)")
     results = list(_MOCK_ORDENS)
-    if status_filter:
-        results = [os for os in results if os["status"] == status_filter]
+    if situacao_filter is not None:
+        codigo = int(situacao_filter)
+        results = [o for o in results if o.get("situacao", {}).get("codigo") == codigo]
     if tipo:
         results = [os for os in results if os["tipo"] == tipo]
-    enriched = [_enriquecer_os(os) for os in results]
-    return _filtrar_por_hierarquia(enriched, user_role, user_matricula, user_name, supervisor_matriculas)
+    return _filtrar_por_hierarquia(results, user_role, user_matricula, user_name, supervisor_matriculas)
 
 
 def _consultar_os_informix(numero: str) -> dict[str, Any] | None:
@@ -462,7 +436,7 @@ def _consultar_os_informix(numero: str) -> dict[str, Any] | None:
         rows = conn.execute_query(query, (numero,))
         if not rows:
             return None
-        return _enriquecer_os(_normalizar_row(rows[0]))
+        return _normalizar_row(rows[0])
     except Exception:
         logger.exception("Erro ao consultar OS %s no Informix", numero)
         return None
@@ -483,7 +457,7 @@ def consultar_os_por_numero(numero: str) -> dict[str, Any] | None:
     logger.debug("Buscando OS %s nos dados MOCK", numero)
     for os in _MOCK_ORDENS:
         if os["numero"] == numero:
-            enriched = _enriquecer_os(os)
+            enriched = dict(os)
             detalhes = _MOCK_DETALHES.get(numero, {})
             enriched["objeto"] = detalhes.get("objeto", "")
             enriched["valor_estimado"] = detalhes.get("valor_estimado", 0)
@@ -578,22 +552,15 @@ def gerar_alertas(
 
 def _calcular_metricas_os(os_list: list[dict[str, Any]]) -> dict[str, Any]:
     """
-    Calcula metricas padrão de uma lista de OS.
+    Calcula metricas de uma lista de OS.
 
-    Reutilizado por visao geral, gerencias, supervisoes e fiscais
-    para evitar duplicacao de logica de contagem.
+    Reutilizado por visao geral, gerencias, supervisoes e fiscais.
     """
     total = len(os_list)
     abertas = sum(1 for o in os_list if o["status"] == "aberta")
     andamento = sum(1 for o in os_list if o["status"] == "em_andamento")
     concluidas = sum(1 for o in os_list if o["status"] == "concluida")
     canceladas = sum(1 for o in os_list if o["status"] == "cancelada")
-    ativas = [o for o in os_list if o["status"] in STATUSES_ATIVOS]
-    dias_parado_medio = (
-        round(sum(o.get("dias_parado", 0) for o in ativas) / len(ativas), 1)
-        if ativas else 0
-    )
-    criticas = sum(1 for o in ativas if o.get("dias_parado", 0) > DIAS_CRITICO_THRESHOLD)
     sem_ciencia = sum(
         1 for o in os_list
         if o["status"] == "aberta" and not o.get("data_ciencia")
@@ -606,27 +573,9 @@ def _calcular_metricas_os(os_list: list[dict[str, Any]]) -> dict[str, Any]:
         "em_andamento": andamento,
         "concluidas": concluidas,
         "canceladas": canceladas,
-        "dias_parado_medio": dias_parado_medio,
-        "os_criticas": criticas,
         "os_sem_ciencia": sem_ciencia,
         "taxa_conclusao": taxa_conclusao,
     }
-
-
-def _calcular_tempo_medio_conclusao(os_list: list[dict[str, Any]]) -> float:
-    """Calcula o tempo medio (em dias) entre abertura e conclusao das OS concluidas."""
-    tempos: list[int] = []
-    for o in os_list:
-        if o["status"] == "concluida" and o.get("data_abertura") and o.get("data_ultima_movimentacao"):
-            try:
-                dt_abertura = datetime.strptime(o["data_abertura"], "%Y-%m-%d")
-                dt_conclusao = datetime.strptime(o["data_ultima_movimentacao"], "%Y-%m-%d")
-                dias = (dt_conclusao - dt_abertura).days
-                if dias >= 0:
-                    tempos.append(dias)
-            except (ValueError, TypeError):
-                pass
-    return round(sum(tempos) / len(tempos), 1) if tempos else 0
 
 
 # ─── Dashboard (consolidacao de metricas para admin) ─────────────
@@ -662,7 +611,6 @@ def gerar_dashboard(
 
     # ── Visao geral (usando helper centralizado) ──────────────
     metricas_gerais = _calcular_metricas_os(todas_os)
-    tempo_medio_conclusao = _calcular_tempo_medio_conclusao(todas_os)
     total_fiscais = sum(1 for u in users if u.get("role") == "fiscal")
     total_supervisores = sum(1 for u in users if u.get("role") == "supervisor")
 
@@ -717,10 +665,8 @@ def gerar_dashboard(
             "os_em_andamento": metricas_gerais["em_andamento"],
             "os_concluidas": metricas_gerais["concluidas"],
             "os_canceladas": metricas_gerais["canceladas"],
-            "dias_parado_medio": metricas_gerais["dias_parado_medio"],
-            "os_criticas": metricas_gerais["os_criticas"],
             "os_sem_ciencia": metricas_gerais["os_sem_ciencia"],
-            "tempo_medio_conclusao": tempo_medio_conclusao,
+            "taxa_conclusao": metricas_gerais["taxa_conclusao"],
             "total_fiscais": total_fiscais,
             "total_supervisores": total_supervisores,
         },
@@ -743,7 +689,6 @@ def _calcular_desempenho_gerencias(
     for gid, nome in gerencia_names.items():
         os_list = ger_os.get(gid, [])
         metricas = _calcular_metricas_os(os_list)
-        tempo_med = _calcular_tempo_medio_conclusao(os_list)
         desempenho.append({
             "id": gid,
             "nome": nome,
@@ -752,12 +697,10 @@ def _calcular_desempenho_gerencias(
             "em_andamento": metricas["em_andamento"],
             "concluidas": metricas["concluidas"],
             "canceladas": metricas["canceladas"],
-            "dias_parado_medio": metricas["dias_parado_medio"],
-            "os_criticas": metricas["os_criticas"],
+            "os_sem_ciencia": metricas["os_sem_ciencia"],
             "taxa_conclusao": metricas["taxa_conclusao"],
-            "tempo_medio_conclusao": tempo_med,
         })
-    desempenho.sort(key=lambda g: g["dias_parado_medio"], reverse=True)
+    desempenho.sort(key=lambda g: g["taxa_conclusao"])
     return desempenho
 
 
@@ -768,11 +711,9 @@ def _calcular_ranking_criticidade(
     """
     Calcula o indice de saude (0-100) para cada gerencia.
 
-    Formula proporcional (escala com volume alto de OS):
-      - % de OS criticas (>15 dias): ate -40 pts
-      - Dias parado medio: -0.5 pt/dia
-      - Taxa de conclusao baixa: ate -20 pts
-      - % de OS sem ciencia: ate -20 pts
+    Formula:
+      - Taxa de conclusao baixa: (100 - taxa%) * 0.50 → ate -50 pts
+      - % de OS sem ciencia: pct_sem_ciencia * 0.50 → ate -50 pts
     """
     ranking = []
     for g in desempenho_gerencias:
@@ -780,26 +721,17 @@ def _calcular_ranking_criticidade(
             ranking.append({
                 "id": g["id"], "nome": g["nome"],
                 "indice_saude": 100, "nivel": "saudavel",
-                "total_os": 0, "os_criticas": 0, "pct_criticas": 0,
-                "os_sem_ciencia": 0, "pct_sem_ciencia": 0,
-                "dias_parado_medio": 0, "taxa_conclusao": 0,
-                "tempo_medio_conclusao": 0, "problemas": [],
+                "total_os": 0, "os_sem_ciencia": 0,
+                "pct_sem_ciencia": 0, "taxa_conclusao": 0,
+                "problemas": [],
             })
             continue
 
-        # OS sem ciencia nesta gerencia
-        os_sem_ciencia_ger = sum(
-            1 for o in ger_os.get(g["id"], [])
-            if o["status"] == "aberta" and not o.get("data_ciencia")
-        )
-
         total = g["total_os"]
-        pct_criticas = (g["os_criticas"] / total) * 100 if total else 0
+        os_sem_ciencia_ger = g["os_sem_ciencia"]
         pct_sem_ciencia = (os_sem_ciencia_ger / total) * 100 if total else 0
 
         score = 100.0
-        score -= pct_criticas * PESO_CRITICAS
-        score -= g["dias_parado_medio"] * PESO_DIAS_PARADO
         score -= (100 - g["taxa_conclusao"]) * PESO_TAXA_CONCLUSAO
         score -= pct_sem_ciencia * PESO_SEM_CIENCIA
         score = max(0, min(100, round(score, 1)))
@@ -813,18 +745,15 @@ def _calcular_ranking_criticidade(
         else:
             nivel = "emergencia"
 
-        problemas = _detectar_problemas(g, pct_criticas, os_sem_ciencia_ger, pct_sem_ciencia)
+        problemas = _detectar_problemas(g, os_sem_ciencia_ger, pct_sem_ciencia)
 
         ranking.append({
             "id": g["id"], "nome": g["nome"],
             "indice_saude": score, "nivel": nivel,
-            "total_os": g["total_os"], "os_criticas": g["os_criticas"],
-            "pct_criticas": round(pct_criticas, 1),
+            "total_os": g["total_os"],
             "os_sem_ciencia": os_sem_ciencia_ger,
             "pct_sem_ciencia": round(pct_sem_ciencia, 1),
-            "dias_parado_medio": g["dias_parado_medio"],
             "taxa_conclusao": g["taxa_conclusao"],
-            "tempo_medio_conclusao": g["tempo_medio_conclusao"],
             "problemas": problemas,
         })
 
@@ -834,22 +763,15 @@ def _calcular_ranking_criticidade(
 
 def _detectar_problemas(
     g: dict[str, Any],
-    pct_criticas: float,
     os_sem_ciencia_ger: int,
     pct_sem_ciencia: float,
 ) -> list[str]:
     """Monta lista de problemas detectados para uma gerencia (ranking)."""
     problemas: list[str] = []
-    if pct_criticas > 20:
-        problemas.append(f'{g["os_criticas"]} OS parada(s) >{DIAS_CRITICO_THRESHOLD} dias ({round(pct_criticas)}%)')
-    elif g["os_criticas"] > 0:
-        problemas.append(f'{g["os_criticas"]} OS parada(s) >{DIAS_CRITICO_THRESHOLD} dias')
     if pct_sem_ciencia > 10:
         problemas.append(f'{os_sem_ciencia_ger} OS sem ciencia ({round(pct_sem_ciencia)}%)')
     elif os_sem_ciencia_ger > 0:
         problemas.append(f'{os_sem_ciencia_ger} OS sem ciencia')
-    if g["dias_parado_medio"] > 10:
-        problemas.append(f'Media {g["dias_parado_medio"]} dias parado')
     if g["taxa_conclusao"] < 30:
         problemas.append(f'Taxa de conclusao {g["taxa_conclusao"]}%')
     return problemas
@@ -875,11 +797,10 @@ def _calcular_desempenho_supervisoes(
             "abertas": metricas["abertas"],
             "em_andamento": metricas["em_andamento"],
             "concluidas": metricas["concluidas"],
-            "dias_parado_medio": metricas["dias_parado_medio"],
-            "os_criticas": metricas["os_criticas"],
+            "os_sem_ciencia": metricas["os_sem_ciencia"],
             "taxa_conclusao": metricas["taxa_conclusao"],
         })
-    desempenho.sort(key=lambda s: s["dias_parado_medio"], reverse=True)
+    desempenho.sort(key=lambda s: s["taxa_conclusao"])
     return desempenho
 
 
@@ -901,15 +822,10 @@ def _calcular_carga_fiscais(
 
     carga = []
     for fiscal_name, os_list in fiscal_os.items():
-        total = len(os_list)
-        dias_med = round(sum(o.get("dias_parado", 0) for o in os_list) / total, 1) if total else 0
-        paradas = sum(1 for o in os_list if o.get("dias_parado", 0) > DIAS_CRITICO_THRESHOLD)
         carga.append({
             "nome": fiscal_name,
             "supervisao_id": fiscal_name_to_sup.get(fiscal_name),
-            "os_ativas": total,
-            "dias_parado_medio": dias_med,
-            "os_criticas": paradas,
+            "os_ativas": len(os_list),
         })
     carga.sort(key=lambda f: f["os_ativas"], reverse=True)
     return carga
@@ -1398,27 +1314,18 @@ def listar_ordens_atf(
 
 
 def _calcular_evolucao_mensal(todas_os: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Calcula evolucao mensal de OS abertas e concluidas (para grafico linha/barra)."""
-    os_por_mes: dict[str, dict[str, int]] = defaultdict(lambda: {"abertas": 0, "concluidas": 0})
+    """Calcula evolucao mensal de OS abertas por mes de abertura."""
+    os_por_mes: dict[str, int] = defaultdict(int)
     for o in todas_os:
         if o.get("data_abertura"):
             try:
                 mes = o["data_abertura"][:7]
-                os_por_mes[mes]["abertas"] += 1
-            except (ValueError, TypeError):
-                pass
-        if o["status"] == "concluida" and o.get("data_ultima_movimentacao"):
-            try:
-                mes = o["data_ultima_movimentacao"][:7]
-                os_por_mes[mes]["concluidas"] += 1
+                os_por_mes[mes] += 1
             except (ValueError, TypeError):
                 pass
 
     meses_ordenados = sorted(os_por_mes.keys())
-    return [
-        {"mes": m, "abertas": os_por_mes[m]["abertas"], "concluidas": os_por_mes[m]["concluidas"]}
-        for m in meses_ordenados
-    ]
+    return [{"mes": m, "abertas": os_por_mes[m]} for m in meses_ordenados]
 
 
 def _calcular_comparativo_mensal(
@@ -1457,10 +1364,8 @@ def _calcular_comparativo_mensal(
     kpi_ant = _calcular_metricas_os(os_ant)
 
     comparativo: dict[str, Any] = {}
-    # Selecionar apenas KPIs relevantes para o comparativo
     chaves_comparativo = (
-        "total_os", "abertas", "em_andamento", "concluidas",
-        "os_criticas", "os_sem_ciencia", "dias_parado_medio",
+        "total_os", "abertas", "em_andamento", "concluidas", "os_sem_ciencia",
     )
     for k in chaves_comparativo:
         val_atual = kpi_atual[k]

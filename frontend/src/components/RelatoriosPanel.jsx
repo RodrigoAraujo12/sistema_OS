@@ -7,7 +7,7 @@
 
 import React, { useState } from "react";
 import apiClient from "../api.js";
-import { statusLabels, tipoLabels } from "../constants.js";
+import { situacaoLabels, modeloLabels } from "../constants.js";
 
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -24,8 +24,8 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
   const [loading, setLoading] = useState(false);
 
   // Filtros OS
-  const [statusFilter, setStatusFilter] = useState("");
-  const [tipoFilter, setTipoFilter] = useState("");
+  const [situacaoFilter, setSituacaoFilter] = useState("");
+  const [modeloFilter, setModeloFilter] = useState("");
   const [dataInicio, setDataInicio] = useState("");
   const [dataFim, setDataFim] = useState("");
   const [search, setSearch] = useState("");
@@ -38,8 +38,8 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
     setLoading(true);
     try {
       const blob = await apiClient.downloadRelatorioOrdens({
-        status: statusFilter || undefined,
-        tipo: tipoFilter || undefined,
+        situacao: situacaoFilter || undefined,
+        modelo: modeloFilter || undefined,
         dataInicio: dataInicio || undefined,
         dataFim: dataFim || undefined,
         search: search || undefined,
@@ -75,8 +75,8 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
     setLoading(true);
     try {
       const blob = await apiClient.downloadRelatorioOrdensPdf({
-        status: statusFilter || undefined,
-        tipo: tipoFilter || undefined,
+        situacao: situacaoFilter || undefined,
+        modelo: modeloFilter || undefined,
         dataInicio: dataInicio || undefined,
         dataFim: dataFim || undefined,
         search: search || undefined,
@@ -109,8 +109,8 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
   }
 
   function handleLimparFiltrosOS() {
-    setStatusFilter("");
-    setTipoFilter("");
+    setSituacaoFilter("");
+    setModeloFilter("");
     setDataInicio("");
     setDataFim("");
     setSearch("");
@@ -134,26 +134,26 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
         </div>
         <p className="relatorio-desc">
           Exporta todas as OS visiveis com filtros aplicados. Inclui numero, tipo, IE, razao social,
-          status, datas e dias parado.
+          situacao e datas.
         </p>
 
         <div className="relatorio-filters">
           <div className="filter-row">
             <div className="filter-group">
-              <label>Status</label>
-              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                <option value="">Todos</option>
-                {Object.entries(statusLabels).map(([val, label]) => (
-                  <option key={val} value={val}>{label}</option>
+              <label>Situa&ccedil;&atilde;o</label>
+              <select value={situacaoFilter} onChange={(e) => setSituacaoFilter(e.target.value)}>
+                <option value="">Todas</option>
+                {Object.entries(situacaoLabels).map(([cod, desc]) => (
+                  <option key={cod} value={cod}>{desc}</option>
                 ))}
               </select>
             </div>
             <div className="filter-group">
-              <label>Tipo</label>
-              <select value={tipoFilter} onChange={(e) => setTipoFilter(e.target.value)}>
+              <label>Modelo</label>
+              <select value={modeloFilter} onChange={(e) => setModeloFilter(e.target.value)}>
                 <option value="">Todos</option>
-                {Object.entries(tipoLabels).map(([val, label]) => (
-                  <option key={val} value={val}>{label}</option>
+                {Object.entries(modeloLabels).map(([cod, label]) => (
+                  <option key={cod} value={cod}>{cod} — {label}</option>
                 ))}
               </select>
             </div>

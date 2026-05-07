@@ -533,11 +533,6 @@ def get_os_pdf(
     if not allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem permissao para esta OS")
 
-    status_map = {
-        "aberta": "Aberta", "em_andamento": "Em Andamento",
-        "concluida": "Concluida", "cancelada": "Cancelada",
-    }
-
     pdf = _PDF(f"Ordem de Servico - {ordem['numero']}")
     pdf.alias_nb_pages()
     pdf.add_page(orientation="P")
@@ -561,7 +556,7 @@ def get_os_pdf(
         pdf.set_font("Helvetica", "", 8)
         pdf.cell(0, 5, _safe(value), new_x="LMARGIN", new_y="NEXT")
 
-    _field("Status", status_map.get(ordem.get("status", ""), ordem.get("status", "")))
+    _field("Status", _fmt_situacao(ordem))
     _field("Tipo", ordem.get("tipo", ""))
     _field("Prioridade", ordem.get("prioridade", ""))
     _field("IE", ordem.get("ie", ""))
@@ -580,10 +575,6 @@ def get_os_pdf(
     pdf.ln(2)
     _field("Abertura", _fmt_data_br(ordem.get("data_abertura")))
     _field("Ciencia", _fmt_data_br(ordem.get("data_ciencia")))
-    _field("Ultima Movimentacao", _fmt_data_br(ordem.get("data_ultima_movimentacao")))
-    dias = _calcular_dias_parado(ordem.get("data_ultima_movimentacao"))
-    if ordem.get("status") in ("aberta", "em_andamento"):
-        _field("Dias Parado", str(dias))
     pdf.ln(2)
 
     # --- Objeto e Observacoes ---
@@ -694,17 +685,6 @@ def get_dashboard(
 
 # ─── Relatorios (sob demanda) ──────────────────────────────────
 
-def _calcular_dias_parado(data_ult: str | None) -> int:
-    """Retorna numero de dias desde a ultima movimentacao."""
-    if not data_ult:
-        return 0
-    try:
-        dt = datetime.strptime(data_ult, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        return max(0, (datetime.now(timezone.utc) - dt).days)
-    except (ValueError, TypeError):
-        return 0
-
-
 def _fmt_data_br(valor: str | None) -> str:
     """Converte data ISO (YYYY-MM-DD) para formato brasileiro (DD/MM/YYYY)."""
     if not valor:
@@ -715,69 +695,82 @@ def _fmt_data_br(valor: str | None) -> str:
         return valor
 
 
-@app.get("/relatorios/ordens")
-def relatorio_ordens_csv(
-    user: dict[str, Any] = Depends(get_current_user),
-    status_filter: str | None = Query(default=None, alias="status"),
-    tipo: str | None = Query(default=None),
-    data_inicio: str | None = Query(default=None),
-    data_fim: str | None = Query(default=None),
-    search: str | None = Query(default=None),
-) -> StreamingResponse:
-    """Gera relatorio CSV das Ordens de Servico visiveis ao usuario, com filtros."""
-    filters = _build_hierarchy_filters(user)
-    rows = listar_ordens_servico(status_filter=status_filter, tipo=tipo, **filters)
+_STATUS_MAP = {
+    "aberta": "Aberta",
+    "em_andamento": "Em Andamento",
+    "concluida": "Concluida",
+    "cancelada": "Cancelada",
+}
 
-    # Filtro por periodo
-    if data_inicio or data_fim:
-        filtered = []
-        for o in rows:
-            dt_ab = o.get("data_abertura", "")
-            if not dt_ab:
-                continue
-            if data_inicio and dt_ab < data_inicio:
-                continue
-            if data_fim and dt_ab > data_fim:
-                continue
-            filtered.append(o)
-        rows = filtered
 
-    # Filtro por texto livre
+def _fmt_situacao(o: dict) -> str:
+    """Retorna label de status/situacao da OS, priorizando campo 'situacao' do ATF."""
+    sit = o.get("situacao")
+    if sit and isinstance(sit, dict):
+        return f"{sit.get('codigo')} — {sit.get('descricao', '')}"
+    return _STATUS_MAP.get(o.get("status", ""), o.get("status", ""))
+
+
+
+def _filtrar_ordens(situacao_filter, modelo, data_inicio, data_fim, search):
+    """Aplica filtros para relatorios usando a API ATF como fonte de dados."""
+    situacoes = [int(situacao_filter)] if situacao_filter is not None else None
+    result = listar_ordens_atf(
+        modelo=modelo,
+        situacoes=situacoes,
+        data_abertura_ini=data_inicio,
+        data_abertura_fim=data_fim,
+        limite=9999,
+    )
+    rows = result.get("ordens", [])
+
     if search:
         term = search.lower()
         rows = [
             o for o in rows
-            if term in o.get("numero", "").lower()
+            if term in o.get("numero_os", "").lower()
             or term in o.get("razao_social", "").lower()
             or term in o.get("ie", "").lower()
-            or term in o.get("matricula_supervisor", "").lower()
-            or any(term in f.lower() for f in o.get("fiscais", []))
+            or term in (o.get("cnpj") or "").lower()
+            or any(term in f.get("nome", "").lower() for f in o.get("fiscais", []))
+            or any(term in f.get("matricula", "").lower() for f in o.get("fiscais", []))
         ]
+    return rows
 
-    # Gerar CSV com BOM para Excel reconhecer UTF-8
+
+def _fiscais_nomes(o: dict[str, Any]) -> str:
+    return ", ".join(f.get("nome", "") for f in o.get("fiscais", []))
+
+
+@app.get("/relatorios/ordens")
+def relatorio_ordens_csv(
+    user: dict[str, Any] = Depends(get_current_user),
+    situacao_filter: str | None = Query(default=None, alias="situacao"),
+    modelo: str | None = Query(default=None),
+    data_inicio: str | None = Query(default=None),
+    data_fim: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+) -> StreamingResponse:
+    """Gera relatorio CSV das Ordens de Servico com filtros."""
+    rows = _filtrar_ordens(situacao_filter, modelo, data_inicio, data_fim, search)
+
     output = io.StringIO()
     output.write("\ufeff")
     writer = csv.writer(output, delimiter=";")
     writer.writerow([
-        "Numero", "Tipo", "IE", "Razao Social", "Matricula Supervisor",
-        "Fiscais", "Status", "Prioridade", "Data Abertura", "Data Ciencia",
-        "Ultima Movimentacao", "Dias Parado",
+        "Numero", "Modelo", "IE", "CNPJ", "Razao Social",
+        "Fiscais", "Situacao", "Data Abertura",
     ])
     for o in rows:
-        dias = _calcular_dias_parado(o.get("data_ultima_movimentacao"))
         writer.writerow([
-            o.get("numero", ""),
-            o.get("tipo", ""),
+            o.get("numero_os", ""),
+            o.get("modelo", ""),
             o.get("ie", ""),
+            o.get("cnpj", "") or "",
             o.get("razao_social", ""),
-            o.get("matricula_supervisor", ""),
-            ", ".join(o.get("fiscais", [])),
-            o.get("status", ""),
-            o.get("prioridade", ""),
+            _fiscais_nomes(o),
+            _fmt_situacao(o),
             _fmt_data_br(o.get("data_abertura")),
-            _fmt_data_br(o.get("data_ciencia")),
-            _fmt_data_br(o.get("data_ultima_movimentacao")),
-            dias,
         ])
 
     output.seek(0)
@@ -790,37 +783,6 @@ def relatorio_ordens_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-
-def _filtrar_ordens(user, status_filter, tipo, data_inicio, data_fim, search):
-    """Aplica filtros comuns de OS para reuso entre CSV e PDF."""
-    filters = _build_hierarchy_filters(user)
-    rows = listar_ordens_servico(status_filter=status_filter, tipo=tipo, **filters)
-
-    if data_inicio or data_fim:
-        filtered = []
-        for o in rows:
-            dt_ab = o.get("data_abertura", "")
-            if not dt_ab:
-                continue
-            if data_inicio and dt_ab < data_inicio:
-                continue
-            if data_fim and dt_ab > data_fim:
-                continue
-            filtered.append(o)
-        rows = filtered
-
-    if search:
-        term = search.lower()
-        rows = [
-            o for o in rows
-            if term in o.get("numero", "").lower()
-            or term in o.get("razao_social", "").lower()
-            or term in o.get("ie", "").lower()
-            or term in o.get("matricula_supervisor", "").lower()
-            or any(term in f.lower() for f in o.get("fiscais", []))
-        ]
-    return rows
 
 
 class _PDF(FPDF):
@@ -844,33 +806,49 @@ class _PDF(FPDF):
         self.cell(0, 10, f"Pagina {self.page_no()}/{{nb}}", align="C")
 
 
+_PDF_CHAR_MAP = str.maketrans({
+    "—": "-", "–": "-",  # em dash, en dash
+    "Á": "A", "Â": "A", "Ã": "A", "À": "A",
+    "É": "E", "Ê": "E", "È": "E",
+    "Í": "I", "Î": "I", "Ì": "I",
+    "Ó": "O", "Ô": "O", "Õ": "O", "Ò": "O",
+    "Ú": "U", "Û": "U", "Ù": "U",
+    "Ç": "C",
+    "á": "a", "â": "a", "ã": "a", "à": "a",
+    "é": "e", "ê": "e", "è": "e",
+    "í": "i", "î": "i", "ì": "i",
+    "ó": "o", "ô": "o", "õ": "o", "ò": "o",
+    "ú": "u", "û": "u", "ù": "u",
+    "ç": "c",
+})
+
+
 def _safe(val) -> str:
-    """Converte valor para string segura para o PDF."""
+    """Converte valor para string ASCII-segura para o PDF (Helvetica nao suporta Unicode)."""
     if val is None:
         return ""
-    return str(val)
+    return str(val).translate(_PDF_CHAR_MAP)
 
 
 @app.get("/relatorios/ordens/pdf")
 def relatorio_ordens_pdf(
     user: dict[str, Any] = Depends(get_current_user),
-    status_filter: str | None = Query(default=None, alias="status"),
-    tipo: str | None = Query(default=None),
+    situacao_filter: str | None = Query(default=None, alias="situacao"),
+    modelo: str | None = Query(default=None),
     data_inicio: str | None = Query(default=None),
     data_fim: str | None = Query(default=None),
     search: str | None = Query(default=None),
 ) -> Response:
     """Gera relatorio PDF das Ordens de Servico."""
-    rows = _filtrar_ordens(user, status_filter, tipo, data_inicio, data_fim, search)
+    rows = _filtrar_ordens(situacao_filter, modelo, data_inicio, data_fim, search)
 
     pdf = _PDF("Relatorio de Ordens de Servico")
     pdf.alias_nb_pages()
     pdf.add_page()
 
     # Cabecalho da tabela
-    headers = ["Numero", "Tipo", "IE", "Razao Social", "Status", "Prioridade",
-               "Dt Abertura", "Dt Ciencia", "Ult. Mov.", "Dias Parado"]
-    col_widths = [25, 18, 22, 60, 22, 20, 24, 24, 24, 20]
+    headers = ["Numero", "Modelo", "IE", "Razao Social", "Fiscais", "Situacao", "Dt Abertura"]
+    col_widths = [28, 22, 25, 60, 60, 38, 27]
 
     pdf.set_font("Helvetica", "B", 7)
     for i, h in enumerate(headers):
@@ -880,18 +858,14 @@ def relatorio_ordens_pdf(
     # Dados
     pdf.set_font("Helvetica", "", 6.5)
     for o in rows:
-        dias = _calcular_dias_parado(o.get("data_ultima_movimentacao"))
         vals = [
-            _safe(o.get("numero")),
-            _safe(o.get("tipo")),
+            _safe(o.get("numero_os")),
+            _safe(o.get("modelo")),
             _safe(o.get("ie")),
-            _safe(o.get("razao_social"))[:40],
-            _safe(o.get("status")),
-            _safe(o.get("prioridade")),
+            _safe(o.get("razao_social"))[:35],
+            _safe(_fiscais_nomes(o))[:35],
+            _safe(_fmt_situacao(o))[:28],
             _fmt_data_br(o.get("data_abertura")),
-            _fmt_data_br(o.get("data_ciencia")),
-            _fmt_data_br(o.get("data_ultima_movimentacao")),
-            str(dias),
         ]
         for i, v in enumerate(vals):
             pdf.cell(col_widths[i], 5, v, border=1, align="C")
@@ -941,14 +915,14 @@ def relatorio_dashboard_pdf(
     pdf.set_font("Helvetica", "B", 9)
     pdf.cell(0, 7, "Resumo Geral", new_x="LMARGIN", new_y="NEXT")
     rg_headers = ["Total OS", "Abertas", "Em Andamento", "Concluidas",
-                  "Canceladas", "Dias Parado Med.", "Criticas", "Sem Ciencia"]
+                  "Canceladas", "Sem Ciencia", "Taxa (%)"]
     rg_vals = [
         visao.get("total_os", 0), visao.get("os_abertas", 0),
         visao.get("os_em_andamento", 0), visao.get("os_concluidas", 0),
-        visao.get("os_canceladas", 0), visao.get("dias_parado_medio", 0),
-        visao.get("os_criticas", 0), visao.get("os_sem_ciencia", 0),
+        visao.get("os_canceladas", 0), visao.get("os_sem_ciencia", 0),
+        visao.get("taxa_conclusao", 0),
     ]
-    w = 33
+    w = 38
     pdf.set_font("Helvetica", "B", 7)
     for h in rg_headers:
         pdf.cell(w, 6, h, border=1, align="C")
@@ -962,8 +936,8 @@ def relatorio_dashboard_pdf(
     pdf.set_font("Helvetica", "B", 9)
     pdf.cell(0, 7, "Desempenho por Gerencia", new_x="LMARGIN", new_y="NEXT")
     g_headers = ["Gerencia", "Total", "Abertas", "Andamento", "Concluidas",
-                 "Taxa (%)", "Dias Par. Med.", "Criticas", "Tempo Med."]
-    g_widths = [55, 20, 22, 25, 25, 22, 30, 22, 30]
+                 "Taxa (%)", "Sem Ciencia"]
+    g_widths = [65, 22, 24, 27, 27, 24, 30]
     pdf.set_font("Helvetica", "B", 7)
     for i, h in enumerate(g_headers):
         pdf.cell(g_widths[i], 6, h, border=1, align="C")
@@ -971,11 +945,10 @@ def relatorio_dashboard_pdf(
     pdf.set_font("Helvetica", "", 6.5)
     for g in dashboard.get("desempenho_gerencias", []):
         vals = [
-            _safe(g.get("nome"))[:35], str(g.get("total_os", 0)),
+            _safe(g.get("nome"))[:40], str(g.get("total_os", 0)),
             str(g.get("abertas", 0)), str(g.get("em_andamento", 0)),
             str(g.get("concluidas", 0)), str(g.get("taxa_conclusao", 0)),
-            str(g.get("dias_parado_medio", 0)), str(g.get("os_criticas", 0)),
-            str(g.get("tempo_medio_conclusao", 0)),
+            str(g.get("os_sem_ciencia", 0)),
         ]
         for i, v in enumerate(vals):
             pdf.cell(g_widths[i], 5, v, border=1, align="C")
@@ -986,8 +959,8 @@ def relatorio_dashboard_pdf(
     pdf.set_font("Helvetica", "B", 9)
     pdf.cell(0, 7, "Desempenho por Supervisao", new_x="LMARGIN", new_y="NEXT")
     s_headers = ["Supervisao", "Gerencia", "Total", "Abertas", "Andamento",
-                 "Concluidas", "Taxa (%)", "Dias Par. Med.", "Criticas"]
-    s_widths = [50, 50, 20, 22, 25, 25, 22, 30, 22]
+                 "Concluidas", "Taxa (%)", "Sem Ciencia"]
+    s_widths = [55, 55, 20, 22, 25, 25, 22, 28]
     pdf.set_font("Helvetica", "B", 7)
     for i, h in enumerate(s_headers):
         pdf.cell(s_widths[i], 6, h, border=1, align="C")
@@ -995,11 +968,10 @@ def relatorio_dashboard_pdf(
     pdf.set_font("Helvetica", "", 6.5)
     for s in dashboard.get("desempenho_supervisoes", []):
         vals = [
-            _safe(s.get("nome"))[:32], _safe(s.get("gerencia_nome"))[:32],
+            _safe(s.get("nome"))[:35], _safe(s.get("gerencia_nome"))[:35],
             str(s.get("total_os", 0)), str(s.get("abertas", 0)),
             str(s.get("em_andamento", 0)), str(s.get("concluidas", 0)),
-            str(s.get("taxa_conclusao", 0)), str(s.get("dias_parado_medio", 0)),
-            str(s.get("os_criticas", 0)),
+            str(s.get("taxa_conclusao", 0)), str(s.get("os_sem_ciencia", 0)),
         ]
         for i, v in enumerate(vals):
             pdf.cell(s_widths[i], 5, v, border=1, align="C")
@@ -1009,8 +981,8 @@ def relatorio_dashboard_pdf(
     # ─── Fiscais ───
     pdf.set_font("Helvetica", "B", 9)
     pdf.cell(0, 7, "Carga por Fiscal", new_x="LMARGIN", new_y="NEXT")
-    f_headers = ["Fiscal", "OS Ativas", "Dias Parado Med.", "Criticas"]
-    f_widths = [100, 40, 50, 40]
+    f_headers = ["Fiscal", "OS Ativas"]
+    f_widths = [140, 50]
     pdf.set_font("Helvetica", "B", 7)
     for i, h in enumerate(f_headers):
         pdf.cell(f_widths[i], 6, h, border=1, align="C")
@@ -1018,8 +990,7 @@ def relatorio_dashboard_pdf(
     pdf.set_font("Helvetica", "", 6.5)
     for f in dashboard.get("carga_fiscais", []):
         vals = [
-            _safe(f.get("nome"))[:60], str(f.get("os_ativas", 0)),
-            str(f.get("dias_parado_medio", 0)), str(f.get("os_criticas", 0)),
+            _safe(f.get("nome"))[:85], str(f.get("os_ativas", 0)),
         ]
         for i, v in enumerate(vals):
             pdf.cell(f_widths[i], 5, v, border=1, align="C")
@@ -1068,16 +1039,15 @@ def relatorio_dashboard_csv(
     visao = dashboard.get("visao_geral", {})
     writer.writerow(["=== RESUMO GERAL ==="])
     writer.writerow(["Total OS", "Abertas", "Em Andamento", "Concluidas", "Canceladas",
-                      "Dias Parado Medio", "OS Criticas", "OS Sem Ciencia"])
+                      "OS Sem Ciencia", "Taxa Conclusao (%)"])
     writer.writerow([
         visao.get("total_os", 0),
         visao.get("os_abertas", 0),
         visao.get("os_em_andamento", 0),
         visao.get("os_concluidas", 0),
         visao.get("os_canceladas", 0),
-        visao.get("dias_parado_medio", 0),
-        visao.get("os_criticas", 0),
         visao.get("os_sem_ciencia", 0),
+        visao.get("taxa_conclusao", 0),
     ])
     writer.writerow([])
 
@@ -1085,7 +1055,7 @@ def relatorio_dashboard_csv(
     writer.writerow(["=== DESEMPENHO POR GERENCIA ==="])
     writer.writerow([
         "Gerencia", "Total OS", "Abertas", "Em Andamento", "Concluidas",
-        "Taxa Conclusao (%)", "Dias Parado Medio", "OS Criticas", "Tempo Med. Conclusao",
+        "Taxa Conclusao (%)", "OS Sem Ciencia",
     ])
     for g in dashboard.get("desempenho_gerencias", []):
         writer.writerow([
@@ -1095,9 +1065,7 @@ def relatorio_dashboard_csv(
             g.get("em_andamento", 0),
             g.get("concluidas", 0),
             g.get("taxa_conclusao", 0),
-            g.get("dias_parado_medio", 0),
-            g.get("os_criticas", 0),
-            g.get("tempo_medio_conclusao", 0),
+            g.get("os_sem_ciencia", 0),
         ])
     writer.writerow([])
 
@@ -1105,7 +1073,7 @@ def relatorio_dashboard_csv(
     writer.writerow(["=== DESEMPENHO POR SUPERVISAO ==="])
     writer.writerow([
         "Supervisao", "Gerencia", "Total OS", "Abertas", "Em Andamento",
-        "Concluidas", "Taxa Conclusao (%)", "Dias Parado Medio", "OS Criticas",
+        "Concluidas", "Taxa Conclusao (%)", "OS Sem Ciencia",
     ])
     for s in dashboard.get("desempenho_supervisoes", []):
         writer.writerow([
@@ -1116,20 +1084,17 @@ def relatorio_dashboard_csv(
             s.get("em_andamento", 0),
             s.get("concluidas", 0),
             s.get("taxa_conclusao", 0),
-            s.get("dias_parado_medio", 0),
-            s.get("os_criticas", 0),
+            s.get("os_sem_ciencia", 0),
         ])
     writer.writerow([])
 
     # Por fiscal
     writer.writerow(["=== CARGA POR FISCAL ==="])
-    writer.writerow(["Fiscal", "OS Ativas", "Dias Parado Medio", "OS Criticas"])
+    writer.writerow(["Fiscal", "OS Ativas"])
     for f in dashboard.get("carga_fiscais", []):
         writer.writerow([
             f.get("nome", ""),
             f.get("os_ativas", 0),
-            f.get("dias_parado_medio", 0),
-            f.get("os_criticas", 0),
         ])
 
     output.seek(0)

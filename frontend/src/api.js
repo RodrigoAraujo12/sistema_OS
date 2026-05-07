@@ -201,10 +201,10 @@ class ApiClient {
   }
 
   // Relatorios (download CSV)
-  async downloadRelatorioOrdens({ status, tipo, dataInicio, dataFim, search } = {}) {
+  async downloadRelatorioOrdens({ situacao, modelo, dataInicio, dataFim, search } = {}) {
     const params = new URLSearchParams();
-    if (status) params.set("status", status);
-    if (tipo) params.set("tipo", tipo);
+    if (situacao !== undefined && situacao !== "") params.set("situacao", situacao);
+    if (modelo) params.set("modelo", modelo);
     if (dataInicio) params.set("data_inicio", dataInicio);
     if (dataFim) params.set("data_fim", dataFim);
     if (search) params.set("search", search);
@@ -239,10 +239,10 @@ class ApiClient {
   }
 
   // Relatorios (download PDF)
-  async downloadRelatorioOrdensPdf({ status, tipo, dataInicio, dataFim, search } = {}) {
+  async downloadRelatorioOrdensPdf({ situacao, modelo, dataInicio, dataFim, search } = {}) {
     const params = new URLSearchParams();
-    if (status) params.set("status", status);
-    if (tipo) params.set("tipo", tipo);
+    if (situacao !== undefined && situacao !== "") params.set("situacao", situacao);
+    if (modelo) params.set("modelo", modelo);
     if (dataInicio) params.set("data_inicio", dataInicio);
     if (dataFim) params.set("data_fim", dataFim);
     if (search) params.set("search", search);
