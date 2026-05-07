@@ -27,10 +27,10 @@ export default function DashboardGerencias({
             data={{
               labels: gerenciasFiltradas.map((g) => g.nome.replace("Gerencia de ", "")),
               datasets: [{
-                label: "Dias Parado (media)",
-                data: gerenciasFiltradas.map((g) => g.dias_parado_medio),
+                label: "Taxa de Conclusao (%)",
+                data: gerenciasFiltradas.map((g) => g.taxa_conclusao),
                 backgroundColor: gerenciasFiltradas.map((g) =>
-                  g.dias_parado_medio > 15 ? "#ef4444" : g.dias_parado_medio > 7 ? "#f59e0b" : "#22c55e"
+                  g.taxa_conclusao < 25 ? "#ef4444" : g.taxa_conclusao < 50 ? "#f59e0b" : "#22c55e"
                 ),
                 borderRadius: 6,
               }],
@@ -46,13 +46,13 @@ export default function DashboardGerencias({
                     afterLabel: function (ctx) {
                       const g = gerenciasFiltradas[ctx.dataIndex];
                       if (!g) return "";
-                      return `Total: ${g.total_os} | Abertas: ${g.abertas}\nAndamento: ${g.em_andamento} | Concluidas: ${g.concluidas}\nTaxa: ${g.taxa_conclusao}% | Criticas: ${g.os_criticas}`;
+                      return `Total: ${g.total_os} | Abertas: ${g.abertas}\nAndamento: ${g.em_andamento} | Concluidas: ${g.concluidas}\nSem ciencia: ${g.os_sem_ciencia}`;
                     },
                   },
                 },
               },
               scales: {
-                x: { beginAtZero: true, title: { display: true, text: "Dias" } },
+                x: { beginAtZero: true, max: 100, title: { display: true, text: "%" } },
               },
             }}
           />
@@ -69,9 +69,7 @@ export default function DashboardGerencias({
               <th>Andamento</th>
               <th>Concluidas</th>
               <th>Taxa Conclusao</th>
-              <th>Dias Parado (media)</th>
-              <th>OS Criticas</th>
-              <th>Tempo Med. Conclusao</th>
+              <th>Sem Ciencia</th>
             </tr>
           </thead>
           <tbody>
@@ -93,18 +91,12 @@ export default function DashboardGerencias({
                   </span>
                 </td>
                 <td>
-                  <span className={`badge ${g.dias_parado_medio > 15 ? "cancelada" : g.dias_parado_medio > 7 ? "em_andamento" : "concluida"}`}>
-                    {g.dias_parado_medio} dias
-                  </span>
-                </td>
-                <td>
-                  {g.os_criticas > 0 ? (
-                    <span className="badge cancelada">{g.os_criticas}</span>
+                  {g.os_sem_ciencia > 0 ? (
+                    <span className="badge cancelada">{g.os_sem_ciencia}</span>
                   ) : (
                     <span className="badge concluida">0</span>
                   )}
                 </td>
-                <td>{g.tempo_medio_conclusao} dias</td>
               </tr>
             ))}
           </tbody>

@@ -1,67 +1,23 @@
 """
 Testes unitarios para o modulo external_api.py – logica de OS e dashboard.
 
-Cobre: calculo de dias_parado, enriquecimento de OS, filtragem hierarquica,
-geracao de alertas, normalizacao de dados do Informix, e dashboard.
+Cobre: filtragem hierarquica, geracao de alertas,
+normalizacao de dados do Informix, e dashboard.
 """
 
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from backend.external_api import (
-    _calcular_dias_parado,
-    _enriquecer_os,
     _filtrar_por_hierarquia,
     _normalizar_row,
     gerar_alertas,
     gerar_dashboard,
     listar_ordens_servico,
 )
-
-
-class TestCalcularDiasParado(unittest.TestCase):
-    """Testes para _calcular_dias_parado."""
-
-    def test_data_recente(self):
-        hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        self.assertEqual(_calcular_dias_parado(hoje), 0)
-
-    def test_data_passada(self):
-        passado = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%d")
-        self.assertEqual(_calcular_dias_parado(passado), 10)
-
-    def test_data_none(self):
-        self.assertEqual(_calcular_dias_parado(None), 0)
-
-    def test_data_invalida(self):
-        self.assertEqual(_calcular_dias_parado("abc"), 0)
-
-    def test_data_vazia(self):
-        self.assertEqual(_calcular_dias_parado(""), 0)
-
-
-class TestEnriquecerOS(unittest.TestCase):
-    """Testes para _enriquecer_os."""
-
-    def test_adiciona_dias_parado(self):
-        os_dict = {"numero": "OS-001", "data_ultima_movimentacao": "2020-01-01"}
-        result = _enriquecer_os(os_dict)
-        self.assertIn("dias_parado", result)
-        self.assertGreater(result["dias_parado"], 0)
-
-    def test_sem_data_movimentacao(self):
-        os_dict = {"numero": "OS-001"}
-        result = _enriquecer_os(os_dict)
-        self.assertEqual(result["dias_parado"], 0)
-
-    def test_preserva_campos_originais(self):
-        os_dict = {"numero": "OS-001", "status": "aberta", "data_ultima_movimentacao": None}
-        result = _enriquecer_os(os_dict)
-        self.assertEqual(result["numero"], "OS-001")
-        self.assertEqual(result["status"], "aberta")
 
 
 class TestNormalizarRow(unittest.TestCase):

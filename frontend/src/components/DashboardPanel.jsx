@@ -79,25 +79,15 @@ export default function DashboardPanel({ dashboardData, onDashboardDataChange, o
     const abertas = gList.reduce((s, g) => s + g.abertas, 0);
     const emAndamento = gList.reduce((s, g) => s + g.em_andamento, 0);
     const concluidas = gList.reduce((s, g) => s + g.concluidas, 0);
-    const osCriticas = gList.reduce((s, g) => s + g.os_criticas, 0);
-    const diasParadoArr = gList.filter((g) => g.total_os > 0).map((g) => g.dias_parado_medio);
-    const diasParadoMedio = diasParadoArr.length > 0
-      ? Math.round(diasParadoArr.reduce((a, b) => a + b, 0) / diasParadoArr.length) : 0;
-    const tmcArr = gList.filter((g) => g.concluidas > 0).map((g) => g.tempo_medio_conclusao);
-    const tempoMedioConclusao = tmcArr.length > 0
-      ? Math.round(tmcArr.reduce((a, b) => a + b, 0) / tmcArr.length) : 0;
-    const osSemCiencia = Math.round(
-      dashboardData.visao_geral.os_sem_ciencia * (totalOS / (dashboardData.visao_geral.total_os || 1))
-    );
+    const osSemCiencia = gList.reduce((s, g) => s + (g.os_sem_ciencia || 0), 0);
+    const taxaConclusao = totalOS > 0 ? Math.round(concluidas / totalOS * 100) : 0;
     return {
       total_os: totalOS,
       os_abertas: abertas,
       os_em_andamento: emAndamento,
       os_concluidas: concluidas,
-      os_criticas: osCriticas,
-      dias_parado_medio: diasParadoMedio,
-      tempo_medio_conclusao: tempoMedioConclusao,
       os_sem_ciencia: osSemCiencia,
+      taxa_conclusao: taxaConclusao,
       total_fiscais: fList.length,
       total_supervisores: sList.length,
     };
@@ -318,23 +308,23 @@ export default function DashboardPanel({ dashboardData, onDashboardDataChange, o
           <div className="stat-label">Em Andamento</div>
         </div>
         <div className="stat-card concluida">
-          <div className="stat-value">{kpis.tempo_medio_conclusao} dias</div>
-          <div className="stat-label">Tempo Medio Conclusao</div>
+          <div className="stat-value">{kpis.taxa_conclusao}%</div>
+          <div className="stat-label">Taxa de Conclusao</div>
         </div>
-        <div className="stat-card urgente">
-          <div className="stat-value">{kpis.os_criticas} {renderDelta("os_criticas", true)}</div>
-          <div className="stat-label">OS Criticas (&gt;15 dias)</div>
+        <div className="stat-card alta">
+          <div className="stat-value">{kpis.os_sem_ciencia} {renderDelta("os_sem_ciencia", true)}</div>
+          <div className="stat-label">OS Sem Ciencia</div>
         </div>
       </div>
 
       <div className="stats-row">
         <div className="stat-card normal">
-          <div className="stat-value">{kpis.dias_parado_medio} dias {renderDelta("dias_parado_medio", true)}</div>
-          <div className="stat-label">Media Dias Parado</div>
+          <div className="stat-value">{kpis.os_concluidas} {renderDelta("concluidas", false)}</div>
+          <div className="stat-label">Concluidas</div>
         </div>
-        <div className="stat-card alta">
-          <div className="stat-value">{kpis.os_sem_ciencia} {renderDelta("os_sem_ciencia", true)}</div>
-          <div className="stat-label">OS Sem Ciencia</div>
+        <div className="stat-card normal">
+          <div className="stat-value">{kpis.os_abertas} {renderDelta("abertas", true)}</div>
+          <div className="stat-label">Abertas</div>
         </div>
         <div className="stat-card normal">
           <div className="stat-value">{kpis.total_fiscais}</div>

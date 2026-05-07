@@ -326,7 +326,7 @@ export default function OrdensPanel() {
                     checked={filters.situacoes.includes(Number(cod))}
                     onChange={() => handleSituacaoToggle(cod)}
                   />
-                  <span>{cod} — {desc}</span>
+                  <span>{desc}</span>
                 </label>
               ))}
             </div>

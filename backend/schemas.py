@@ -150,8 +150,6 @@ class OSResponse(BaseModel):
     prioridade: str = ""
     data_abertura: str
     data_ciencia: str | None = None
-    data_ultima_movimentacao: str | None = None
-    dias_parado: int = 0
 
 
 class MovimentacaoResponse(BaseModel):

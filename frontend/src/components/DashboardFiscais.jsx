@@ -45,9 +45,7 @@ export default function DashboardFiscais({
                 tooltip: {
                   callbacks: {
                     afterLabel: function (ctx) {
-                      const f = fiscaisFiltrados[ctx.dataIndex];
-                      if (!f) return "";
-                      return `Dias parado (media): ${f.dias_parado_medio}\nOS Criticas: ${f.os_criticas}`;
+                      return "";
                     },
                   },
                 },
@@ -71,8 +69,6 @@ export default function DashboardFiscais({
               <tr>
                 <th>Fiscal</th>
                 <th>OS Ativas</th>
-                <th>Dias Parado (media)</th>
-                <th>OS Criticas</th>
               </tr>
             </thead>
             <tbody>
@@ -83,18 +79,6 @@ export default function DashboardFiscais({
                     <span className={`badge ${f.os_ativas > 3 ? "cancelada" : f.os_ativas > 1 ? "em_andamento" : "concluida"}`}>
                       {f.os_ativas}
                     </span>
-                  </td>
-                  <td>
-                    <span className={`badge ${f.dias_parado_medio > 15 ? "cancelada" : f.dias_parado_medio > 7 ? "em_andamento" : "concluida"}`}>
-                      {f.dias_parado_medio} dias
-                    </span>
-                  </td>
-                  <td>
-                    {f.os_criticas > 0 ? (
-                      <span className="badge cancelada">{f.os_criticas}</span>
-                    ) : (
-                      <span className="badge concluida">0</span>
-                    )}
                   </td>
                 </tr>
               ))}

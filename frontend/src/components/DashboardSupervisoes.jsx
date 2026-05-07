@@ -60,7 +60,7 @@ export default function DashboardSupervisoes({
                     afterBody: function (ctx) {
                       const s = supervisoesFiltradas[ctx[0].dataIndex];
                       if (!s) return "";
-                      return `Gerencia: ${s.gerencia_nome}\nTotal: ${s.total_os} | Taxa: ${s.taxa_conclusao}%\nDias parado: ${s.dias_parado_medio} | Criticas: ${s.os_criticas}`;
+                      return `Gerencia: ${s.gerencia_nome}\nTotal: ${s.total_os} | Taxa: ${s.taxa_conclusao}%\nSem ciencia: ${s.os_sem_ciencia}`;
                     },
                   },
                 },
@@ -92,8 +92,7 @@ export default function DashboardSupervisoes({
               <th>Andamento</th>
               <th>Concluidas</th>
               <th>Taxa Conclusao</th>
-              <th>Dias Parado (media)</th>
-              <th>OS Criticas</th>
+              <th>Sem Ciencia</th>
             </tr>
           </thead>
           <tbody>
@@ -119,13 +118,8 @@ export default function DashboardSupervisoes({
                   </span>
                 </td>
                 <td>
-                  <span className={`badge ${s.dias_parado_medio > 15 ? "cancelada" : s.dias_parado_medio > 7 ? "em_andamento" : "concluida"}`}>
-                    {s.dias_parado_medio} dias
-                  </span>
-                </td>
-                <td>
-                  {s.os_criticas > 0 ? (
-                    <span className="badge cancelada">{s.os_criticas}</span>
+                  {s.os_sem_ciencia > 0 ? (
+                    <span className="badge cancelada">{s.os_sem_ciencia}</span>
                   ) : (
                     <span className="badge concluida">0</span>
                   )}
