@@ -483,7 +483,7 @@ def list_os(
     modelo: str | None = Query(default=None),
     ie: str | None = Query(default=None),
     cnpj: str | None = Query(default=None),
-    razao_social: str | None = Query(default=None),
+    razao_social: str | None = Query(default=None, min_length=6),
     matriculas: str | None = Query(default=None),
     situacao: list[int] | None = Query(default=None),
     data_abertura_ini: str | None = Query(default=None),

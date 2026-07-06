@@ -1172,46 +1172,73 @@ def _filtrar_mock_atf(
     }
 
 
-def _parse_xml_atf(xml_text: str) -> dict[str, Any]:
-    """Parseia o XML retornado pelo ATF para o formato interno da API."""
+def _parse_xml_atf(xml_text: str, pagina: int = 1) -> dict[str, Any]:
+    """
+    Parseia o XML de listagem de OS retornado pelo ATF.
+
+    Formato real (operacao 1025):
+
+        <a>
+          <resultado>
+            <operacao><codigo>1025</codigo></operacao>
+            <paginacao>
+              <qtRegistrosPagina>10</qtRegistrosPagina>
+              <qtTotalDePaginas>2</qtTotalDePaginas>
+              <qtTotalOSsRetornadas>13</qtTotalOSsRetornadas>
+              <paginaOrdemServico>
+                <numPagina>1</numPagina>
+                <numeroOS>93300008.12.00000001/2026-99</numeroOS>
+                ...
+              </paginaOrdemServico>
+            </paginacao>
+          </resultado>
+        </a>
+
+    A listagem retorna apenas os numeros das OS. Os demais campos
+    (modelo, IE, razao social, fiscais, situacao) virao do endpoint
+    de detalhamento, ainda nao integrado.
+    """
     import xml.etree.ElementTree as ET
 
     root = ET.fromstring(xml_text)
 
-    pag_el = root.find("paginacao")
+    pag_el = root.find(".//paginacao")
+    if pag_el is None:
+        raise ValueError("XML do ATF sem elemento <paginacao>")
+
     paginacao = {
-        "pagina_atual": int(pag_el.findtext("pagina_atual", "1") or 1),
-        "limite_por_pagina": int(pag_el.findtext("limite_por_pagina", "20") or 20),
-        "total_paginas": int(pag_el.findtext("total_paginas", "1") or 1),
-        "total_registros": int(pag_el.findtext("total_registros", "0") or 0),
+        "pagina_atual": pagina,
+        "limite_por_pagina": int(pag_el.findtext("qtRegistrosPagina", "20") or 20),
+        "total_paginas": int(pag_el.findtext("qtTotalDePaginas", "1") or 1),
+        "total_registros": int(pag_el.findtext("qtTotalOSsRetornadas", "0") or 0),
     }
 
+    # A resposta pode trazer todas as paginas de uma vez (um bloco
+    # <paginaOrdemServico> por pagina). Usa o bloco da pagina pedida
+    # quando existir; senao, junta os numeros de todos os blocos.
+    blocos = pag_el.findall("paginaOrdemServico")
+    do_bloco_pedido = [
+        b for b in blocos if (b.findtext("numPagina") or "").strip() == str(pagina)
+    ]
+    if do_bloco_pedido:
+        blocos = do_bloco_pedido
+
     ordens = []
-    for ordem_el in root.findall("ordens/ordem"):
-        fiscais = []
-        for f_el in ordem_el.findall("fiscais/fiscal"):
-            fiscais.append({
-                "matricula": f_el.findtext("matricula", ""),
-                "nome": f_el.findtext("nome", ""),
-                "data_ciencia": f_el.findtext("data_ciencia"),
+    for bloco in blocos:
+        for num_el in bloco.findall("numeroOS"):
+            numero = (num_el.text or "").strip()
+            if not numero:
+                continue
+            ordens.append({
+                "numero_os": numero,
+                "modelo": "",
+                "ie": "",
+                "cnpj": None,
+                "razao_social": "",
+                "fiscais": [],
+                "situacao": None,
+                "data_abertura": "",
             })
-
-        sit_el = ordem_el.find("situacao")
-        situacao = {
-            "codigo": int(sit_el.findtext("codigo", "0") or 0),
-            "descricao": sit_el.findtext("descricao", ""),
-        } if sit_el is not None else {"codigo": 0, "descricao": "AGUARDANDO AUTORIZAÇÃO"}
-
-        ordens.append({
-            "numero_os": ordem_el.findtext("numero_os", ""),
-            "modelo": ordem_el.findtext("modelo", ""),
-            "ie": ordem_el.findtext("ie", ""),
-            "cnpj": ordem_el.findtext("cnpj"),
-            "razao_social": ordem_el.findtext("razao_social", ""),
-            "fiscais": fiscais,
-            "situacao": situacao,
-            "data_abertura": ordem_el.findtext("data_abertura", ""),
-        })
 
     return {"paginacao": paginacao, "ordens": ordens}
 
@@ -1263,7 +1290,7 @@ def _chamar_atf_https(
     try:
         resp = requests.get(f"{base_url}/ordens", params=params, timeout=30)
         resp.raise_for_status()
-        return _parse_xml_atf(resp.text)
+        return _parse_xml_atf(resp.text, pagina=pagina)
     except Exception:
         logger.exception("Erro ao chamar API ATF em %s", base_url)
         raise

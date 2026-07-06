@@ -197,15 +197,21 @@ class SituacaoATF(BaseModel):
 
 
 class OSListagemATF(BaseModel):
-    """OS retornada pelo endpoint de listagem do ATF."""
+    """
+    OS retornada pelo endpoint de listagem do ATF.
+
+    A listagem real (operacao 1025) retorna apenas numero_os; os demais
+    campos sao preenchidos pelo MOCK ou, futuramente, pelo endpoint de
+    detalhamento do ATF.
+    """
     numero_os: str
-    modelo: str
-    ie: str
+    modelo: str = ""
+    ie: str = ""
     cnpj: str | None = None
-    razao_social: str
+    razao_social: str = ""
     fiscais: list[FiscalATF] = []
-    situacao: SituacaoATF
-    data_abertura: str
+    situacao: SituacaoATF | None = None
+    data_abertura: str = ""
 
 
 class PaginacaoATF(BaseModel):
