@@ -1243,6 +1243,106 @@ def _parse_xml_atf(xml_text: str, pagina: int = 1) -> dict[str, Any]:
     return {"paginacao": paginacao, "ordens": ordens}
 
 
+def _parse_xml_atf_detalhes(xml_text: str) -> list[dict[str, Any]]:
+    """
+    Parseia o XML do servico 2 do ATF (listarDadosOrdensServico).
+
+    Contrato (RM doc da listagem):
+
+        <resultado>
+          <operacao><codigo>...</codigo></operacao>
+          <listaOrdensServico>
+            <ordemServico>
+              <numeroOS>93300008.12.00000001/2026-99</numeroOS>
+              <dataAbertura>2026-01-10</dataAbertura>
+              <cdModeloOS>1</cdModeloOS>
+              <noModeloOS>NORMAL</noModeloOS>
+              <statusOS>1</statusOS>
+              <noStatusOS>AUTORIZADA</noStatusOS>
+              <inscrEstadual>12.345.678-9</inscrEstadual>
+              <docContribuinte>12.345.678/0001-90</docContribuinte>
+              <nomeContribuinte>Distribuidora ABC Ltda</nomeContribuinte>
+              <fiscais>
+                <fiscal><matricula>34567</matricula><nome>Carlos Mendes</nome></fiscal>
+              </fiscais>
+            </ordemServico>
+          </listaOrdensServico>
+        </resultado>
+
+    Retorna as OS ja no formato interno da listagem. O servico 2 NAO
+    retorna data de ciencia por fiscal nem movimentacoes.
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml_text)
+
+    ordens = []
+    for os_el in root.findall(".//listaOrdensServico/ordemServico"):
+        fiscais = [
+            {
+                "matricula": (f_el.findtext("matricula", "") or "").strip(),
+                "nome": (f_el.findtext("nome", "") or "").strip(),
+                "data_ciencia": None,
+            }
+            for f_el in os_el.findall("fiscais/fiscal")
+        ]
+
+        cd_status = (os_el.findtext("statusOS", "") or "").strip()
+        no_status = (os_el.findtext("noStatusOS", "") or "").strip()
+        situacao = None
+        if cd_status or no_status:
+            situacao = {
+                "codigo": int(cd_status) if cd_status.isdigit() else 0,
+                "descricao": no_status,
+            }
+
+        ordens.append({
+            "numero_os": (os_el.findtext("numeroOS", "") or "").strip(),
+            "modelo": (os_el.findtext("noModeloOS", "") or "").strip(),
+            "ie": (os_el.findtext("inscrEstadual", "") or "").strip(),
+            "cnpj": (os_el.findtext("docContribuinte", "") or "").strip() or None,
+            "razao_social": (os_el.findtext("nomeContribuinte", "") or "").strip(),
+            "fiscais": fiscais,
+            "situacao": situacao,
+            "data_abertura": (os_el.findtext("dataAbertura", "") or "").strip(),
+        })
+
+    return ordens
+
+
+def _chamar_atf_detalhes_https(base_url: str, numeros: list[str]) -> list[dict[str, Any]]:
+    """
+    Chama o servico 2 do ATF (listarDadosOrdensServico) para um lote de numeros.
+
+    URL e transporte ainda nao confirmados pelo ATF (o contrato descreve
+    entrada XML com elemento <auditoria>); ajustar quando definidos.
+    """
+    import requests
+
+    params = [("numero_os", n) for n in numeros]
+    try:
+        resp = requests.get(f"{base_url}/ordens/dados", params=params, timeout=30)
+        resp.raise_for_status()
+        return _parse_xml_atf_detalhes(resp.text)
+    except Exception:
+        logger.exception("Erro ao chamar servico de dados de OS do ATF em %s", base_url)
+        raise
+
+
+def _enriquecer_com_detalhes(
+    ordens_numeros: list[dict[str, Any]],
+    detalhes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Mescla os dados do servico 2 na lista de numeros do servico 1.
+
+    Preserva a ordem da listagem; OS sem correspondencia no servico 2
+    permanecem apenas com o numero.
+    """
+    por_numero = {d["numero_os"]: d for d in detalhes}
+    return [por_numero.get(o["numero_os"], o) for o in ordens_numeros]
+
+
 def _chamar_atf_https(
     base_url: str,
     numero_os: str | None = None,
@@ -1314,14 +1414,15 @@ def listar_ordens_atf(
     """
     Lista OS via API ATF.
 
-    Se ATF_BASE_URL estiver configurado no .env, chama o servico real via HTTPS.
+    Se ATF_BASE_URL estiver configurado no .env, executa o fluxo real em
+    duas etapas: servico 1 (numeros da pagina) + servico 2 (dados das OS).
     Caso contrario, usa dados MOCK para desenvolvimento/teste.
     """
     from .config import ATF_BASE_URL
 
     if ATF_BASE_URL:
         logger.debug("Chamando API ATF: %s", ATF_BASE_URL)
-        return _chamar_atf_https(
+        resultado = _chamar_atf_https(
             ATF_BASE_URL,
             numero_os=numero_os, modelo=modelo, ie=ie, cnpj=cnpj,
             razao_social=razao_social, matriculas=matriculas, situacoes=situacoes,
@@ -1329,6 +1430,15 @@ def listar_ordens_atf(
             data_ciencia_ini=data_ciencia_ini, data_ciencia_fim=data_ciencia_fim,
             pagina=pagina, limite=limite,
         )
+        numeros = [o["numero_os"] for o in resultado["ordens"]]
+        if numeros:
+            try:
+                detalhes = _chamar_atf_detalhes_https(ATF_BASE_URL, numeros)
+                resultado["ordens"] = _enriquecer_com_detalhes(resultado["ordens"], detalhes)
+            except Exception:
+                # Sem o servico 2 o painel ainda exibe os numeros das OS
+                logger.warning("Servico de dados indisponivel; exibindo apenas numeros das OS")
+        return resultado
 
     logger.debug("ATF_BASE_URL nao configurado – usando dados MOCK ATF (%d registros)", len(_MOCK_ATF_ORDENS))
     return _filtrar_mock_atf(
