@@ -210,15 +210,32 @@ class ApiClient {
     return this.request(`/admin/dashboard${qs ? `?${qs}` : ""}`);
   }
 
-  // Relatorios (download CSV)
-  async downloadRelatorioOrdens({ situacao, modelo, dataInicio, dataFim, search } = {}) {
+  /** Monta a query string do relatorio de OS (mesmos filtros do painel). */
+  _paramsRelatorioOrdens(f = {}) {
     const params = new URLSearchParams();
-    if (situacao !== undefined && situacao !== "") params.set("situacao", situacao);
-    if (modelo) params.set("modelo", modelo);
-    if (dataInicio) params.set("data_inicio", dataInicio);
-    if (dataFim) params.set("data_fim", dataFim);
-    if (search) params.set("search", search);
-    const qs = params.toString();
+    if (f.numero) params.set("numero_os", f.numero);
+    if (f.modelo) params.set("modelo", f.modelo);
+    if (f.motivo_abertura) params.set("motivo_abertura", f.motivo_abertura);
+    if (f.ie) params.set("ie", f.ie);
+    if (f.cnpj) params.set("cnpj", f.cnpj);
+    if (f.razao_social) params.set("razao_social", f.razao_social);
+    if (f.matriculas) params.set("matriculas", f.matriculas);
+    if (f.equipe_fiscal) params.set("equipe_fiscal", f.equipe_fiscal);
+    if (f.orgao_executor) params.set("orgao_executor", f.orgao_executor);
+    if (f.situacoes && f.situacoes.length > 0) f.situacoes.forEach(s => params.append("situacao", s));
+    if (f.data_abertura_inicio) params.set("data_abertura_ini", f.data_abertura_inicio);
+    if (f.data_abertura_fim) params.set("data_abertura_fim", f.data_abertura_fim);
+    if (f.data_encerramento_inicio) params.set("data_encerramento_ini", f.data_encerramento_inicio);
+    if (f.data_encerramento_fim) params.set("data_encerramento_fim", f.data_encerramento_fim);
+    if (f.data_ciencia_inicio) params.set("data_ciencia_ini", f.data_ciencia_inicio);
+    if (f.data_ciencia_fim) params.set("data_ciencia_fim", f.data_ciencia_fim);
+    if (f.search) params.set("search", f.search);
+    return params.toString();
+  }
+
+  // Relatorios (download CSV)
+  async downloadRelatorioOrdens(filtros = {}) {
+    const qs = this._paramsRelatorioOrdens(filtros);
 
     const headers = {};
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
@@ -249,14 +266,8 @@ class ApiClient {
   }
 
   // Relatorios (download PDF)
-  async downloadRelatorioOrdensPdf({ situacao, modelo, dataInicio, dataFim, search } = {}) {
-    const params = new URLSearchParams();
-    if (situacao !== undefined && situacao !== "") params.set("situacao", situacao);
-    if (modelo) params.set("modelo", modelo);
-    if (dataInicio) params.set("data_inicio", dataInicio);
-    if (dataFim) params.set("data_fim", dataFim);
-    if (search) params.set("search", search);
-    const qs = params.toString();
+  async downloadRelatorioOrdensPdf(filtros = {}) {
+    const qs = this._paramsRelatorioOrdens(filtros);
 
     const headers = {};
     if (this.token) headers.Authorization = `Bearer ${this.token}`;

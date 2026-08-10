@@ -12,6 +12,7 @@ import csv
 import io
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
 from fpdf import FPDF
@@ -33,7 +34,6 @@ from .db import (
 )
 from .external_api import (
     _filtrar_por_hierarquia,
-    consultar_os_por_numero,
     gerar_alertas,
     gerar_dashboard,
     listar_ordens_atf,
@@ -517,133 +517,112 @@ def list_os(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
-@app.get("/ordens/{numero}", response_model=OSDetalheResponse)
-def get_os(
-    numero: str, user: dict[str, Any] = Depends(get_current_user)
-) -> OSDetalheResponse:
-    """Busca OS por numero na API externa, verificando permissao hierarquica."""
-    ordem = consultar_os_por_numero(numero)
-    if not ordem:
+def _buscar_os_atf(numero: str) -> dict[str, Any]:
+    """
+    Busca uma OS pelo numero no ATF.
+
+    O ATF nao tem servico de detalhe: usa-se o mesmo
+    listarOrdensServicoWebService filtrando por numeroOS.
+    """
+    try:
+        resultado = listar_ordens_atf(numero_os=numero, pagina=1, limite=1)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    ordens = resultado.get("ordens", [])
+    if not ordens:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OS nao encontrada")
-    # Verifica se o usuario tem permissao para ver esta OS
-    filters = _build_hierarchy_filters(user)
-    allowed = _filtrar_por_hierarquia([ordem], **filters)
-    if not allowed:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem permissao para esta OS")
-    return OSDetalheResponse(**ordem)
+    return ordens[0]
 
 
-@app.get("/ordens/{numero}/pdf")
+# NOTA: o numero da OS contem barra (ex: 93300008.12.00000001/2026-99) e o
+# servidor ASGI decodifica %2F antes do roteamento, entao as rotas abaixo
+# precisam do conversor ":path". A rota do PDF vem primeiro de proposito:
+# rotas sao avaliadas na ordem de declaracao e "{numero:path}" tambem casaria
+# com ".../pdf".
+
+@app.get("/ordens/{numero:path}/pdf")
 def get_os_pdf(
     numero: str, user: dict[str, Any] = Depends(get_current_user)
 ) -> Response:
-    """Gera PDF detalhado de uma OS individual, incluindo movimentacoes."""
-    ordem = consultar_os_por_numero(numero)
-    if not ordem:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OS nao encontrada")
-    filters = _build_hierarchy_filters(user)
-    allowed = _filtrar_por_hierarquia([ordem], **filters)
-    if not allowed:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sem permissao para esta OS")
+    """Gera PDF de uma OS individual com os dados retornados pelo ATF."""
+    ordem = _buscar_os_atf(numero)
+    numero_os = ordem.get("numero_os", numero)
 
-    pdf = _PDF(f"Ordem de Servico - {ordem['numero']}")
+    pdf = _PDF(f"Ordem de Servico - {numero_os}")
     pdf.alias_nb_pages()
     pdf.add_page(orientation="P")
 
     # --- Cabecalho da OS ---
     pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 8, ordem["numero"], new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, _safe(numero_os), new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, ordem.get("razao_social", ""), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, _safe(ordem.get("razao_social", "")), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
-    # --- Informacoes Gerais ---
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.set_fill_color(240, 240, 245)
-    pdf.cell(0, 7, "  Informacoes Gerais", new_x="LMARGIN", new_y="NEXT", fill=True)
-    pdf.ln(2)
+    def _secao(titulo: str) -> None:
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_fill_color(240, 240, 245)
+        pdf.cell(0, 7, f"  {titulo}", new_x="LMARGIN", new_y="NEXT", fill=True)
+        pdf.ln(2)
 
-    def _field(label: str, value: str) -> None:
+    def _field(label: str, value: Any) -> None:
         pdf.set_font("Helvetica", "B", 8)
         pdf.cell(45, 5, label + ":")
         pdf.set_font("Helvetica", "", 8)
-        pdf.cell(0, 5, _safe(value), new_x="LMARGIN", new_y="NEXT")
+        texto = "-" if value in (None, "") else str(value)
+        pdf.cell(0, 5, _safe(texto), new_x="LMARGIN", new_y="NEXT")
 
-    _field("Status", _fmt_situacao(ordem))
-    _field("Tipo", ordem.get("tipo", ""))
-    _field("Prioridade", ordem.get("prioridade", ""))
-    _field("IE", ordem.get("ie", ""))
-    _field("CNPJ", ordem.get("cnpj", ""))
-    _field("Endereco", ordem.get("endereco", ""))
-    _field("Telefone", ordem.get("telefone", ""))
-    valor_est = ordem.get("valor_estimado", 0)
-    _field("Valor Estimado", f"R$ {valor_est:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if valor_est else "-")
-    _field("Supervisor", ordem.get("matricula_supervisor", ""))
-    _field("Fiscais", ", ".join(ordem.get("fiscais", [])))
+    # --- Informacoes Gerais ---
+    _secao("Informacoes Gerais")
+    _field("Situacao", _fmt_situacao(ordem))
+    _field("Modelo", ordem.get("modelo"))
+    _field("Motivo de Abertura", ordem.get("motivo_abertura"))
+    _field("IE", ordem.get("ie"))
+    _field("CNPJ/CPF", ordem.get("cnpj"))
+    _field("Orgao Executor", ordem.get("orgao_executor"))
+    _field("Equipe Fiscal", ordem.get("equipe_fiscal"))
     pdf.ln(2)
 
-    # --- Datas ---
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(0, 7, "  Datas", new_x="LMARGIN", new_y="NEXT", fill=True)
-    pdf.ln(2)
+    # --- Datas e execucao ---
+    _secao("Datas e Execucao")
     _field("Abertura", _fmt_data_br(ordem.get("data_abertura")))
-    _field("Ciencia", _fmt_data_br(ordem.get("data_ciencia")))
+    _field("Inicio da Fiscalizacao", _fmt_data_br(ordem.get("data_inicio_fiscalizacao")))
+    _field("Encerramento", _fmt_data_br(ordem.get("data_encerramento")))
+    _field("Ultimo Evento", _fmt_data_br(ordem.get("data_ultimo_evento")))
+    _field("Dias de Execucao", ordem.get("dias_execucao"))
+    tempo_medio = ordem.get("tempo_medio_execucao_modelo_motivo")
+    _field("Tempo Medio (Modelo/Motivo)", f"{tempo_medio} dias" if tempo_medio is not None else None)
+    _field("Media de Eventos (Modelo/Motivo)", ordem.get("qtd_media_eventos_modelo_motivo"))
     pdf.ln(2)
 
-    # --- Objeto e Observacoes ---
-    if ordem.get("objeto"):
-        pdf.set_font("Helvetica", "B", 10)
-        pdf.cell(0, 7, "  Objeto da Fiscalizacao", new_x="LMARGIN", new_y="NEXT", fill=True)
-        pdf.ln(2)
-        pdf.set_font("Helvetica", "", 8)
-        pdf.multi_cell(0, 5, _safe(ordem["objeto"]))
-        pdf.ln(2)
+    # --- Fiscais ---
+    fiscais = ordem.get("fiscais", [])
+    _secao(f"Fiscais ({len(fiscais)})")
 
-    if ordem.get("observacoes"):
-        pdf.set_font("Helvetica", "B", 10)
-        pdf.cell(0, 7, "  Observacoes", new_x="LMARGIN", new_y="NEXT", fill=True)
-        pdf.ln(2)
-        pdf.set_font("Helvetica", "", 8)
-        pdf.multi_cell(0, 5, _safe(ordem["observacoes"]))
-        pdf.ln(2)
-
-    # --- Movimentacoes ---
-    movs = ordem.get("movimentacoes", [])
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(0, 7, f"  Movimentacoes ({len(movs)})", new_x="LMARGIN", new_y="NEXT", fill=True)
-    pdf.ln(2)
-
-    if movs:
-        m_headers = ["Data", "Tipo", "Descricao", "Responsavel"]
-        m_widths = [22, 25, 100, 40]
+    if fiscais:
+        f_headers = ["Matricula", "Nome", "Status", "Designacao", "Ciencia", "Cancelamento"]
+        f_widths = [22, 55, 25, 26, 26, 28]
         pdf.set_font("Helvetica", "B", 7)
-        for i, h in enumerate(m_headers):
-            pdf.cell(m_widths[i], 6, h, border=1, align="C")
+        for i, h in enumerate(f_headers):
+            pdf.cell(f_widths[i], 6, h, border=1, align="C")
         pdf.ln()
 
         pdf.set_font("Helvetica", "", 7)
-        for mov in movs:
-            x_start = pdf.get_x()
-            y_start = pdf.get_y()
-
-            # Calcular altura necessaria para descricao (multi_cell)
-            desc_text = _safe(mov.get("descricao", ""))
-            # Estimar linhas necessarias
-            desc_width = m_widths[2] - 2
-            n_lines = max(1, len(desc_text) // 55 + 1)
-            row_h = max(5, n_lines * 4.5)
-
-            pdf.cell(m_widths[0], row_h, _fmt_data_br(mov.get("data")), border=1, align="C")
-            pdf.cell(m_widths[1], row_h, _safe(mov.get("tipo", "")), border=1, align="C")
-            pdf.cell(m_widths[2], row_h, desc_text[:70], border=1)
-            pdf.cell(m_widths[3], row_h, _safe(mov.get("responsavel", "")), border=1, align="C")
+        for f in fiscais:
+            pdf.cell(f_widths[0], 5, _safe(f.get("matricula", "")), border=1, align="C")
+            pdf.cell(f_widths[1], 5, _safe(f.get("nome", ""))[:38], border=1)
+            pdf.cell(f_widths[2], 5, _safe(f.get("status") or "-"), border=1, align="C")
+            pdf.cell(f_widths[3], 5, _fmt_data_br(f.get("data_designacao")), border=1, align="C")
+            pdf.cell(f_widths[4], 5, _fmt_data_br(f.get("data_ciencia")), border=1, align="C")
+            pdf.cell(f_widths[5], 5, _fmt_data_br(f.get("data_cancelamento")), border=1, align="C")
             pdf.ln()
     else:
         pdf.set_font("Helvetica", "I", 8)
-        pdf.cell(0, 5, "Nenhuma movimentacao registrada.", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 5, "Nenhum fiscal designado.", new_x="LMARGIN", new_y="NEXT")
 
     pdf_bytes = bytes(pdf.output())
-    filename = f"{ordem['numero']}.pdf"
+    filename = f"{numero_os.replace('/', '_')}.pdf"
     logger.info("PDF da OS %s gerado por '%s'.", numero, user["username"])
 
     return Response(
@@ -651,6 +630,14 @@ def get_os_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/ordens/{numero:path}", response_model=OSDetalheResponse)
+def get_os(
+    numero: str, _user: dict[str, Any] = Depends(get_current_user)
+) -> OSDetalheResponse:
+    """Busca uma OS por numero no ATF (mesmo servico da listagem)."""
+    return OSDetalheResponse(**_buscar_os_atf(numero))
 
 
 @app.get("/alertas", response_model=list[AlertaResponse])
@@ -725,65 +712,149 @@ def _fmt_situacao(o: dict) -> str:
 
 
 
-def _filtrar_ordens(situacao_filter, modelo, data_inicio, data_fim, search):
-    """Aplica filtros para relatorios usando a API ATF como fonte de dados."""
-    situacoes = [int(situacao_filter)] if situacao_filter is not None else None
-    result = listar_ordens_atf(
-        modelo=modelo,
-        situacoes=situacoes,
-        data_abertura_ini=data_inicio,
-        data_abertura_fim=data_fim,
-        limite=9999,
+# O ATF retorna a lista completa e a paginacao e feita neste backend;
+# nos relatorios queremos todos os registros de uma vez.
+_RELATORIO_LIMITE = 100_000
+
+
+@dataclass
+class FiltrosRelatorioOS:
+    """Filtros do relatorio de OS (os mesmos do painel + busca livre)."""
+    numero_os: str | None = None
+    modelo: str | None = None
+    motivo_abertura: str | None = None
+    ie: str | None = None
+    cnpj: str | None = None
+    razao_social: str | None = None
+    matriculas: str | None = None
+    equipe_fiscal: str | None = None
+    orgao_executor: str | None = None
+    situacao: list[int] | None = None
+    data_abertura_ini: str | None = None
+    data_abertura_fim: str | None = None
+    data_encerramento_ini: str | None = None
+    data_encerramento_fim: str | None = None
+    data_ciencia_ini: str | None = None
+    data_ciencia_fim: str | None = None
+    search: str | None = None
+
+
+def filtros_relatorio_os(
+    numero_os: str | None = Query(default=None),
+    modelo: str | None = Query(default=None),
+    motivo_abertura: str | None = Query(default=None),
+    ie: str | None = Query(default=None),
+    cnpj: str | None = Query(default=None),
+    razao_social: str | None = Query(default=None, min_length=6),
+    matriculas: str | None = Query(default=None),
+    equipe_fiscal: str | None = Query(default=None),
+    orgao_executor: str | None = Query(default=None),
+    situacao: list[int] | None = Query(default=None),
+    data_abertura_ini: str | None = Query(default=None),
+    data_abertura_fim: str | None = Query(default=None),
+    data_encerramento_ini: str | None = Query(default=None),
+    data_encerramento_fim: str | None = Query(default=None),
+    data_ciencia_ini: str | None = Query(default=None),
+    data_ciencia_fim: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+) -> FiltrosRelatorioOS:
+    """Coleta os filtros de relatorio da query string (usada por CSV e PDF)."""
+    return FiltrosRelatorioOS(
+        numero_os=numero_os, modelo=modelo, motivo_abertura=motivo_abertura,
+        ie=ie, cnpj=cnpj, razao_social=razao_social, matriculas=matriculas,
+        equipe_fiscal=equipe_fiscal, orgao_executor=orgao_executor,
+        situacao=situacao,
+        data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
+        data_encerramento_ini=data_encerramento_ini,
+        data_encerramento_fim=data_encerramento_fim,
+        data_ciencia_ini=data_ciencia_ini, data_ciencia_fim=data_ciencia_fim,
+        search=search,
     )
+
+
+def _filtrar_ordens(f: FiltrosRelatorioOS) -> list[dict[str, Any]]:
+    """
+    Busca as OS do relatorio no ATF.
+
+    Usa os mesmos filtros do painel de Ordens de Servico; 'search' e um
+    refinamento adicional aplicado localmente sobre o resultado.
+    """
+    try:
+        result = listar_ordens_atf(
+            numero_os=f.numero_os, modelo=f.modelo, ie=f.ie, cnpj=f.cnpj,
+            razao_social=f.razao_social, matriculas=f.matriculas,
+            situacoes=f.situacao,
+            data_abertura_ini=f.data_abertura_ini, data_abertura_fim=f.data_abertura_fim,
+            data_ciencia_ini=f.data_ciencia_ini, data_ciencia_fim=f.data_ciencia_fim,
+            motivo_abertura=f.motivo_abertura, equipe_fiscal=f.equipe_fiscal,
+            orgao_executor=f.orgao_executor,
+            data_encerramento_ini=f.data_encerramento_ini,
+            data_encerramento_fim=f.data_encerramento_fim,
+            pagina=1, limite=_RELATORIO_LIMITE,
+        )
+    except ValueError as e:
+        # Regras de negocio do ATF (ex.: filtro que exige periodo)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     rows = result.get("ordens", [])
 
-    if search:
-        term = search.lower()
+    if f.search:
+        term = f.search.lower()
         rows = [
             o for o in rows
             if term in o.get("numero_os", "").lower()
             or term in o.get("razao_social", "").lower()
             or term in o.get("ie", "").lower()
             or term in (o.get("cnpj") or "").lower()
-            or any(term in f.get("nome", "").lower() for f in o.get("fiscais", []))
-            or any(term in f.get("matricula", "").lower() for f in o.get("fiscais", []))
+            or term in (o.get("motivo_abertura") or "").lower()
+            or any(term in fi.get("nome", "").lower() for fi in o.get("fiscais", []))
+            or any(term in fi.get("matricula", "").lower() for fi in o.get("fiscais", []))
         ]
     return rows
 
 
 def _fiscais_nomes(o: dict[str, Any]) -> str:
-    return ", ".join(f.get("nome", "") for f in o.get("fiscais", []))
+    return ", ".join(
+        f"{f.get('nome', '')} ({f.get('matricula', '')})" for f in o.get("fiscais", [])
+    )
 
 
 @app.get("/relatorios/ordens")
 def relatorio_ordens_csv(
     user: dict[str, Any] = Depends(get_current_user),
-    situacao_filter: str | None = Query(default=None, alias="situacao"),
-    modelo: str | None = Query(default=None),
-    data_inicio: str | None = Query(default=None),
-    data_fim: str | None = Query(default=None),
-    search: str | None = Query(default=None),
+    filtros: FiltrosRelatorioOS = Depends(filtros_relatorio_os),
 ) -> StreamingResponse:
     """Gera relatorio CSV das Ordens de Servico com filtros."""
-    rows = _filtrar_ordens(situacao_filter, modelo, data_inicio, data_fim, search)
+    rows = _filtrar_ordens(filtros)
 
     output = io.StringIO()
     output.write("\ufeff")
     writer = csv.writer(output, delimiter=";")
     writer.writerow([
-        "Numero", "Modelo", "IE", "CNPJ", "Razao Social",
-        "Fiscais", "Situacao", "Data Abertura",
+        "Numero", "Modelo", "Motivo de Abertura", "IE", "CNPJ/CPF",
+        "Razao Social", "Orgao Executor", "Equipe Fiscal", "Fiscais",
+        "Situacao", "Data Abertura", "Inicio Fiscalizacao", "Data Encerramento",
+        "Ultimo Evento", "Dias de Execucao",
+        "Tempo Medio Modelo/Motivo (dias)", "Media de Eventos Modelo/Motivo",
     ])
     for o in rows:
         writer.writerow([
             o.get("numero_os", ""),
             o.get("modelo", ""),
+            o.get("motivo_abertura", ""),
             o.get("ie", ""),
             o.get("cnpj", "") or "",
             o.get("razao_social", ""),
+            o.get("orgao_executor", ""),
+            o.get("equipe_fiscal", ""),
             _fiscais_nomes(o),
             _fmt_situacao(o),
             _fmt_data_br(o.get("data_abertura")),
+            _fmt_data_br(o.get("data_inicio_fiscalizacao")),
+            _fmt_data_br(o.get("data_encerramento")),
+            _fmt_data_br(o.get("data_ultimo_evento")),
+            o.get("dias_execucao") if o.get("dias_execucao") is not None else "",
+            o.get("tempo_medio_execucao_modelo_motivo") or "",
+            o.get("qtd_media_eventos_modelo_motivo") or "",
         ])
 
     output.seek(0)
@@ -846,22 +917,21 @@ def _safe(val) -> str:
 @app.get("/relatorios/ordens/pdf")
 def relatorio_ordens_pdf(
     user: dict[str, Any] = Depends(get_current_user),
-    situacao_filter: str | None = Query(default=None, alias="situacao"),
-    modelo: str | None = Query(default=None),
-    data_inicio: str | None = Query(default=None),
-    data_fim: str | None = Query(default=None),
-    search: str | None = Query(default=None),
+    filtros: FiltrosRelatorioOS = Depends(filtros_relatorio_os),
 ) -> Response:
     """Gera relatorio PDF das Ordens de Servico."""
-    rows = _filtrar_ordens(situacao_filter, modelo, data_inicio, data_fim, search)
+    rows = _filtrar_ordens(filtros)
 
     pdf = _PDF("Relatorio de Ordens de Servico")
     pdf.alias_nb_pages()
     pdf.add_page()
 
-    # Cabecalho da tabela
-    headers = ["Numero", "Modelo", "IE", "Razao Social", "Fiscais", "Situacao", "Dt Abertura"]
-    col_widths = [28, 22, 25, 60, 60, 38, 27]
+    # Cabecalho da tabela (A4 paisagem: ~277mm uteis)
+    headers = [
+        "Numero", "Modelo", "Motivo", "IE", "Razao Social",
+        "Fiscais", "Situacao", "Abertura", "Encerram.", "Dias",
+    ]
+    col_widths = [40, 22, 34, 22, 44, 40, 30, 18, 18, 9]
 
     pdf.set_font("Helvetica", "B", 7)
     for i, h in enumerate(headers):
@@ -869,20 +939,30 @@ def relatorio_ordens_pdf(
     pdf.ln()
 
     # Dados
-    pdf.set_font("Helvetica", "", 6.5)
+    pdf.set_font("Helvetica", "", 6)
     for o in rows:
+        sit = o.get("situacao") or {}
         vals = [
             _safe(o.get("numero_os")),
-            _safe(o.get("modelo")),
+            _safe(o.get("modelo"))[:14],
+            _safe(o.get("motivo_abertura"))[:24],
             _safe(o.get("ie")),
-            _safe(o.get("razao_social"))[:35],
-            _safe(_fiscais_nomes(o))[:35],
-            _safe(_fmt_situacao(o))[:28],
+            _safe(o.get("razao_social"))[:30],
+            _safe(_fiscais_nomes(o))[:28],
+            _safe(sit.get("descricao", ""))[:20],
             _fmt_data_br(o.get("data_abertura")),
+            _fmt_data_br(o.get("data_encerramento")),
+            _safe(o.get("dias_execucao") if o.get("dias_execucao") is not None else "-"),
         ]
         for i, v in enumerate(vals):
             pdf.cell(col_widths[i], 5, v, border=1, align="C")
         pdf.ln()
+
+    if not rows:
+        pdf.set_font("Helvetica", "I", 8)
+        pdf.ln(3)
+        pdf.cell(0, 5, "Nenhuma ordem de servico encontrada para os filtros informados.",
+                 new_x="LMARGIN", new_y="NEXT")
 
     pdf_bytes = bytes(pdf.output())
     today = date.today().strftime("%Y-%m-%d")

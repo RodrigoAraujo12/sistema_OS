@@ -7,7 +7,11 @@
 
 import React, { useState } from "react";
 import apiClient from "../api.js";
-import { situacaoLabels, modeloLabels } from "../constants.js";
+import { situacaoLabels, modeloLabels, motivoLabels } from "../constants.js";
+import { EMPTY_OS_FILTERS, validarFiltrosOS } from "../atfFilters.js";
+
+const SITUACOES = Object.entries(situacaoLabels);
+const MOTIVOS = Object.entries(motivoLabels);
 
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -23,30 +27,45 @@ function downloadBlob(blob, filename) {
 export default function RelatoriosPanel({ authData, onError, onMessage }) {
   const [loading, setLoading] = useState(false);
 
-  // Filtros OS
-  const [situacaoFilter, setSituacaoFilter] = useState("");
-  const [modeloFilter, setModeloFilter] = useState("");
-  const [dataInicio, setDataInicio] = useState("");
-  const [dataFim, setDataFim] = useState("");
-  const [search, setSearch] = useState("");
+  // Filtros OS – mesmos do painel de Ordens de Servico + busca livre
+  const [filters, setFilters] = useState({ ...EMPTY_OS_FILTERS, search: "" });
+  const [filtroError, setFiltroError] = useState("");
 
   // Filtros Dashboard
   const [dashDataInicio, setDashDataInicio] = useState("");
   const [dashDataFim, setDashDataFim] = useState("");
 
-  async function handleDownloadOrdens() {
+  function handleFilterChange(e) {
+    const { name, value } = e.target;
+    setFilters(prev => ({ ...prev, [name]: value }));
+  }
+
+  function handleSituacaoToggle(codigo) {
+    const cod = Number(codigo);
+    setFilters(prev => ({
+      ...prev,
+      situacoes: prev.situacoes.includes(cod)
+        ? prev.situacoes.filter(s => s !== cod)
+        : [...prev.situacoes, cod],
+    }));
+  }
+
+  /** Valida e baixa o relatorio de OS no formato pedido ("csv" ou "pdf"). */
+  async function baixarRelatorioOrdens(formato) {
+    const erro = validarFiltrosOS(filters);
+    if (erro) {
+      setFiltroError(erro);
+      return;
+    }
+    setFiltroError("");
     setLoading(true);
     try {
-      const blob = await apiClient.downloadRelatorioOrdens({
-        situacao: situacaoFilter || undefined,
-        modelo: modeloFilter || undefined,
-        dataInicio: dataInicio || undefined,
-        dataFim: dataFim || undefined,
-        search: search || undefined,
-      });
+      const blob = formato === "pdf"
+        ? await apiClient.downloadRelatorioOrdensPdf(filters)
+        : await apiClient.downloadRelatorioOrdens(filters);
       const today = new Date().toISOString().slice(0, 10);
-      downloadBlob(blob, `relatorio_ordens_${today}.csv`);
-      onMessage("Relatorio de Ordens de Servico gerado com sucesso!");
+      downloadBlob(blob, `relatorio_ordens_${today}.${formato}`);
+      onMessage(`Relatorio de Ordens de Servico (${formato.toUpperCase()}) gerado com sucesso!`);
     } catch (err) {
       onError(err.message);
     } finally {
@@ -64,26 +83,6 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
       const today = new Date().toISOString().slice(0, 10);
       downloadBlob(blob, `relatorio_dashboard_${today}.csv`);
       onMessage("Relatorio de Dashboard gerado com sucesso!");
-    } catch (err) {
-      onError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleDownloadOrdensPdf() {
-    setLoading(true);
-    try {
-      const blob = await apiClient.downloadRelatorioOrdensPdf({
-        situacao: situacaoFilter || undefined,
-        modelo: modeloFilter || undefined,
-        dataInicio: dataInicio || undefined,
-        dataFim: dataFim || undefined,
-        search: search || undefined,
-      });
-      const today = new Date().toISOString().slice(0, 10);
-      downloadBlob(blob, `relatorio_ordens_${today}.pdf`);
-      onMessage("Relatorio PDF de Ordens de Servico gerado com sucesso!");
     } catch (err) {
       onError(err.message);
     } finally {
@@ -109,11 +108,8 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
   }
 
   function handleLimparFiltrosOS() {
-    setSituacaoFilter("");
-    setModeloFilter("");
-    setDataInicio("");
-    setDataFim("");
-    setSearch("");
+    setFilters({ ...EMPTY_OS_FILTERS, search: "" });
+    setFiltroError("");
   }
 
   return (
@@ -133,24 +129,26 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
           </div>
         </div>
         <p className="relatorio-desc">
-          Exporta todas as OS visiveis com filtros aplicados. Inclui numero, tipo, IE, razao social,
-          situacao e datas.
+          Exporta as OS do ATF com os mesmos filtros do painel de Ordens de Servico.
+          Inclui modelo, motivo, contribuinte, orgao, equipe, fiscais, datas e os
+          campos calculados (dias de execucao e medias por Modelo/Motivo).
+        </p>
+        <p className="relatorio-desc" style={{ fontSize: 12 }}>
+          <strong>Regras do ATF:</strong> informe ao menos um filtro. Modelo, Motivo,
+          Situa&ccedil;&atilde;o, Equipe e &Oacute;rg&atilde;o exigem os dois per&iacute;odos preenchidos
+          (abertura e encerramento). Busca apenas por per&iacute;odo &eacute; limitada a um ano.
         </p>
 
         <div className="relatorio-filters">
           <div className="filter-row">
             <div className="filter-group">
-              <label>Situa&ccedil;&atilde;o</label>
-              <select value={situacaoFilter} onChange={(e) => setSituacaoFilter(e.target.value)}>
-                <option value="">Todas</option>
-                {Object.entries(situacaoLabels).map(([cod, desc]) => (
-                  <option key={cod} value={cod}>{desc}</option>
-                ))}
-              </select>
+              <label>N&uacute;mero OS</label>
+              <input type="text" name="numero" value={filters.numero}
+                onChange={handleFilterChange} placeholder="Ex: 93300008.12.00000001/2026-99" />
             </div>
             <div className="filter-group">
               <label>Modelo</label>
-              <select value={modeloFilter} onChange={(e) => setModeloFilter(e.target.value)}>
+              <select name="modelo" value={filters.modelo} onChange={handleFilterChange}>
                 <option value="">Todos</option>
                 {Object.entries(modeloLabels).map(([cod, label]) => (
                   <option key={cod} value={cod}>{cod} — {label}</option>
@@ -158,35 +156,126 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
               </select>
             </div>
             <div className="filter-group">
-              <label>Data Inicio</label>
-              <input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} />
+              <label>IE</label>
+              <input type="text" name="ie" value={filters.ie}
+                onChange={handleFilterChange} placeholder="Inscricao Estadual" />
             </div>
             <div className="filter-group">
-              <label>Data Fim</label>
-              <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} />
+              <label>CNPJ / CPF</label>
+              <input type="text" name="cnpj" value={filters.cnpj}
+                onChange={handleFilterChange} placeholder="Documento do contribuinte" />
             </div>
           </div>
+
           <div className="filter-row">
-            <div className="filter-group filter-search">
-              <label>Busca livre</label>
-              <input
-                type="text"
-                placeholder="Numero, razao social, IE, matricula, fiscal..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+            <div className="filter-group" style={{ flex: 2 }}>
+              <label>Motivo de Abertura</label>
+              <select name="motivo_abertura" value={filters.motivo_abertura} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                {MOTIVOS.map(([cod, label]) => (
+                  <option key={cod} value={cod}>{cod} — {label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="filter-group">
+              <label>
+                Raz&atilde;o Social
+                {filters.razao_social.length > 0 && filters.razao_social.length < 6 && (
+                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>
+                    m&iacute;n. 6 ({filters.razao_social.length}/6)
+                  </span>
+                )}
+              </label>
+              <input type="text" name="razao_social" value={filters.razao_social}
+                onChange={handleFilterChange} placeholder="Parte do nome (min. 6)" />
+            </div>
+          </div>
+
+          <div className="filter-row">
+            <div className="filter-group">
+              <label>Matr&iacute;culas dos Fiscais</label>
+              <input type="text" name="matriculas" value={filters.matriculas}
+                onChange={handleFilterChange} placeholder="Ex: 1459376" />
+            </div>
+            <div className="filter-group">
+              <label>Equipe Fiscal (c&oacute;digo)</label>
+              <input type="text" name="equipe_fiscal" value={filters.equipe_fiscal}
+                onChange={handleFilterChange} placeholder="Ex: 12" />
+            </div>
+            <div className="filter-group">
+              <label>&Oacute;rg&atilde;o Executor (c&oacute;digo)</label>
+              <input type="text" name="orgao_executor" value={filters.orgao_executor}
+                onChange={handleFilterChange} placeholder="Ex: 5" />
+            </div>
+          </div>
+
+          <div className="filter-row">
+            <div className="filter-group">
+              <label>Abertura &mdash; In&iacute;cio</label>
+              <input type="date" name="data_abertura_inicio" value={filters.data_abertura_inicio} onChange={handleFilterChange} />
+            </div>
+            <div className="filter-group">
+              <label>Abertura &mdash; Fim</label>
+              <input type="date" name="data_abertura_fim" value={filters.data_abertura_fim} onChange={handleFilterChange} />
+            </div>
+            <div className="filter-group">
+              <label>Encerramento &mdash; In&iacute;cio</label>
+              <input type="date" name="data_encerramento_inicio" value={filters.data_encerramento_inicio} onChange={handleFilterChange} />
+            </div>
+            <div className="filter-group">
+              <label>Encerramento &mdash; Fim</label>
+              <input type="date" name="data_encerramento_fim" value={filters.data_encerramento_fim} onChange={handleFilterChange} />
+            </div>
+          </div>
+
+          <div className="filter-row">
+            <div className="filter-group">
+              <label>Ci&ecirc;ncia &mdash; In&iacute;cio</label>
+              <input type="date" name="data_ciencia_inicio" value={filters.data_ciencia_inicio} onChange={handleFilterChange} />
+            </div>
+            <div className="filter-group">
+              <label>Ci&ecirc;ncia &mdash; Fim</label>
+              <input type="date" name="data_ciencia_fim" value={filters.data_ciencia_fim} onChange={handleFilterChange} />
+            </div>
+            <div className="filter-group filter-search" style={{ flex: 2 }}>
+              <label>Busca livre (refina o resultado)</label>
+              <input type="text" name="search" value={filters.search}
+                onChange={handleFilterChange}
+                placeholder="Numero, razao social, IE, motivo, matricula, fiscal..." />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 4 }}>
+            <label style={{ display: "block", marginBottom: 6, fontSize: 12, fontWeight: 600 }}>
+              Situa&ccedil;&atilde;o
+            </label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 20px" }}>
+              {SITUACOES.map(([cod, desc]) => (
+                <label key={cod} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer", userSelect: "none" }}>
+                  <input
+                    type="checkbox"
+                    checked={filters.situacoes.includes(Number(cod))}
+                    onChange={() => handleSituacaoToggle(cod)}
+                  />
+                  <span>{desc}</span>
+                </label>
+              ))}
             </div>
           </div>
         </div>
+
+        {filtroError && (
+          <div className="alert error" style={{ marginTop: 10 }}>{filtroError}</div>
+        )}
 
         <div className="relatorio-actions">
           <button className="btn-secondary" onClick={handleLimparFiltrosOS} disabled={loading}>
             Limpar Filtros
           </button>
-          <button className="btn-primary" onClick={handleDownloadOrdens} disabled={loading}>
+          <button className="btn-primary" onClick={() => baixarRelatorioOrdens("csv")} disabled={loading}>
             {loading ? "Gerando..." : "⬇ CSV"}
           </button>
-          <button className="btn-primary" onClick={handleDownloadOrdensPdf} disabled={loading} style={{ background: "#dc2626" }}>
+          <button className="btn-primary" onClick={() => baixarRelatorioOrdens("pdf")} disabled={loading} style={{ background: "#dc2626" }}>
             {loading ? "Gerando..." : "⬇ PDF"}
           </button>
         </div>

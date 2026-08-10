@@ -1,29 +1,13 @@
 import React, { useState } from "react";
 import apiClient from "../api.js";
 import { situacaoLabels, modeloLabels, motivoLabels, formatarData } from "../constants.js";
+import { EMPTY_OS_FILTERS, validarFiltrosOS, filtrosParaPayload } from "../atfFilters.js";
 
 const LIMITE_POR_PAGINA = 20;
 const SITUACOES = Object.entries(situacaoLabels); // [[0, "AGUARDANDO..."], ...]
 const MOTIVOS = Object.entries(motivoLabels);
 
-const EMPTY_FILTERS = {
-  numero: "",
-  modelo: "",
-  motivo_abertura: "",
-  ie: "",
-  cnpj: "",
-  razao_social: "",
-  matriculas: "",
-  equipe_fiscal: "",
-  orgao_executor: "",
-  situacoes: [],
-  data_abertura_inicio: "",
-  data_abertura_fim: "",
-  data_encerramento_inicio: "",
-  data_encerramento_fim: "",
-  data_ciencia_inicio: "",
-  data_ciencia_fim: "",
-};
+const EMPTY_FILTERS = EMPTY_OS_FILTERS;
 
 export default function OrdensPanel() {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
@@ -55,68 +39,8 @@ export default function OrdensPanel() {
     });
   }
 
-  function validate() {
-    const f = filters;
-
-    const aberturaCompleta = f.data_abertura_inicio && f.data_abertura_fim;
-    const encerramentoCompleto = f.data_encerramento_inicio && f.data_encerramento_fim;
-    const temPeriodo = aberturaCompleta || encerramentoCompleto;
-
-    const hasFilter =
-      f.numero ||
-      f.modelo ||
-      f.motivo_abertura ||
-      f.ie ||
-      f.cnpj ||
-      (f.razao_social && f.razao_social.length >= 6) ||
-      f.matriculas ||
-      f.equipe_fiscal ||
-      f.orgao_executor ||
-      f.situacoes.length > 0 ||
-      f.data_abertura_inicio ||
-      f.data_abertura_fim ||
-      f.data_encerramento_inicio ||
-      f.data_encerramento_fim ||
-      f.data_ciencia_inicio ||
-      f.data_ciencia_fim;
-
-    if (!hasFilter) return "Informe ao menos um filtro para pesquisar.";
-    if (f.razao_social && f.razao_social.length < 6)
-      return "Razão Social: mínimo de 6 caracteres.";
-
-    // Regra doc da listagem: periodos devem ser informados conjuntamente
-    if ((f.data_abertura_inicio || f.data_abertura_fim) && !aberturaCompleta)
-      return "Período de abertura: informe início e fim.";
-    if ((f.data_encerramento_inicio || f.data_encerramento_fim) && !encerramentoCompleto)
-      return "Período de encerramento: informe início e fim.";
-
-    // Regra doc da listagem: modelo, motivo, status, equipe e órgão exigem
-    // um período (abertura ou encerramento)
-    const exigePeriodo =
-      f.modelo || f.motivo_abertura || f.situacoes.length > 0 ||
-      f.equipe_fiscal || f.orgao_executor;
-    if (exigePeriodo && !temPeriodo)
-      return "Modelo, Motivo, Situação, Equipe e Órgão exigem um período (abertura ou encerramento) com início e fim.";
-
-    // Regra doc da listagem: busca apenas por período limitada a um ano
-    const apenasPeriodo =
-      temPeriodo &&
-      !f.numero && !f.modelo && !f.motivo_abertura && !f.ie && !f.cnpj &&
-      !(f.razao_social && f.razao_social.length >= 6) && !f.matriculas &&
-      !f.equipe_fiscal && !f.orgao_executor && f.situacoes.length === 0;
-    if (apenasPeriodo) {
-      const umAnoMs = 366 * 24 * 60 * 60 * 1000;
-      const ini = aberturaCompleta ? f.data_abertura_inicio : f.data_encerramento_inicio;
-      const fim = aberturaCompleta ? f.data_abertura_fim : f.data_encerramento_fim;
-      if (new Date(fim) - new Date(ini) > umAnoMs)
-        return "Busca apenas por período: intervalo máximo de um ano.";
-    }
-
-    return null;
-  }
-
   async function fetchOrdens(page) {
-    const error = validate();
+    const error = validarFiltrosOS(filters);
     if (error) {
       setSearchError(error);
       return;
@@ -126,22 +50,7 @@ export default function OrdensPanel() {
     setSearchError("");
     try {
       const data = await apiClient.listOrdens({
-        numero: filters.numero || null,
-        modelo: filters.modelo || null,
-        motivo_abertura: filters.motivo_abertura || null,
-        ie: filters.ie || null,
-        cnpj: filters.cnpj || null,
-        razao_social: filters.razao_social || null,
-        matriculas: filters.matriculas || null,
-        equipe_fiscal: filters.equipe_fiscal || null,
-        orgao_executor: filters.orgao_executor || null,
-        situacoes: filters.situacoes.length > 0 ? filters.situacoes : null,
-        data_abertura_inicio: filters.data_abertura_inicio || null,
-        data_abertura_fim: filters.data_abertura_fim || null,
-        data_encerramento_inicio: filters.data_encerramento_inicio || null,
-        data_encerramento_fim: filters.data_encerramento_fim || null,
-        data_ciencia_inicio: filters.data_ciencia_inicio || null,
-        data_ciencia_fim: filters.data_ciencia_fim || null,
+        ...filtrosParaPayload(filters),
         pagina: page,
         limite: LIMITE_POR_PAGINA,
       });
@@ -198,7 +107,7 @@ export default function OrdensPanel() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${numero}.pdf`;
+      a.download = `${numero.replace(/\//g, "_")}.pdf`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -206,31 +115,6 @@ export default function OrdensPanel() {
     } catch (err) {
       setDetailError(err.message || "Erro ao baixar PDF");
     }
-  }
-
-  function formatCurrency(value) {
-    if (!value) return "R$ 0,00";
-    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
-  }
-
-  function renderFiscais(fiscais) {
-    if (!fiscais || fiscais.length === 0) return "-";
-    return fiscais.map((f, i) => (
-      <div key={i} style={{ fontSize: 12, lineHeight: 1.5 }}>
-        {typeof f === "object" ? (
-          <>
-            {f.nome} ({f.matricula}){f.status ? ` · ${f.status}` : ""}
-            {(f.data_designacao || f.data_ciencia || f.data_cancelamento) && (
-              <div style={{ fontSize: 11, color: "#6b7280" }}>
-                {f.data_designacao ? `desig. ${formatarData(f.data_designacao)}` : ""}
-                {f.data_ciencia ? ` · ciência ${formatarData(f.data_ciencia)}` : ""}
-                {f.data_cancelamento ? ` · canc. ${formatarData(f.data_cancelamento)}` : ""}
-              </div>
-            )}
-          </>
-        ) : f}
-      </div>
-    ));
   }
 
   function renderSituacao(os) {
@@ -270,9 +154,9 @@ export default function OrdensPanel() {
               <label className="filter-label">
                 Modelo
                 {filters.modelo &&
-                  !(filters.data_abertura_inicio && filters.data_abertura_fim) &&
-                  !(filters.data_encerramento_inicio && filters.data_encerramento_fim) && (
-                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>*requer per&iacute;odo</span>
+                  !(filters.data_abertura_inicio && filters.data_abertura_fim &&
+                    filters.data_encerramento_inicio && filters.data_encerramento_fim) && (
+                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>*requer ambos os per&iacute;odos</span>
                 )}
               </label>
               <select name="modelo" value={filters.modelo} onChange={handleFilterChange} className="filter-select">
@@ -466,21 +350,12 @@ export default function OrdensPanel() {
                   <thead>
                     <tr>
                       <th>N&uacute;mero</th>
+                      <th>Raz&atilde;o Social</th>
                       <th>Modelo</th>
                       <th>Motivo</th>
-                      <th>IE</th>
-                      <th>CNPJ</th>
-                      <th>Raz&atilde;o Social</th>
-                      <th>&Oacute;rg&atilde;o Executor</th>
-                      <th>Equipe</th>
-                      <th>Fiscais</th>
                       <th>Situa&ccedil;&atilde;o</th>
                       <th>Abertura</th>
-                      <th>Encerramento</th>
-                      <th>&Uacute;lt. Evento</th>
-                      <th>Dias Exec.</th>
-                      <th>T. M&eacute;dio (M/M)</th>
-                      <th>M&eacute;d. Eventos (M/M)</th>
+                      <th style={{ textAlign: "center" }}>Dias Exec.</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -494,27 +369,12 @@ export default function OrdensPanel() {
                           title="Clique para ver detalhes"
                         >
                           <td><strong>{numeroOS}</strong></td>
-                          <td>{os.modelo || os.tipo || "-"}</td>
+                          <td>{os.razao_social || "-"}</td>
+                          <td>{os.modelo || "-"}</td>
                           <td>{os.motivo_abertura || "-"}</td>
-                          <td>{os.ie}</td>
-                          <td>{os.cnpj || "-"}</td>
-                          <td>{os.razao_social}</td>
-                          <td>{os.orgao_executor || "-"}</td>
-                          <td>{os.equipe_fiscal || "-"}</td>
-                          <td>{renderFiscais(os.fiscais)}</td>
                           <td>{renderSituacao(os)}</td>
                           <td>{formatarData(os.data_abertura)}</td>
-                          <td>{formatarData(os.data_encerramento)}</td>
-                          <td>{formatarData(os.data_ultimo_evento)}</td>
                           <td style={{ textAlign: "center" }}>{os.dias_execucao ?? "-"}</td>
-                          <td style={{ textAlign: "center" }}>
-                            {os.tempo_medio_execucao_modelo_motivo != null
-                              ? `${os.tempo_medio_execucao_modelo_motivo} d`
-                              : "-"}
-                          </td>
-                          <td style={{ textAlign: "center" }}>
-                            {os.qtd_media_eventos_modelo_motivo ?? "-"}
-                          </td>
                         </tr>
                       );
                     })}
@@ -589,92 +449,108 @@ export default function OrdensPanel() {
                 <div className="os-detail-grid">
                   <div className="os-detail-field">
                     <span className="os-detail-label">Modelo</span>
-                    <span className="os-detail-value">{selectedOS.modelo || selectedOS.tipo || "-"}</span>
+                    <span className="os-detail-value">{selectedOS.modelo || "-"}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Motivo de Abertura</span>
+                    <span className="os-detail-value">{selectedOS.motivo_abertura || "-"}</span>
                   </div>
                   <div className="os-detail-field">
                     <span className="os-detail-label">IE</span>
-                    <span className="os-detail-value">{selectedOS.ie}</span>
+                    <span className="os-detail-value">{selectedOS.ie || "-"}</span>
                   </div>
                   <div className="os-detail-field">
-                    <span className="os-detail-label">CNPJ</span>
+                    <span className="os-detail-label">CNPJ / CPF</span>
                     <span className="os-detail-value">{selectedOS.cnpj || "-"}</span>
                   </div>
                   <div className="os-detail-field">
-                    <span className="os-detail-label">Endere&ccedil;o</span>
-                    <span className="os-detail-value">{selectedOS.endereco || "-"}</span>
+                    <span className="os-detail-label">&Oacute;rg&atilde;o Executor</span>
+                    <span className="os-detail-value">{selectedOS.orgao_executor || "-"}</span>
                   </div>
                   <div className="os-detail-field">
-                    <span className="os-detail-label">Telefone</span>
-                    <span className="os-detail-value">{selectedOS.telefone || "-"}</span>
-                  </div>
-                  <div className="os-detail-field">
-                    <span className="os-detail-label">Valor Estimado</span>
-                    <span className="os-detail-value">{formatCurrency(selectedOS.valor_estimado)}</span>
-                  </div>
-                  <div className="os-detail-field">
-                    <span className="os-detail-label">Supervisor</span>
-                    <span className="os-detail-value">{selectedOS.matricula_supervisor || "-"}</span>
-                  </div>
-                  <div className="os-detail-field">
-                    <span className="os-detail-label">Fiscais</span>
-                    <span className="os-detail-value">
-                      {selectedOS.fiscais?.length > 0
-                        ? selectedOS.fiscais.map((f, i) => (
-                            <div key={i}>
-                              {typeof f === "object"
-                                ? `${f.nome} — Mat. ${f.matricula}${f.data_ciencia ? ` (ci&ecirc;ncia: ${formatarData(f.data_ciencia)})` : ""}`
-                                : f}
-                            </div>
-                          ))
-                        : "-"}
-                    </span>
+                    <span className="os-detail-label">Equipe Fiscal</span>
+                    <span className="os-detail-value">{selectedOS.equipe_fiscal || "-"}</span>
                   </div>
                 </div>
+              </div>
 
-                <div className="os-detail-dates">
+              <div className="os-detail-section">
+                <h3 className="os-detail-section-title">Datas e Execu&ccedil;&atilde;o</h3>
+                <div className="os-detail-grid">
                   <div className="os-detail-field">
                     <span className="os-detail-label">Abertura</span>
                     <span className="os-detail-value">{formatarData(selectedOS.data_abertura)}</span>
                   </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">In&iacute;cio da Fiscaliza&ccedil;&atilde;o</span>
+                    <span className="os-detail-value">{formatarData(selectedOS.data_inicio_fiscalizacao)}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Encerramento</span>
+                    <span className="os-detail-value">{formatarData(selectedOS.data_encerramento)}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">&Uacute;ltimo Evento</span>
+                    <span className="os-detail-value">{formatarData(selectedOS.data_ultimo_evento)}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Dias de Execu&ccedil;&atilde;o</span>
+                    <span className="os-detail-value">{selectedOS.dias_execucao ?? "-"}</span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">Tempo M&eacute;dio (Modelo/Motivo)</span>
+                    <span className="os-detail-value">
+                      {selectedOS.tempo_medio_execucao_modelo_motivo != null
+                        ? `${selectedOS.tempo_medio_execucao_modelo_motivo} dias`
+                        : "-"}
+                    </span>
+                  </div>
+                  <div className="os-detail-field">
+                    <span className="os-detail-label">M&eacute;dia de Eventos (Modelo/Motivo)</span>
+                    <span className="os-detail-value">
+                      {selectedOS.qtd_media_eventos_modelo_motivo ?? "-"}
+                    </span>
+                  </div>
                 </div>
-
-                {selectedOS.objeto && (
-                  <div style={{ marginTop: 16 }}>
-                    <span className="os-detail-label">Objeto da Fiscaliza&ccedil;&atilde;o</span>
-                    <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 }}>{selectedOS.objeto}</p>
-                  </div>
-                )}
-                {selectedOS.observacoes && (
-                  <div style={{ marginTop: 12 }}>
-                    <span className="os-detail-label">Observa&ccedil;&otilde;es</span>
-                    <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 }}>{selectedOS.observacoes}</p>
-                  </div>
-                )}
               </div>
 
-              {/* Movimentacoes — exibidas apenas se o endpoint de detalhe retornar */}
-              {selectedOS.movimentacoes && selectedOS.movimentacoes.length > 0 && (
-                <div className="os-detail-section">
-                  <h3 className="os-detail-section-title">
-                    Movimenta&ccedil;&otilde;es ({selectedOS.movimentacoes.length})
-                  </h3>
-                  <div className="os-movimentacoes-timeline">
-                    {selectedOS.movimentacoes.map((mov, idx) => (
-                      <div key={idx} className="os-mov-item">
-                        <div className="os-mov-dot" />
-                        <div className="os-mov-content">
-                          <div className="os-mov-header">
-                            <span className="badge normal" style={{ fontSize: 11 }}>{mov.tipo}</span>
-                            <span className="os-mov-date">{formatarData(mov.data)}</span>
-                          </div>
-                          <p className="os-mov-desc">{mov.descricao}</p>
-                          <span className="os-mov-resp">Respons&aacute;vel: {mov.responsavel}</span>
-                        </div>
-                      </div>
-                    ))}
+              <div className="os-detail-section">
+                <h3 className="os-detail-section-title">
+                  Fiscais ({selectedOS.fiscais?.length ?? 0})
+                </h3>
+                {selectedOS.fiscais?.length > 0 ? (
+                  <div className="table-container">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Matr&iacute;cula</th>
+                          <th>Nome</th>
+                          <th>Status</th>
+                          <th>Designa&ccedil;&atilde;o</th>
+                          <th>Ci&ecirc;ncia</th>
+                          <th>Cancelamento</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedOS.fiscais.map((f, i) => (
+                          <tr key={i}>
+                            <td>{f.matricula}</td>
+                            <td>{f.nome}</td>
+                            <td>{f.status || "-"}</td>
+                            <td>{formatarData(f.data_designacao)}</td>
+                            <td>{formatarData(f.data_ciencia)}</td>
+                            <td>{formatarData(f.data_cancelamento)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                </div>
-              )}
+                ) : (
+                  <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                    Nenhum fiscal designado.
+                  </p>
+                )}
+              </div>
             </div>
 
             {/* Footer */}

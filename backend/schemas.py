@@ -152,25 +152,6 @@ class OSResponse(BaseModel):
     data_ciencia: str | None = None
 
 
-class MovimentacaoResponse(BaseModel):
-    """Uma movimentacao dentro de uma OS."""
-    data: str
-    tipo: str
-    descricao: str
-    responsavel: str
-
-
-class OSDetalheResponse(OSResponse):
-    """Dados detalhados de uma OS, incluindo movimentacoes e informacoes extras."""
-    objeto: str = ""
-    valor_estimado: float = 0
-    endereco: str = ""
-    cnpj: str = ""
-    telefone: str = ""
-    observacoes: str = ""
-    movimentacoes: list[MovimentacaoResponse] = []
-
-
 class AlertaResponse(BaseModel):
     """Alerta gerado automaticamente a partir das regras de negocio."""
     tipo: str
@@ -212,7 +193,6 @@ class OSListagemATF(BaseModel):
     ie: str = ""
     cnpj: str | None = None
     razao_social: str = ""
-    nome_humano: str | None = None  # campo noHumano do ATF – semantica a confirmar
     orgao_executor: str = ""
     equipe_fiscal: str = ""
     fiscais: list[FiscalATF] = []
@@ -239,3 +219,15 @@ class OrdensATFResponse(BaseModel):
     """Resposta completa do endpoint de listagem de OS (paginacao + lista)."""
     paginacao: PaginacaoATF
     ordens: list[OSListagemATF]
+
+
+class OSDetalheResponse(OSListagemATF):
+    """
+    Detalhe de uma OS.
+
+    O ATF expoe um unico servico (listarOrdensServicoWebService), que ja
+    retorna todos os dados disponiveis. Por isso o detalhe tem exatamente
+    os mesmos campos da listagem — nao existe informacao adicional a
+    buscar (nao ha endereco, telefone, valor estimado, objeto,
+    observacoes nem movimentacoes no ATF).
+    """
