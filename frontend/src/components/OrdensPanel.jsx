@@ -1,20 +1,26 @@
 import React, { useState } from "react";
 import apiClient from "../api.js";
-import { situacaoLabels, modeloLabels, formatarData } from "../constants.js";
+import { situacaoLabels, modeloLabels, motivoLabels, formatarData } from "../constants.js";
 
 const LIMITE_POR_PAGINA = 20;
 const SITUACOES = Object.entries(situacaoLabels); // [[0, "AGUARDANDO..."], ...]
+const MOTIVOS = Object.entries(motivoLabels);
 
 const EMPTY_FILTERS = {
   numero: "",
   modelo: "",
+  motivo_abertura: "",
   ie: "",
   cnpj: "",
   razao_social: "",
   matriculas: "",
+  equipe_fiscal: "",
+  orgao_executor: "",
   situacoes: [],
   data_abertura_inicio: "",
   data_abertura_fim: "",
+  data_encerramento_inicio: "",
+  data_encerramento_fim: "",
   data_ciencia_inicio: "",
   data_ciencia_fim: "",
 };
@@ -52,24 +58,59 @@ export default function OrdensPanel() {
   function validate() {
     const f = filters;
 
+    const aberturaCompleta = f.data_abertura_inicio && f.data_abertura_fim;
+    const encerramentoCompleto = f.data_encerramento_inicio && f.data_encerramento_fim;
+    const temPeriodo = aberturaCompleta || encerramentoCompleto;
+
     const hasFilter =
       f.numero ||
       f.modelo ||
+      f.motivo_abertura ||
       f.ie ||
       f.cnpj ||
       (f.razao_social && f.razao_social.length >= 6) ||
       f.matriculas ||
+      f.equipe_fiscal ||
+      f.orgao_executor ||
       f.situacoes.length > 0 ||
       f.data_abertura_inicio ||
       f.data_abertura_fim ||
+      f.data_encerramento_inicio ||
+      f.data_encerramento_fim ||
       f.data_ciencia_inicio ||
       f.data_ciencia_fim;
 
     if (!hasFilter) return "Informe ao menos um filtro para pesquisar.";
     if (f.razao_social && f.razao_social.length < 6)
       return "Razão Social: mínimo de 6 caracteres.";
-    if (f.modelo && (!f.data_abertura_inicio || !f.data_abertura_fim))
-      return "Ao informar o Modelo, o período de abertura (início e fim) é obrigatório.";
+
+    // Regra doc da listagem: periodos devem ser informados conjuntamente
+    if ((f.data_abertura_inicio || f.data_abertura_fim) && !aberturaCompleta)
+      return "Período de abertura: informe início e fim.";
+    if ((f.data_encerramento_inicio || f.data_encerramento_fim) && !encerramentoCompleto)
+      return "Período de encerramento: informe início e fim.";
+
+    // Regra doc da listagem: modelo, motivo, status, equipe e órgão exigem
+    // um período (abertura ou encerramento)
+    const exigePeriodo =
+      f.modelo || f.motivo_abertura || f.situacoes.length > 0 ||
+      f.equipe_fiscal || f.orgao_executor;
+    if (exigePeriodo && !temPeriodo)
+      return "Modelo, Motivo, Situação, Equipe e Órgão exigem um período (abertura ou encerramento) com início e fim.";
+
+    // Regra doc da listagem: busca apenas por período limitada a um ano
+    const apenasPeriodo =
+      temPeriodo &&
+      !f.numero && !f.modelo && !f.motivo_abertura && !f.ie && !f.cnpj &&
+      !(f.razao_social && f.razao_social.length >= 6) && !f.matriculas &&
+      !f.equipe_fiscal && !f.orgao_executor && f.situacoes.length === 0;
+    if (apenasPeriodo) {
+      const umAnoMs = 366 * 24 * 60 * 60 * 1000;
+      const ini = aberturaCompleta ? f.data_abertura_inicio : f.data_encerramento_inicio;
+      const fim = aberturaCompleta ? f.data_abertura_fim : f.data_encerramento_fim;
+      if (new Date(fim) - new Date(ini) > umAnoMs)
+        return "Busca apenas por período: intervalo máximo de um ano.";
+    }
 
     return null;
   }
@@ -87,13 +128,18 @@ export default function OrdensPanel() {
       const data = await apiClient.listOrdens({
         numero: filters.numero || null,
         modelo: filters.modelo || null,
+        motivo_abertura: filters.motivo_abertura || null,
         ie: filters.ie || null,
         cnpj: filters.cnpj || null,
         razao_social: filters.razao_social || null,
         matriculas: filters.matriculas || null,
+        equipe_fiscal: filters.equipe_fiscal || null,
+        orgao_executor: filters.orgao_executor || null,
         situacoes: filters.situacoes.length > 0 ? filters.situacoes : null,
         data_abertura_inicio: filters.data_abertura_inicio || null,
         data_abertura_fim: filters.data_abertura_fim || null,
+        data_encerramento_inicio: filters.data_encerramento_inicio || null,
+        data_encerramento_fim: filters.data_encerramento_fim || null,
         data_ciencia_inicio: filters.data_ciencia_inicio || null,
         data_ciencia_fim: filters.data_ciencia_fim || null,
         pagina: page,
@@ -171,9 +217,18 @@ export default function OrdensPanel() {
     if (!fiscais || fiscais.length === 0) return "-";
     return fiscais.map((f, i) => (
       <div key={i} style={{ fontSize: 12, lineHeight: 1.5 }}>
-        {typeof f === "object"
-          ? `${f.nome} (${f.matricula})${f.data_ciencia ? ` — ${formatarData(f.data_ciencia)}` : ""}`
-          : f}
+        {typeof f === "object" ? (
+          <>
+            {f.nome} ({f.matricula}){f.status ? ` · ${f.status}` : ""}
+            {(f.data_designacao || f.data_ciencia || f.data_cancelamento) && (
+              <div style={{ fontSize: 11, color: "#6b7280" }}>
+                {f.data_designacao ? `desig. ${formatarData(f.data_designacao)}` : ""}
+                {f.data_ciencia ? ` · ciência ${formatarData(f.data_ciencia)}` : ""}
+                {f.data_cancelamento ? ` · canc. ${formatarData(f.data_cancelamento)}` : ""}
+              </div>
+            )}
+          </>
+        ) : f}
       </div>
     ));
   }
@@ -214,8 +269,10 @@ export default function OrdensPanel() {
             <div className="filter-group">
               <label className="filter-label">
                 Modelo
-                {filters.modelo && (!filters.data_abertura_inicio || !filters.data_abertura_fim) && (
-                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>*requer período de abertura</span>
+                {filters.modelo &&
+                  !(filters.data_abertura_inicio && filters.data_abertura_fim) &&
+                  !(filters.data_encerramento_inicio && filters.data_encerramento_fim) && (
+                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>*requer per&iacute;odo</span>
                 )}
               </label>
               <select name="modelo" value={filters.modelo} onChange={handleFilterChange} className="filter-select">
@@ -249,7 +306,42 @@ export default function OrdensPanel() {
             </div>
           </div>
 
-          {/* Linha 2: razao_social, matriculas */}
+          {/* Linha 2: motivo abertura, equipe fiscal, orgao executor */}
+          <div className="filters-grid" style={{ marginBottom: 10 }}>
+            <div className="filter-group" style={{ gridColumn: "span 2" }}>
+              <label className="filter-label">Motivo de Abertura</label>
+              <select name="motivo_abertura" value={filters.motivo_abertura} onChange={handleFilterChange} className="filter-select">
+                <option value="">Todos</option>
+                {MOTIVOS.map(([code, label]) => (
+                  <option key={code} value={code}>{code} — {label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="filter-group">
+              <label className="filter-label">Equipe Fiscal (c&oacute;digo)</label>
+              <input
+                type="text"
+                name="equipe_fiscal"
+                value={filters.equipe_fiscal}
+                onChange={handleFilterChange}
+                placeholder="Ex: 12"
+                className="filter-select"
+              />
+            </div>
+            <div className="filter-group">
+              <label className="filter-label">&Oacute;rg&atilde;o Executor (c&oacute;digo)</label>
+              <input
+                type="text"
+                name="orgao_executor"
+                value={filters.orgao_executor}
+                onChange={handleFilterChange}
+                placeholder="Ex: 5"
+                className="filter-select"
+              />
+            </div>
+          </div>
+
+          {/* Linha 3: razao_social, matriculas */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
             <div className="filter-group">
               <label className="filter-label">
@@ -282,26 +374,28 @@ export default function OrdensPanel() {
             </div>
           </div>
 
-          {/* Linha 3: datas */}
+          {/* Linha 4: periodos de abertura e encerramento */}
           <div className="filters-grid" style={{ marginBottom: 10 }}>
             <div className="filter-group">
-              <label className="filter-label">
-                Abertura — In&iacute;cio
-                {filters.modelo && !filters.data_abertura_inicio && (
-                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>*obrigat&oacute;rio</span>
-                )}
-              </label>
+              <label className="filter-label">Abertura — In&iacute;cio</label>
               <input type="date" name="data_abertura_inicio" value={filters.data_abertura_inicio} onChange={handleFilterChange} className="filter-select" />
             </div>
             <div className="filter-group">
-              <label className="filter-label">
-                Abertura — Fim
-                {filters.modelo && !filters.data_abertura_fim && (
-                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>*obrigat&oacute;rio</span>
-                )}
-              </label>
+              <label className="filter-label">Abertura — Fim</label>
               <input type="date" name="data_abertura_fim" value={filters.data_abertura_fim} onChange={handleFilterChange} className="filter-select" />
             </div>
+            <div className="filter-group">
+              <label className="filter-label">Encerramento — In&iacute;cio</label>
+              <input type="date" name="data_encerramento_inicio" value={filters.data_encerramento_inicio} onChange={handleFilterChange} className="filter-select" />
+            </div>
+            <div className="filter-group">
+              <label className="filter-label">Encerramento — Fim</label>
+              <input type="date" name="data_encerramento_fim" value={filters.data_encerramento_fim} onChange={handleFilterChange} className="filter-select" />
+            </div>
+          </div>
+
+          {/* Linha 5: periodo de ciencia */}
+          <div className="filters-grid" style={{ marginBottom: 10 }}>
             <div className="filter-group">
               <label className="filter-label">Ci&ecirc;ncia — In&iacute;cio</label>
               <input type="date" name="data_ciencia_inicio" value={filters.data_ciencia_inicio} onChange={handleFilterChange} className="filter-select" />
@@ -360,7 +454,7 @@ export default function OrdensPanel() {
               Ordens de Servi&ccedil;o ({totalRegistros} registros) &mdash; p&aacute;g. {currentPage}/{totalPages}
             </h2>
             <p className="muted" style={{ marginBottom: 12 }}>
-              Dados do Informix. Somente consulta.
+              Dados do ATF. Somente consulta.
             </p>
             {ordens.length === 0 ? (
               <div className="empty-state">
@@ -373,12 +467,20 @@ export default function OrdensPanel() {
                     <tr>
                       <th>N&uacute;mero</th>
                       <th>Modelo</th>
+                      <th>Motivo</th>
                       <th>IE</th>
                       <th>CNPJ</th>
                       <th>Raz&atilde;o Social</th>
-                      <th>Fiscais (matr&iacute;cula / ci&ecirc;ncia)</th>
+                      <th>&Oacute;rg&atilde;o Executor</th>
+                      <th>Equipe</th>
+                      <th>Fiscais</th>
                       <th>Situa&ccedil;&atilde;o</th>
                       <th>Abertura</th>
+                      <th>Encerramento</th>
+                      <th>&Uacute;lt. Evento</th>
+                      <th>Dias Exec.</th>
+                      <th>T. M&eacute;dio (M/M)</th>
+                      <th>M&eacute;d. Eventos (M/M)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -393,12 +495,26 @@ export default function OrdensPanel() {
                         >
                           <td><strong>{numeroOS}</strong></td>
                           <td>{os.modelo || os.tipo || "-"}</td>
+                          <td>{os.motivo_abertura || "-"}</td>
                           <td>{os.ie}</td>
                           <td>{os.cnpj || "-"}</td>
                           <td>{os.razao_social}</td>
+                          <td>{os.orgao_executor || "-"}</td>
+                          <td>{os.equipe_fiscal || "-"}</td>
                           <td>{renderFiscais(os.fiscais)}</td>
                           <td>{renderSituacao(os)}</td>
                           <td>{formatarData(os.data_abertura)}</td>
+                          <td>{formatarData(os.data_encerramento)}</td>
+                          <td>{formatarData(os.data_ultimo_evento)}</td>
+                          <td style={{ textAlign: "center" }}>{os.dias_execucao ?? "-"}</td>
+                          <td style={{ textAlign: "center" }}>
+                            {os.tempo_medio_execucao_modelo_motivo != null
+                              ? `${os.tempo_medio_execucao_modelo_motivo} d`
+                              : "-"}
+                          </td>
+                          <td style={{ textAlign: "center" }}>
+                            {os.qtd_media_eventos_modelo_motivo ?? "-"}
+                          </td>
                         </tr>
                       );
                     })}

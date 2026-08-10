@@ -151,6 +151,11 @@ class ApiClient {
     data_abertura_fim = null,
     data_ciencia_inicio = null,
     data_ciencia_fim = null,
+    motivo_abertura = null,
+    equipe_fiscal = null,
+    orgao_executor = null,
+    data_encerramento_inicio = null,
+    data_encerramento_fim = null,
     pagina = 1,
     limite = 20,
   } = {}) {
@@ -166,6 +171,11 @@ class ApiClient {
     if (data_abertura_fim) params.set("data_abertura_fim", data_abertura_fim);
     if (data_ciencia_inicio) params.set("data_ciencia_ini", data_ciencia_inicio);
     if (data_ciencia_fim) params.set("data_ciencia_fim", data_ciencia_fim);
+    if (motivo_abertura) params.set("motivo_abertura", motivo_abertura);
+    if (equipe_fiscal) params.set("equipe_fiscal", equipe_fiscal);
+    if (orgao_executor) params.set("orgao_executor", orgao_executor);
+    if (data_encerramento_inicio) params.set("data_encerramento_ini", data_encerramento_inicio);
+    if (data_encerramento_fim) params.set("data_encerramento_fim", data_encerramento_fim);
     params.set("pagina", pagina);
     params.set("limite", limite);
     return this.request(`/ordens?${params.toString()}`);

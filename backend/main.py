@@ -490,18 +490,31 @@ def list_os(
     data_abertura_fim: str | None = Query(default=None),
     data_ciencia_ini: str | None = Query(default=None),
     data_ciencia_fim: str | None = Query(default=None),
+    motivo_abertura: str | None = Query(default=None),
+    equipe_fiscal: str | None = Query(default=None),
+    orgao_executor: str | None = Query(default=None),
+    data_encerramento_ini: str | None = Query(default=None),
+    data_encerramento_fim: str | None = Query(default=None),
     pagina: int = Query(default=1, ge=1),
     limite: int = Query(default=20, ge=1, le=50),
     _user: dict[str, Any] = Depends(get_current_user),
 ) -> OrdensATFResponse:
-    """Lista Ordens de Servico via API ATF (HTTPS + XML) ou MOCK se ATF_BASE_URL nao configurado."""
-    return listar_ordens_atf(
-        numero_os=numero_os, modelo=modelo, ie=ie, cnpj=cnpj,
-        razao_social=razao_social, matriculas=matriculas, situacoes=situacao,
-        data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
-        data_ciencia_ini=data_ciencia_ini, data_ciencia_fim=data_ciencia_fim,
-        pagina=pagina, limite=limite,
-    )
+    """Lista Ordens de Servico via API ATF (SOAP, doc da listagem) ou MOCK se ATF_BASE_URL nao configurado."""
+    try:
+        return listar_ordens_atf(
+            numero_os=numero_os, modelo=modelo, ie=ie, cnpj=cnpj,
+            razao_social=razao_social, matriculas=matriculas, situacoes=situacao,
+            data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
+            data_ciencia_ini=data_ciencia_ini, data_ciencia_fim=data_ciencia_fim,
+            motivo_abertura=motivo_abertura, equipe_fiscal=equipe_fiscal,
+            orgao_executor=orgao_executor,
+            data_encerramento_ini=data_encerramento_ini,
+            data_encerramento_fim=data_encerramento_fim,
+            pagina=pagina, limite=limite,
+        )
+    except ValueError as e:
+        # Erros de negocio do ATF (dsMensagemErro) viram 400 com a mensagem
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @app.get("/ordens/{numero}", response_model=OSDetalheResponse)

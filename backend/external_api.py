@@ -846,6 +846,96 @@ _MODELOS_ATF: dict[str, str] = {
     "8": "ESPECÍFICA",
 }
 
+# Tabela de status de OS (doc da listagem) – usada para mapear o nome
+# retornado (noSituacaoOS) de volta ao codigo numerico.
+_STATUS_ATF: dict[int, str] = {
+    0: "AGUARDANDO AUTORIZAÇÃO",
+    1: "AUTORIZADA",
+    2: "CANCELADA",
+    3: "SUBSTITUÍDA",
+    4: "ENCERRADA",
+    5: "BLOQUEADA",
+    6: "EM ANÁLISE PARA ENCERRAMENTO",
+    7: "EXECUÇÃO SUSPENSA",
+}
+_STATUS_ATF_POR_NOME: dict[str, int] = {v: k for k, v in _STATUS_ATF.items()}
+
+# Tabela de motivos de abertura ATIVOS (doc da listagem, cdMotivoAbertOS).
+# Motivos marcados como (INATIVO) na documentacao foram omitidos.
+_MOTIVOS_ABERTURA_ATF: dict[str, str] = {
+    "163": "ALTERACAO CADASTRAL",
+    "164": "ANALISE DE CREDITO",
+    "165": "ATENDIMENTO DEMANDA EXTERNA",
+    "166": "ATENDIMENTO DEMANDA SER-PB",
+    "167": "BENEFÍCIO FISCAL",
+    "168": "DENÚNCIA FISCAL",
+    "169": "DOCS ELETRÔNICOS X EFD / GIM",
+    "170": "DOCS ELETRÔNICOS OU PGDAS D",
+    "171": "ECF - CESSAÇÃO",
+    "172": "ECF - OUTROS",
+    "173": "ENTRADAS X SAÍDAS",
+    "174": "INADIMPLÊNCIA",
+    "176": "INSCRIÇÃO ESTADUAL",
+    "177": "LEVANTAMENTO DA CONTA MERCADORIAS",
+    "178": "LEVANTAMENTO DE ESTOQUE",
+    "179": "MONITORAMENTO",
+    "180": "OUTRAS INCONSISTÊNCIAS EFD / GIM",
+    "181": "OUTRAS INCONSISTÊNCIAS PGDASD",
+    "182": "OUTROS",
+    "183": "PROGRAMAÇÃO FISCAL",
+    "184": "PEDIDO DE RESSARCIMENTO",
+    "185": "REVISÃO / CANCELAMENTO DE DAR / FATURA",
+    "186": "REVISÃO / COMPLEMENTO / NOVO FEITO",
+    "187": "SUBSTITUIÇÃO TRIBUTÁRIA",
+    "188": "VALOR ADICIONADO - IPM",
+    "189": "VENDAS X CARTAO DE CREDITO",
+    "191": "INATIVAÇÃO CADASTRAL",
+    "192": "MONITORAMENTO SIMPLES NACIONAL",
+    "193": "MALHA DECADÊNCIA 2017 - 2018",
+    "194": "ACOMPANHAMENTO PERMANENTE",
+    "195": "MALHA FISCAL",
+    "196": "BD MALHA - MALHA FISCAL",
+    "197": "MONITORAMENTO SCANC",
+    "198": "PEDIDO DE RESTITUIÇÃO",
+    "200": "ATEND SER GT/COTEPE",
+    "202": "AUD ALTERACAO CADASTRAL",
+    "203": "AUD COMP _ PROGRAMAÇÃO_ INDICADORES",
+    "204": "AUD COMPLETA _ SOLICITAÇÃO",
+    "205": "AUD COMPLETA _ SUBST TRIBUTÁRIA",
+    "207": "ATEND EXT MINISTÉRIO PÚBLICO",
+    "208": "ATEND EXT TRIB JUSTICA",
+    "210": "ATEND EXT TRIBUNAL DE CONTAS",
+    "211": "ATEND EXT. OUTROS",
+    "212": "AI DILIGÊNCIA CRF",
+    "213": "AI DILIGÊNCIA GEJUP",
+    "214": "AI REVISÃO",
+    "215": "AI NOVO FEITO",
+    "216": "AI TERMO COMP. INFRACAO",
+    "217": "REGIME ESPECIAL",
+    "218": "AUDITORIA DE CONFORMIDADE",
+    "219": "PEDIDO RESSARCIMENTO",
+    "220": "PEDIDO RESTITUIÇÃO",
+    "221": "LIBERAÇÃO SELO FISCAL",
+    "223": "RETIFICAÇÃO ANEXO SCANC",
+    "224": "RETIFICAÇÃO ANEXO SCANC",
+    "225": "IMPORTACAO/EXPORTACAO",
+    "226": "ZONA FRANCA MANAUS/AREAS LIVRE COMÉRCIO",
+    "227": "MONIT SMTC",
+    "228": "MONIT PMPF",
+    "229": "MONIT MOINHOS/FARINHA DE TRIGO",
+    "230": "MONIT OMISSO/INADIMPLÊNCIA",
+    "231": "AUD INATIVAÇÃO CADASTRAL",
+    "232": "CONTAGEM DE ESTOQUE",
+    "233": "EC 87/2015 DIFAL NÃO CONTRIBUINTE",
+    "234": "ATEND EXT DENÚNCIA FISCAL",
+    "235": "ATEND EXT PGE",
+    "236": "VALOR ADICIONADO IPM",
+    "237": "ATENDIMENTO DEMANDA INTERNA DA SEFAZ PB",
+    "238": "ATENDIMENTO DEMANDA EXTERNA (OUTROS ÓRGÃOS)",
+    "239": "DIFAL NÃO CONTRIBUINTES",
+    "241": "MONITORAMENTO SMPC",
+}
+
 _MOCK_ATF_ORDENS: list[dict[str, Any]] = [
     {
         "numero_os": "OS-2026-001", "modelo": "NORMAL",
@@ -1103,6 +1193,52 @@ _MOCK_ATF_ORDENS: list[dict[str, Any]] = [
 ]
 
 
+# ─── Enriquecimento do MOCK ATF (demanda Pedro Henrique) ────────
+# Campos adicionais da demanda do 1o endpoint: motivo de abertura,
+# orgao executor, equipe fiscal, encerramento, eventos de
+# acompanhamento (tipo Normal) e dados estendidos dos fiscais.
+# Gerados deterministicamente sobre o mock existente.
+
+# Motivos usados no mock – nomes reais da tabela de motivos ATIVOS
+_MOTIVOS_ATF = [
+    "DENÚNCIA FISCAL", "MONITORAMENTO", "MALHA FISCAL",
+    "PROGRAMAÇÃO FISCAL", "AUDITORIA DE CONFORMIDADE",
+]
+_ORGAOS_EXECUTORES = [
+    "GEFIS - 1ª GERÊNCIA REGIONAL", "GEFIS - 2ª GERÊNCIA REGIONAL",
+    "GOF - NÚCLEO ICMS",
+]
+_EQUIPES_FISCAIS = ["EQUIPE A", "EQUIPE B", "EQUIPE C", "EQUIPE D"]
+
+
+def _enriquecer_mock_atf() -> None:
+    from datetime import timedelta
+
+    for i, os_item in enumerate(_MOCK_ATF_ORDENS):
+        abertura = datetime.strptime(os_item["data_abertura"], "%Y-%m-%d").date()
+        inicio_fisc = abertura + timedelta(days=3)
+        encerrada = os_item["situacao"]["codigo"] == 4
+        encerramento = abertura + timedelta(days=20 + (i * 7) % 60) if encerrada else None
+        qtd_eventos = 2 + i % 7
+
+        os_item["motivo_abertura"] = _MOTIVOS_ATF[i % len(_MOTIVOS_ATF)]
+        os_item["orgao_executor"] = _ORGAOS_EXECUTORES[i % len(_ORGAOS_EXECUTORES)]
+        os_item["equipe_fiscal"] = _EQUIPES_FISCAIS[i % len(_EQUIPES_FISCAIS)]
+        os_item["data_inicio_fiscalizacao"] = inicio_fisc.strftime("%Y-%m-%d")
+        os_item["data_encerramento"] = encerramento.strftime("%Y-%m-%d") if encerramento else None
+        os_item["qtd_eventos"] = qtd_eventos
+        ultimo_evento = encerramento or (inicio_fisc + timedelta(days=qtd_eventos * 2))
+        os_item["data_ultimo_evento"] = ultimo_evento.strftime("%Y-%m-%d")
+
+        for f in os_item["fiscais"]:
+            f["status"] = "ATIVO" if f.get("data_ciencia") else "DESIGNADO"
+            f["data_designacao"] = os_item["data_abertura"]
+            f["data_cancelamento"] = None
+
+
+_enriquecer_mock_atf()
+
+
 def _filtrar_mock_atf(
     numero_os: str | None = None,
     modelo: str | None = None,
@@ -1115,6 +1251,11 @@ def _filtrar_mock_atf(
     data_abertura_fim: str | None = None,
     data_ciencia_ini: str | None = None,
     data_ciencia_fim: str | None = None,
+    motivo_abertura: str | None = None,
+    equipe_fiscal: str | None = None,
+    orgao_executor: str | None = None,
+    data_encerramento_ini: str | None = None,
+    data_encerramento_fim: str | None = None,
     pagina: int = 1,
     limite: int = 20,
 ) -> dict[str, Any]:
@@ -1155,11 +1296,38 @@ def _filtrar_mock_atf(
                 return False
             return True
         resultados = [o for o in resultados if _ciencia_in_range(o)]
+    if motivo_abertura:
+        # Aceita codigo (cdMotivoAbertOS, como na API real) ou texto livre
+        nome_motivo = _MOTIVOS_ABERTURA_ATF.get(str(motivo_abertura))
+        if nome_motivo:
+            resultados = [
+                o for o in resultados
+                if o.get("motivo_abertura", "").upper() == nome_motivo.upper()
+            ]
+        else:
+            term = motivo_abertura.lower()
+            resultados = [o for o in resultados if term in o.get("motivo_abertura", "").lower()]
+    if equipe_fiscal:
+        term = equipe_fiscal.lower()
+        resultados = [o for o in resultados if term in o.get("equipe_fiscal", "").lower()]
+    if orgao_executor:
+        term = orgao_executor.lower()
+        resultados = [o for o in resultados if term in o.get("orgao_executor", "").lower()]
+    if data_encerramento_ini:
+        resultados = [
+            o for o in resultados
+            if o.get("data_encerramento") and o["data_encerramento"] >= data_encerramento_ini
+        ]
+    if data_encerramento_fim:
+        resultados = [
+            o for o in resultados
+            if o.get("data_encerramento") and o["data_encerramento"] <= data_encerramento_fim
+        ]
 
     total = len(resultados)
     total_paginas = max(1, (total + limite - 1) // limite)
     inicio = (pagina - 1) * limite
-    pagina_data = resultados[inicio: inicio + limite]
+    pagina_data = [dict(o) for o in resultados[inicio: inicio + limite]]
 
     return {
         "paginacao": {
@@ -1172,228 +1340,381 @@ def _filtrar_mock_atf(
     }
 
 
-def _parse_xml_atf(xml_text: str, pagina: int = 1) -> dict[str, Any]:
+# ─── Cliente SOAP do ATF (doc da listagem) ───────────────────────────
+#
+# Servico unico: listarOrdensServicoWebService()
+#   POST {ATF_BASE_URL}/<caminho-do-servico>
+# Os parametros de busca vao em CDATA dentro de <elementoEntrada>.
+# O retorno traz TODOS os dados de cada OS (inclusive os campos
+# calculados) e NAO e paginado — a paginacao e feita neste backend.
+
+_ATF_WS_PATH = "/<caminho-do-servico>"
+
+
+def _data_para_atf(data_iso: str) -> str:
+    """Converte YYYY-MM-DD (formato interno) para dd/mm/aaaa (ATF)."""
+    try:
+        return datetime.strptime(data_iso, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except (ValueError, TypeError):
+        return data_iso
+
+
+def _data_do_atf(valor: str | None) -> str:
+    """Normaliza data vinda do ATF (dd/mm/aaaa ou ISO) para YYYY-MM-DD."""
+    if not valor:
+        return ""
+    valor = valor.strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(valor[:10], fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return valor
+
+
+def _int_ou_none(valor: str | None) -> int | None:
+    try:
+        return int(str(valor).strip())
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _float_ou_none(valor: str | None) -> float | None:
+    try:
+        return float(str(valor).strip().replace(",", "."))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _montar_parametros_atf(
+    numero_os: str | None = None,
+    modelo: str | None = None,
+    motivo_abertura: str | None = None,
+    situacao: int | str | None = None,
+    matricula_fiscal: str | None = None,
+    equipe_fiscal: str | None = None,
+    orgao_executor: str | None = None,
+    cnpj: str | None = None,
+    ie: str | None = None,
+    data_abertura_ini: str | None = None,
+    data_abertura_fim: str | None = None,
+    data_encerramento_ini: str | None = None,
+    data_encerramento_fim: str | None = None,
+) -> str:
+    """Monta o XML <parametros> do elementoEntrada (nomes da doc da listagem)."""
+    campos: list[str] = []
+
+    def _add(tag: str, valor: Any) -> None:
+        if valor not in (None, ""):
+            campos.append(f"<{tag}>{valor}</{tag}>")
+
+    _add("numeroOS", numero_os)
+    _add("cdModeloOS", modelo)
+    _add("cdMotivoAbertOS", motivo_abertura)
+    _add("statusOS", situacao)
+    _add("matriculaFiscal", matricula_fiscal)
+    _add("cdEquipeFisc", equipe_fiscal)
+    _add("cdOrgaoExec", orgao_executor)
+    _add("cnpj", cnpj)
+    _add("inscrEstadual", ie)
+    # Regra da doc: campos de periodo devem ser informados conjuntamente
+    if data_abertura_ini and data_abertura_fim:
+        _add("dataAberturaOSIni", _data_para_atf(data_abertura_ini))
+        _add("dataAberturaOSFin", _data_para_atf(data_abertura_fim))
+    if data_encerramento_ini and data_encerramento_fim:
+        _add("dataEncerraOSIni", _data_para_atf(data_encerramento_ini))
+        _add("dataEncerraOSFin", _data_para_atf(data_encerramento_fim))
+
+    # IMPORTANTE: o parser do ATF nao tolera quebras de linha dentro do
+    # CDATA — os parametros devem ir em linha unica (verificado contra o
+    # servico de desenvolvimento em 10/08/2026; com \n ele responde
+    # "É necessário informar pelo menos um filtro").
+    return "<parametros>" + "".join(campos) + "</parametros>"
+
+
+def _montar_envelope_soap(parametros_xml: str) -> str:
+    """Monta o envelope SOAP conforme o exemplo Postman da doc da listagem."""
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">\n'
+        "    <soap:Body>\n"
+        '        <ns:listarOrdemServicoRequest xmlns:ns="http://www.receita.pb.gov.br">\n'
+        f"            <ns:elementoEntrada><![CDATA[{parametros_xml}]]></ns:elementoEntrada>\n"
+        "        </ns:listarOrdemServicoRequest>\n"
+        "    </soap:Body>\n"
+        "</soap:Envelope>"
+    )
+
+
+def _parse_resposta_soap(xml_text: str) -> list[dict[str, Any]]:
     """
-    Parseia o XML de listagem de OS retornado pelo ATF.
+    Extrai e parseia o retorno do listarOrdensServicoWebService.
 
-    Formato real (operacao 1025):
-
-        <a>
-          <resultado>
-            <operacao><codigo>1025</codigo></operacao>
-            <paginacao>
-              <qtRegistrosPagina>10</qtRegistrosPagina>
-              <qtTotalDePaginas>2</qtTotalDePaginas>
-              <qtTotalOSsRetornadas>13</qtTotalOSsRetornadas>
-              <paginaOrdemServico>
-                <numPagina>1</numPagina>
-                <numeroOS>93300008.12.00000001/2026-99</numeroOS>
-                ...
-              </paginaOrdemServico>
-            </paginacao>
-          </resultado>
-        </a>
-
-    A listagem retorna apenas os numeros das OS. Os demais campos
-    (modelo, IE, razao social, fiscais, situacao) virao do endpoint
-    de detalhamento, ainda nao integrado.
+    Contrato (doc da listagem):
+        resultado (operacao, listaOrdemServico*)
+        listaOrdemServico (ordemServico*)
+        ordemServico (nrOrdemServico, dataAbertura, dataInicialFisc,
+            nrInscrEstadual, noRazaoSocial, noHumano, nrDocumento,
+            noModeloOS, noMotivoAberturaOS, noOrgaoExecutorOS,
+            noSituacaoOS, dataEncerramento, noEquipeFisc,
+            qtDiasExecucao, dataUltimoEvento, mediaEventosModMot,
+            mediaDiasExecModMot, fiscais+)
+        fiscal (matricula, nome, dataDesignacao, dataCiencia,
+            dataCancelamento, status)
     """
     import xml.etree.ElementTree as ET
 
     root = ET.fromstring(xml_text)
 
-    pag_el = root.find(".//paginacao")
-    if pag_el is None:
-        raise ValueError("XML do ATF sem elemento <paginacao>")
+    # O XML de dados vem escapado dentro de <retorno> (no namespace do
+    # ATF); o ElementTree ja desfaz o escape no .text. Fallback: inline.
+    retorno_el = next(
+        (el for el in root.iter() if el.tag.lower().endswith("retorno")), None,
+    )
+    if retorno_el is not None and (retorno_el.text or "").strip():
+        dados_root = ET.fromstring(retorno_el.text.strip())
+    else:
+        dados_root = root
 
-    paginacao = {
-        "pagina_atual": pagina,
-        "limite_por_pagina": int(pag_el.findtext("qtRegistrosPagina", "20") or 20),
-        "total_paginas": int(pag_el.findtext("qtTotalDePaginas", "1") or 1),
-        "total_registros": int(pag_el.findtext("qtTotalOSsRetornadas", "0") or 0),
-    }
+    # Erros de negocio vem em <dsMensagemErro> dentro do resultado
+    erro = dados_root.findtext(".//dsMensagemErro")
+    if erro and erro.strip():
+        raise ValueError(f"ATF: {erro.strip()}")
 
-    # A resposta pode trazer todas as paginas de uma vez (um bloco
-    # <paginaOrdemServico> por pagina). Usa o bloco da pagina pedida
-    # quando existir; senao, junta os numeros de todos os blocos.
-    blocos = pag_el.findall("paginaOrdemServico")
-    do_bloco_pedido = [
-        b for b in blocos if (b.findtext("numPagina") or "").strip() == str(pagina)
-    ]
-    if do_bloco_pedido:
-        blocos = do_bloco_pedido
-
-    ordens = []
-    for bloco in blocos:
-        for num_el in bloco.findall("numeroOS"):
-            numero = (num_el.text or "").strip()
-            if not numero:
-                continue
-            ordens.append({
-                "numero_os": numero,
-                "modelo": "",
-                "ie": "",
-                "cnpj": None,
-                "razao_social": "",
-                "fiscais": [],
-                "situacao": None,
-                "data_abertura": "",
-            })
-
-    return {"paginacao": paginacao, "ordens": ordens}
-
-
-def _parse_xml_atf_detalhes(xml_text: str) -> list[dict[str, Any]]:
-    """
-    Parseia o XML do servico 2 do ATF (listarDadosOrdensServico).
-
-    Contrato (RM doc da listagem):
-
-        <resultado>
-          <operacao><codigo>...</codigo></operacao>
-          <listaOrdensServico>
-            <ordemServico>
-              <numeroOS>93300008.12.00000001/2026-99</numeroOS>
-              <dataAbertura>2026-01-10</dataAbertura>
-              <cdModeloOS>1</cdModeloOS>
-              <noModeloOS>NORMAL</noModeloOS>
-              <statusOS>1</statusOS>
-              <noStatusOS>AUTORIZADA</noStatusOS>
-              <inscrEstadual>12.345.678-9</inscrEstadual>
-              <docContribuinte>12.345.678/0001-90</docContribuinte>
-              <nomeContribuinte>Distribuidora ABC Ltda</nomeContribuinte>
-              <fiscais>
-                <fiscal><matricula>34567</matricula><nome>Carlos Mendes</nome></fiscal>
-              </fiscais>
-            </ordemServico>
-          </listaOrdensServico>
-        </resultado>
-
-    Retorna as OS ja no formato interno da listagem. O servico 2 NAO
-    retorna data de ciencia por fiscal nem movimentacoes.
-    """
-    import xml.etree.ElementTree as ET
-
-    root = ET.fromstring(xml_text)
-
-    ordens = []
-    for os_el in root.findall(".//listaOrdensServico/ordemServico"):
-        fiscais = [
-            {
+    ordens: list[dict[str, Any]] = []
+    for os_el in dados_root.findall(".//ordemServico"):
+        fiscais = []
+        for f_el in os_el.findall(".//fiscal"):
+            fiscais.append({
                 "matricula": (f_el.findtext("matricula", "") or "").strip(),
                 "nome": (f_el.findtext("nome", "") or "").strip(),
-                "data_ciencia": None,
-            }
-            for f_el in os_el.findall("fiscais/fiscal")
-        ]
+                "data_designacao": _data_do_atf(f_el.findtext("dataDesignacao")) or None,
+                "data_ciencia": _data_do_atf(f_el.findtext("dataCiencia")) or None,
+                "data_cancelamento": _data_do_atf(f_el.findtext("dataCancelamento")) or None,
+                "status": (f_el.findtext("status", "") or "").strip() or None,
+            })
 
-        cd_status = (os_el.findtext("statusOS", "") or "").strip()
-        no_status = (os_el.findtext("noStatusOS", "") or "").strip()
+        no_situacao = (os_el.findtext("noSituacaoOS", "") or "").strip()
         situacao = None
-        if cd_status or no_status:
+        if no_situacao:
             situacao = {
-                "codigo": int(cd_status) if cd_status.isdigit() else 0,
-                "descricao": no_status,
+                "codigo": _STATUS_ATF_POR_NOME.get(no_situacao.upper(), -1),
+                "descricao": no_situacao,
             }
 
         ordens.append({
-            "numero_os": (os_el.findtext("numeroOS", "") or "").strip(),
+            "numero_os": (os_el.findtext("nrOrdemServico", "") or "").strip(),
             "modelo": (os_el.findtext("noModeloOS", "") or "").strip(),
-            "ie": (os_el.findtext("inscrEstadual", "") or "").strip(),
-            "cnpj": (os_el.findtext("docContribuinte", "") or "").strip() or None,
-            "razao_social": (os_el.findtext("nomeContribuinte", "") or "").strip(),
-            "fiscais": fiscais,
+            "motivo_abertura": (os_el.findtext("noMotivoAberturaOS", "") or "").strip(),
+            "ie": (os_el.findtext("nrInscrEstadual", "") or "").strip(),
+            "cnpj": (os_el.findtext("nrDocumento", "") or "").strip() or None,
+            "razao_social": (os_el.findtext("noRazaoSocial", "") or "").strip(),
+            "nome_humano": (os_el.findtext("noHumano", "") or "").strip() or None,
+            "orgao_executor": (os_el.findtext("noOrgaoExecutorOS", "") or "").strip(),
+            "equipe_fiscal": (os_el.findtext("noEquipeFisc", "") or "").strip(),
             "situacao": situacao,
-            "data_abertura": (os_el.findtext("dataAbertura", "") or "").strip(),
+            "data_abertura": _data_do_atf(os_el.findtext("dataAbertura")),
+            "data_inicio_fiscalizacao": _data_do_atf(os_el.findtext("dataInicialFisc")) or None,
+            "data_encerramento": _data_do_atf(os_el.findtext("dataEncerramento")) or None,
+            "data_ultimo_evento": _data_do_atf(os_el.findtext("dataUltimoEvento")) or None,
+            "dias_execucao": _int_ou_none(os_el.findtext("qtDiasExecucao")),
+            "qtd_media_eventos_modelo_motivo": _float_ou_none(os_el.findtext("mediaEventosModMot")),
+            "tempo_medio_execucao_modelo_motivo": _float_ou_none(os_el.findtext("mediaDiasExecModMot")),
+            "fiscais": fiscais,
         })
 
     return ordens
 
 
-def _chamar_atf_detalhes_https(base_url: str, numeros: list[str]) -> list[dict[str, Any]]:
-    """
-    Chama o servico 2 do ATF (listarDadosOrdensServico) para um lote de numeros.
-
-    URL e transporte ainda nao confirmados pelo ATF (o contrato descreve
-    entrada XML com elemento <auditoria>); ajustar quando definidos.
-    """
-    import requests
-
-    params = [("numero_os", n) for n in numeros]
-    try:
-        resp = requests.get(f"{base_url}/ordens/dados", params=params, timeout=30)
-        resp.raise_for_status()
-        return _parse_xml_atf_detalhes(resp.text)
-    except Exception:
-        logger.exception("Erro ao chamar servico de dados de OS do ATF em %s", base_url)
-        raise
-
-
-def _enriquecer_com_detalhes(
-    ordens_numeros: list[dict[str, Any]],
-    detalhes: list[dict[str, Any]],
+def _pos_filtrar_atf(
+    ordens: list[dict[str, Any]],
+    situacoes: list[int] | None = None,
+    matriculas: list[str] | None = None,
+    razao_social: str | None = None,
+    data_ciencia_ini: str | None = None,
+    data_ciencia_fim: str | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Mescla os dados do servico 2 na lista de numeros do servico 1.
-
-    Preserva a ordem da listagem; OS sem correspondencia no servico 2
-    permanecem apenas com o numero.
+    Aplica localmente filtros que o servico do ATF nao suporta:
+    multiplas situacoes/matriculas, razao social e periodo de ciencia.
     """
-    por_numero = {d["numero_os"]: d for d in detalhes}
-    return [por_numero.get(o["numero_os"], o) for o in ordens_numeros]
+    resultados = ordens
+
+    if situacoes:
+        codigos = set(situacoes)
+        resultados = [
+            o for o in resultados
+            if o.get("situacao") and o["situacao"].get("codigo") in codigos
+        ]
+    if matriculas:
+        mats = set(matriculas)
+        resultados = [
+            o for o in resultados
+            if any(f.get("matricula") in mats for f in o.get("fiscais", []))
+        ]
+    if razao_social:
+        term = razao_social.lower()
+        resultados = [
+            o for o in resultados if term in (o.get("razao_social") or "").lower()
+        ]
+    if data_ciencia_ini or data_ciencia_fim:
+        def _ciencia_ok(os_item: dict) -> bool:
+            datas = [
+                f["data_ciencia"] for f in os_item.get("fiscais", [])
+                if f.get("data_ciencia")
+            ]
+            if not datas:
+                return False
+            primeira = min(datas)
+            if data_ciencia_ini and primeira < data_ciencia_ini:
+                return False
+            if data_ciencia_fim and primeira > data_ciencia_fim:
+                return False
+            return True
+        resultados = [o for o in resultados if _ciencia_ok(o)]
+
+    return resultados
+
+
+def _paginar_atf(
+    ordens: list[dict[str, Any]], pagina: int, limite: int,
+) -> dict[str, Any]:
+    """Pagina localmente a lista completa retornada pelo ATF."""
+    total = len(ordens)
+    total_paginas = max(1, (total + limite - 1) // limite)
+    inicio = (pagina - 1) * limite
+    return {
+        "paginacao": {
+            "pagina_atual": pagina,
+            "limite_por_pagina": limite,
+            "total_paginas": total_paginas,
+            "total_registros": total,
+        },
+        "ordens": ordens[inicio: inicio + limite],
+    }
 
 
 def _chamar_atf_https(
     base_url: str,
     numero_os: str | None = None,
     modelo: str | None = None,
-    ie: str | None = None,
+    motivo_abertura: str | None = None,
+    situacao: int | str | None = None,
+    matricula_fiscal: str | None = None,
+    equipe_fiscal: str | None = None,
+    orgao_executor: str | None = None,
     cnpj: str | None = None,
-    razao_social: str | None = None,
-    matriculas: str | None = None,
-    situacoes: list[int] | None = None,
+    ie: str | None = None,
     data_abertura_ini: str | None = None,
     data_abertura_fim: str | None = None,
-    data_ciencia_ini: str | None = None,
-    data_ciencia_fim: str | None = None,
-    pagina: int = 1,
-    limite: int = 20,
-) -> dict[str, Any]:
-    """Chama o endpoint HTTPS do ATF e retorna os dados parseados do XML."""
+    data_encerramento_ini: str | None = None,
+    data_encerramento_fim: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Chama o listarOrdensServicoWebService via SOAP (doc da listagem).
+
+    POST https://.../<caminho-do-servico> com envelope SOAP e parametros
+    em CDATA. Retorna a lista COMPLETA de OS (sem paginacao).
+    """
     import requests
 
-    params: list[tuple[str, Any]] = [("pagina", pagina), ("limite", limite)]
-    if numero_os:
-        params.append(("numero_os", numero_os))
-    if modelo:
-        params.append(("modelo", modelo))
-    if ie:
-        params.append(("ie", ie))
-    if cnpj:
-        params.append(("cnpj", cnpj))
-    if razao_social:
-        params.append(("razao_social", razao_social))
-    if matriculas:
-        params.append(("matriculas", matriculas))
-    if situacoes:
-        for s in situacoes:
-            params.append(("situacao", s))
-    if data_abertura_ini:
-        params.append(("data_abertura_ini", data_abertura_ini))
-    if data_abertura_fim:
-        params.append(("data_abertura_fim", data_abertura_fim))
-    if data_ciencia_ini:
-        params.append(("data_ciencia_ini", data_ciencia_ini))
-    if data_ciencia_fim:
-        params.append(("data_ciencia_fim", data_ciencia_fim))
+    base = base_url.rstrip("/")
+    url = base if base.endswith("OrdemServico") else f"{base}{_ATF_WS_PATH}"
+
+    parametros = _montar_parametros_atf(
+        numero_os=numero_os, modelo=modelo, motivo_abertura=motivo_abertura,
+        situacao=situacao, matricula_fiscal=matricula_fiscal,
+        equipe_fiscal=equipe_fiscal, orgao_executor=orgao_executor,
+        cnpj=cnpj, ie=ie,
+        data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
+        data_encerramento_ini=data_encerramento_ini,
+        data_encerramento_fim=data_encerramento_fim,
+    )
+    envelope = _montar_envelope_soap(parametros)
 
     try:
-        resp = requests.get(f"{base_url}/ordens", params=params, timeout=30)
+        resp = requests.post(
+            url,
+            data=envelope.encode("utf-8"),
+            headers={"Content-Type": "text/xml; charset=utf-8"},
+            timeout=60,
+        )
         resp.raise_for_status()
-        return _parse_xml_atf(resp.text, pagina=pagina)
+        return _parse_resposta_soap(resp.text)
     except Exception:
-        logger.exception("Erro ao chamar API ATF em %s", base_url)
+        logger.exception("Erro ao chamar API ATF em %s", url)
         raise
+
+
+# ─── Campos calculados (demanda Pedro Henrique) ──────────────────
+
+
+def _dias_execucao(os_item: dict[str, Any], hoje: date) -> int | None:
+    """
+    Numero de dias de execucao da OS.
+
+    = data de encerramento - data de inicio da fiscalizacao;
+    se a OS nao estiver encerrada, calcula pela data de hoje.
+    """
+    inicio_str = os_item.get("data_inicio_fiscalizacao") or os_item.get("data_abertura")
+    if not inicio_str:
+        return None
+    try:
+        inicio = datetime.strptime(inicio_str, "%Y-%m-%d").date()
+        fim_str = os_item.get("data_encerramento")
+        fim = datetime.strptime(fim_str, "%Y-%m-%d").date() if fim_str else hoje
+    except (ValueError, TypeError):
+        return None
+    return (fim - inicio).days
+
+
+def _calcular_medias_modelo_motivo(
+    universo: list[dict[str, Any]], hoje: date,
+) -> dict[tuple[str, str], dict[str, float]]:
+    """
+    Medias por "Modelo / Motivo" (algoritmos 1 e 2 da demanda).
+
+    Universo: OS abertas nos ultimos dois anos que estao encerradas.
+    - Tempo medio de execucao = total de dias de execucao / total de OS
+    - Qtd media de eventos = total de eventos tipo Normal / total de OS
+    """
+    corte = hoje.replace(year=hoje.year - 2).strftime("%Y-%m-%d")
+    grupos: dict[tuple[str, str], dict[str, float]] = {}
+
+    for o in universo:
+        if not o.get("data_encerramento"):
+            continue
+        if (o.get("data_abertura") or "") < corte:
+            continue
+        dias = _dias_execucao(o, hoje)
+        if dias is None:
+            continue
+        chave = (o.get("modelo") or "", o.get("motivo_abertura") or "")
+        g = grupos.setdefault(chave, {"os": 0, "dias": 0, "eventos": 0})
+        g["os"] += 1
+        g["dias"] += dias
+        g["eventos"] += o.get("qtd_eventos") or 0
+
+    return {
+        chave: {
+            "tempo_medio_execucao": round(g["dias"] / g["os"], 1),
+            "qtd_media_eventos": round(g["eventos"] / g["os"], 1),
+        }
+        for chave, g in grupos.items()
+    }
+
+
+def _anexar_campos_calculados(
+    ordens: list[dict[str, Any]],
+    medias: dict[tuple[str, str], dict[str, float]],
+    hoje: date,
+) -> None:
+    """Anexa dias de execucao e medias por Modelo/Motivo a cada OS."""
+    for o in ordens:
+        o["dias_execucao"] = _dias_execucao(o, hoje)
+        m = medias.get((o.get("modelo") or "", o.get("motivo_abertura") or ""))
+        o["tempo_medio_execucao_modelo_motivo"] = m["tempo_medio_execucao"] if m else None
+        o["qtd_media_eventos_modelo_motivo"] = m["qtd_media_eventos"] if m else None
 
 
 def listar_ordens_atf(
@@ -1408,6 +1729,11 @@ def listar_ordens_atf(
     data_abertura_fim: str | None = None,
     data_ciencia_ini: str | None = None,
     data_ciencia_fim: str | None = None,
+    motivo_abertura: str | None = None,
+    equipe_fiscal: str | None = None,
+    orgao_executor: str | None = None,
+    data_encerramento_ini: str | None = None,
+    data_encerramento_fim: str | None = None,
     pagina: int = 1,
     limite: int = 20,
 ) -> dict[str, Any]:
@@ -1417,37 +1743,62 @@ def listar_ordens_atf(
     Se ATF_BASE_URL estiver configurado no .env, executa o fluxo real em
     duas etapas: servico 1 (numeros da pagina) + servico 2 (dados das OS).
     Caso contrario, usa dados MOCK para desenvolvimento/teste.
+    Em ambos os casos anexa os campos calculados da demanda (dias de
+    execucao e medias por Modelo/Motivo).
     """
     from .config import ATF_BASE_URL
 
+    hoje = datetime.now(timezone.utc).date()
+
     if ATF_BASE_URL:
         logger.debug("Chamando API ATF: %s", ATF_BASE_URL)
-        resultado = _chamar_atf_https(
+        matriculas_lista = [m.strip() for m in (matriculas or "").split(",") if m.strip()]
+
+        # O servico aceita um unico statusOS e uma unica matriculaFiscal;
+        # selecoes multiplas sao aplicadas no pos-filtro local.
+        ordens = _chamar_atf_https(
             ATF_BASE_URL,
-            numero_os=numero_os, modelo=modelo, ie=ie, cnpj=cnpj,
-            razao_social=razao_social, matriculas=matriculas, situacoes=situacoes,
+            numero_os=numero_os,
+            modelo=modelo,
+            motivo_abertura=motivo_abertura,
+            situacao=situacoes[0] if situacoes and len(situacoes) == 1 else None,
+            matricula_fiscal=matriculas_lista[0] if len(matriculas_lista) == 1 else None,
+            equipe_fiscal=equipe_fiscal,
+            orgao_executor=orgao_executor,
+            cnpj=cnpj, ie=ie,
             data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
-            data_ciencia_ini=data_ciencia_ini, data_ciencia_fim=data_ciencia_fim,
-            pagina=pagina, limite=limite,
+            data_encerramento_ini=data_encerramento_ini,
+            data_encerramento_fim=data_encerramento_fim,
         )
-        numeros = [o["numero_os"] for o in resultado["ordens"]]
-        if numeros:
-            try:
-                detalhes = _chamar_atf_detalhes_https(ATF_BASE_URL, numeros)
-                resultado["ordens"] = _enriquecer_com_detalhes(resultado["ordens"], detalhes)
-            except Exception:
-                # Sem o servico 2 o painel ainda exibe os numeros das OS
-                logger.warning("Servico de dados indisponivel; exibindo apenas numeros das OS")
-        return resultado
+        ordens = _pos_filtrar_atf(
+            ordens,
+            situacoes=situacoes if situacoes and len(situacoes) > 1 else None,
+            matriculas=matriculas_lista if len(matriculas_lista) > 1 else None,
+            razao_social=razao_social,
+            data_ciencia_ini=data_ciencia_ini, data_ciencia_fim=data_ciencia_fim,
+        )
+        # dias_execucao vem calculado do ATF; completa localmente se faltar
+        for o in ordens:
+            if o.get("dias_execucao") is None:
+                o["dias_execucao"] = _dias_execucao(o, hoje)
+        return _paginar_atf(ordens, pagina, limite)
 
     logger.debug("ATF_BASE_URL nao configurado – usando dados MOCK ATF (%d registros)", len(_MOCK_ATF_ORDENS))
-    return _filtrar_mock_atf(
+    resultado = _filtrar_mock_atf(
         numero_os=numero_os, modelo=modelo, ie=ie, cnpj=cnpj,
         razao_social=razao_social, matriculas=matriculas, situacoes=situacoes,
         data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
         data_ciencia_ini=data_ciencia_ini, data_ciencia_fim=data_ciencia_fim,
+        motivo_abertura=motivo_abertura, equipe_fiscal=equipe_fiscal,
+        orgao_executor=orgao_executor,
+        data_encerramento_ini=data_encerramento_ini,
+        data_encerramento_fim=data_encerramento_fim,
         pagina=pagina, limite=limite,
     )
+    # Medias calculadas sobre TODO o universo mock (nao apenas a pagina)
+    medias = _calcular_medias_modelo_motivo(_MOCK_ATF_ORDENS, hoje)
+    _anexar_campos_calculados(resultado["ordens"], medias, hoje)
+    return resultado
 
 
 def _calcular_evolucao_mensal(todas_os: list[dict[str, Any]]) -> list[dict[str, Any]]:

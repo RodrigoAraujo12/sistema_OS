@@ -184,10 +184,14 @@ class AlertaResponse(BaseModel):
 # ─── Formato ATF (novo endpoint de listagem de OS) ──────────────
 
 class FiscalATF(BaseModel):
-    """Fiscal com ciencia registrada na OS."""
+    """Fiscal designado na OS (doc da listagem: matricula, nome, dataDesignacao,
+    dataCiencia, dataCancelamento, status)."""
     matricula: str
     nome: str
     data_ciencia: str | None = None
+    data_designacao: str | None = None
+    data_cancelamento: str | None = None
+    status: str | None = None
 
 
 class SituacaoATF(BaseModel):
@@ -198,20 +202,29 @@ class SituacaoATF(BaseModel):
 
 class OSListagemATF(BaseModel):
     """
-    OS retornada pelo endpoint de listagem do ATF.
-
-    A listagem real (operacao 1025) retorna apenas numero_os; os demais
-    campos sao preenchidos pelo MOCK ou, futuramente, pelo endpoint de
-    detalhamento do ATF.
+    OS retornada pelo listarOrdensServicoWebService (doc da listagem),
+    ja com os campos calculados da demanda (dias de execucao e medias
+    por Modelo/Motivo).
     """
     numero_os: str
     modelo: str = ""
+    motivo_abertura: str = ""
     ie: str = ""
     cnpj: str | None = None
     razao_social: str = ""
+    nome_humano: str | None = None  # campo noHumano do ATF – semantica a confirmar
+    orgao_executor: str = ""
+    equipe_fiscal: str = ""
     fiscais: list[FiscalATF] = []
     situacao: SituacaoATF | None = None
     data_abertura: str = ""
+    data_inicio_fiscalizacao: str | None = None
+    data_encerramento: str | None = None
+    data_ultimo_evento: str | None = None
+    qtd_eventos: int | None = None
+    dias_execucao: int | None = None
+    tempo_medio_execucao_modelo_motivo: float | None = None
+    qtd_media_eventos_modelo_motivo: float | None = None
 
 
 class PaginacaoATF(BaseModel):
