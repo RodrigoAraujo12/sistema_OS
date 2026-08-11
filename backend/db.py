@@ -72,6 +72,7 @@ class Database:
         self._ensure_column("users", "gerencia_id", "INTEGER")
         self._ensure_column("users", "supervisao_id", "INTEGER")
         self._ensure_column("users", "must_change_password", "INTEGER DEFAULT 0")
+        self._ensure_column("users", "matricula", "TEXT")
         logger.info("Schema do banco inicializado com sucesso.")
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
