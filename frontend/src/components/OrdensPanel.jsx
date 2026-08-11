@@ -154,9 +154,9 @@ export default function OrdensPanel() {
               <label className="filter-label">
                 Modelo
                 {filters.modelo &&
-                  !(filters.data_abertura_inicio && filters.data_abertura_fim &&
-                    filters.data_encerramento_inicio && filters.data_encerramento_fim) && (
-                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>*requer ambos os per&iacute;odos</span>
+                  !((filters.data_abertura_inicio && filters.data_abertura_fim) ||
+                    (filters.data_encerramento_inicio && filters.data_encerramento_fim)) && (
+                  <span style={{ color: "#e53e3e", marginLeft: 6, fontSize: 11 }}>*requer per&iacute;odo de abertura ou encerramento</span>
                 )}
               </label>
               <select name="modelo" value={filters.modelo} onChange={handleFilterChange} className="filter-select">

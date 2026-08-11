@@ -135,8 +135,8 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
         </p>
         <p className="relatorio-desc" style={{ fontSize: 12 }}>
           <strong>Regras do ATF:</strong> informe ao menos um filtro. Modelo, Motivo,
-          Situa&ccedil;&atilde;o, Equipe e &Oacute;rg&atilde;o exigem os dois per&iacute;odos preenchidos
-          (abertura e encerramento). Busca apenas por per&iacute;odo &eacute; limitada a um ano.
+          Situa&ccedil;&atilde;o, Equipe e &Oacute;rg&atilde;o exigem um per&iacute;odo preenchido
+          (abertura ou encerramento). Busca apenas por per&iacute;odo &eacute; limitada a um ano.
         </p>
 
         <div className="relatorio-filters">

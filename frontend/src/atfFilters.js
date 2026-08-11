@@ -67,15 +67,15 @@ export function validarFiltrosOS(f) {
     return "Período de encerramento: informe início e fim.";
 
   // Modelo, motivo, situacao, equipe e orgao exigem periodo.
-  // ATENCAO: a doc da listagem diz "um dos periodos", mas o servico do ATF
-  // so aceita a busca quando os DOIS periodos (abertura E encerramento)
-  // sao informados — verificado contra o ambiente de desenvolvimento em
-  // 10/08/2026. Se o ATF corrigir isso, basta voltar a exigir apenas um.
+  // Regra b da doc da listagem: combinados com UM dos periodos — abertura OU
+  // encerramento. (Em 10/08/2026 o ambiente de dev do ATF rejeitou busca
+  // com apenas um periodo, divergindo da doc; divergencia em apuracao
+  // junto ao ATF — ver docs/teste_regra_periodo_atf.md.)
   const exigePeriodo =
     f.modelo || f.motivo_abertura || f.situacoes.length > 0 ||
     f.equipe_fiscal || f.orgao_executor;
-  if (exigePeriodo && !(aberturaCompleta && encerramentoCompleto))
-    return "Modelo, Motivo, Situação, Equipe e Órgão exigem os dois períodos preenchidos: abertura (início e fim) e encerramento (início e fim).";
+  if (exigePeriodo && !temPeriodo)
+    return "Modelo, Motivo, Situação, Equipe e Órgão exigem um período preenchido: abertura (início e fim) ou encerramento (início e fim).";
 
   // Busca exclusivamente por periodo: no maximo um ano
   const apenasPeriodo =
