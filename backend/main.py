@@ -497,6 +497,8 @@ def list_os(
     data_encerramento_fim: str | None = Query(default=None),
     pagina: int = Query(default=1, ge=1),
     limite: int = Query(default=20, ge=1, le=50),
+    ordenar_por: str | None = Query(default=None),
+    ordem: str = Query(default="asc", pattern="^(asc|desc)$"),
     _user: dict[str, Any] = Depends(get_current_user),
 ) -> OrdensATFResponse:
     """Lista Ordens de Servico via API ATF (SOAP, doc da listagem) ou MOCK se ATF_BASE_URL nao configurado."""
@@ -511,6 +513,7 @@ def list_os(
             data_encerramento_ini=data_encerramento_ini,
             data_encerramento_fim=data_encerramento_fim,
             pagina=pagina, limite=limite,
+            ordenar_por=ordenar_por, ordem=ordem,
         )
     except ValueError as e:
         # Erros de negocio do ATF (dsMensagemErro) viram 400 com a mensagem

@@ -8,6 +8,7 @@ nao esta configurado, o sistema usa dados MOCK para desenvolvimento.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from typing import Any
@@ -1357,6 +1358,81 @@ def _pos_filtrar_atf(
     return resultados
 
 
+# Campos que a listagem aceita ordenar, com o tipo de comparacao de cada
+# um. A tabela tambem funciona como allowlist: campo fora dela e ignorado,
+# entao querystring arbitraria nao ordena por dado interno.
+_ORDENACAO_ATF: dict[str, str] = {
+    "numero_os": "texto",
+    "razao_social": "texto",
+    "modelo": "texto",
+    "motivo_abertura": "texto",
+    "procedimento": "texto",
+    "situacao": "situacao",
+    "data_abertura": "data",
+    "dias_execucao": "numero",
+    "data_ultimo_evento": "data",
+    "dias_sem_evento": "dias_sem_evento",
+}
+
+
+def _sem_acento(texto: str) -> str:
+    """
+    Remove acentos para a ordenacao alfabetica.
+    Sem isso 'Ávila' cairia depois de 'Azevedo', porque o codepoint de
+    'Á' e maior que o de qualquer letra sem acento.
+    """
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", texto)
+        if not unicodedata.combining(c)
+    )
+
+
+def _ordenar_atf(
+    ordens: list[dict[str, Any]],
+    campo: str | None,
+    descendente: bool,
+    hoje: date,
+) -> list[dict[str, Any]]:
+    """
+    Ordena a lista COMPLETA — precisa rodar antes de _paginar_atf.
+
+    Ordenar so a pagina daria resultado enganoso: o usuario veria os 20
+    registros do recorte em ordem, e nao os 20 primeiros do conjunto.
+
+    Cada campo usa a comparacao do seu tipo: texto sem acento e sem caixa,
+    data em ISO (cuja ordem lexicografica ja e cronologica) e numero.
+    Registros sem valor vao para o fim nas DUAS direcoes — uma OS sem
+    evento nao e nem a mais recente nem a mais antiga, e ausencia, e
+    deixa-la no topo ao inverter a ordem so atrapalharia.
+    """
+    tipo = _ORDENACAO_ATF.get(campo or "")
+    if tipo is None:
+        return ordens
+
+    def chave(o: dict[str, Any]) -> Any:
+        if tipo == "situacao":
+            return (o.get("situacao") or {}).get("codigo")
+        if tipo == "dias_sem_evento":
+            bruto = o.get("data_ultimo_evento")
+            if not bruto:
+                return None
+            try:
+                return (hoje - datetime.strptime(bruto, "%Y-%m-%d").date()).days
+            except ValueError:
+                return None
+        valor = o.get(campo)
+        if tipo == "texto":
+            valor = (valor or "").strip()
+            return _sem_acento(valor.casefold()) if valor else None
+        return valor if valor not in ("", None) else None
+
+    decorados = [(chave(o), o) for o in ordens]
+    com_valor = [(k, o) for k, o in decorados if k is not None]
+    sem_valor = [o for k, o in decorados if k is None]
+    com_valor.sort(key=lambda par: par[0], reverse=descendente)
+    return [o for _, o in com_valor] + sem_valor
+
+
 def _paginar_atf(
     ordens: list[dict[str, Any]], pagina: int, limite: int,
 ) -> dict[str, Any]:
@@ -1517,6 +1593,8 @@ def listar_ordens_atf(
     data_encerramento_fim: str | None = None,
     pagina: int = 1,
     limite: int = 20,
+    ordenar_por: str | None = None,
+    ordem: str = "asc",
 ) -> dict[str, Any]:
     """
     Lista OS via API ATF.
@@ -1526,6 +1604,9 @@ def listar_ordens_atf(
     Caso contrario, usa dados MOCK para desenvolvimento/teste.
     Em ambos os casos anexa os campos calculados da demanda (dias de
     execucao e medias por Modelo/Motivo).
+
+    ordenar_por aceita os campos de _ORDENACAO_ATF; a ordenacao roda sobre
+    o conjunto inteiro, antes do recorte da pagina.
     """
     from .config import ATF_BASE_URL
 
@@ -1562,6 +1643,7 @@ def listar_ordens_atf(
         for o in ordens:
             if o.get("dias_execucao") is None:
                 o["dias_execucao"] = _dias_execucao(o, hoje)
+        ordens = _ordenar_atf(ordens, ordenar_por, ordem == "desc", hoje)
         return _paginar_atf(ordens, pagina, limite)
 
     logger.debug("ATF_BASE_URL nao configurado – usando dados MOCK ATF (%d registros)", len(_MOCK_ATF_ORDENS))

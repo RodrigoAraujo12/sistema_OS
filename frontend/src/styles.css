@@ -254,7 +254,9 @@ body {
 /* ─── Layout ───────────────────────────────────────────── */
 
 .page-content {
-  max-width: 1200px;
+  /* A listagem de OS tem 10 colunas; 1200px espremia texto longo como
+     razao social e procedimento em duas ou tres linhas. */
+  max-width: 1600px;
   margin: 0 auto;
   padding: 24px;
   display: flex;
@@ -521,6 +523,47 @@ td {
 
 tr:hover td {
   background: var(--bg-table-row-hover);
+}
+
+/* ─── Tabela de Ordens de Servico ──────────────────────── */
+
+/* Abaixo desta largura as 10 colunas comecam a quebrar texto; o
+   .table-container ja tem overflow-x, entao vira rolagem horizontal em
+   tela estreita em vez de coluna espremida. */
+.tabela-ordens {
+  min-width: 1450px;
+}
+
+/* Datas e contadores nao devem quebrar em duas linhas */
+.tabela-ordens td:nth-child(7),
+.tabela-ordens td:nth-child(8),
+.tabela-ordens td:nth-child(9),
+.tabela-ordens td:nth-child(10) {
+  white-space: nowrap;
+}
+
+th.th-sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+th.th-sortable:hover {
+  color: var(--text-primary);
+}
+
+th.th-sorted {
+  color: var(--text-primary);
+}
+
+.sort-arrow {
+  margin-left: 6px;
+  font-size: 10px;
+  opacity: 0.35;
+}
+
+th.th-sorted .sort-arrow {
+  opacity: 1;
 }
 
 /* ─── Badges ───────────────────────────────────────────── */

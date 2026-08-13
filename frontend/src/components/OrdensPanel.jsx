@@ -9,6 +9,24 @@ const MOTIVOS = Object.entries(motivoLabels);
 
 const EMPTY_FILTERS = EMPTY_OS_FILTERS;
 
+// Colunas da listagem. A chave e o nome que o backend aceita em
+// ordenar_por (_ORDENACAO_ATF); o tipo define o alinhamento e a direcao
+// inicial do clique — texto comeca em A-Z, data e numero comecam do maior
+// para o menor, que e o que interessa ver primeiro (mais recente, mais
+// dias parado).
+const COLUNAS = [
+  { key: "numero_os", label: "Número", tipo: "texto" },
+  { key: "razao_social", label: "Razão Social", tipo: "texto" },
+  { key: "modelo", label: "Modelo", tipo: "texto" },
+  { key: "motivo_abertura", label: "Motivo", tipo: "texto" },
+  { key: "procedimento", label: "Procedimento", tipo: "texto" },
+  { key: "situacao", label: "Situação", tipo: "texto" },
+  { key: "data_abertura", label: "Abertura", tipo: "data" },
+  { key: "dias_execucao", label: "Dias Exec.", tipo: "numero" },
+  { key: "data_ultimo_evento", label: "Último Evento", tipo: "data" },
+  { key: "dias_sem_evento", label: "Dias s/ Evento", tipo: "numero" },
+];
+
 export default function OrdensPanel() {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [ordens, setOrdens] = useState(null); // null = ainda nao pesquisou
@@ -16,6 +34,7 @@ export default function OrdensPanel() {
   const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
+  const [ordenacao, setOrdenacao] = useState({ campo: null, dir: "asc" });
 
   const [selectedOS, setSelectedOS] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -39,7 +58,10 @@ export default function OrdensPanel() {
     });
   }
 
-  async function fetchOrdens(page) {
+  // A ordenacao vai por parametro (e nao lida do state) porque handleSort
+  // precisa buscar ja com o criterio novo — o setState so vale no proximo
+  // render.
+  async function fetchOrdens(page, ord = ordenacao) {
     const error = validarFiltrosOS(filters);
     if (error) {
       setSearchError(error);
@@ -53,6 +75,8 @@ export default function OrdensPanel() {
         ...filtrosParaPayload(filters),
         pagina: page,
         limite: LIMITE_POR_PAGINA,
+        ordenar_por: ord.campo,
+        ordem: ord.dir,
       });
       setOrdens(data.ordens ?? data);
       setPaginacao(data.paginacao ?? null);
@@ -73,6 +97,20 @@ export default function OrdensPanel() {
 
   function handlePageChange(newPage) {
     fetchOrdens(newPage);
+  }
+
+  /**
+   * Clique no cabecalho: primeira vez ordena pela direcao natural do tipo,
+   * cliques seguintes invertem. Volta sempre para a pagina 1 — manter a
+   * pagina atual mostraria um recorte do meio de uma lista que acabou de
+   * mudar de ordem.
+   */
+  function handleSort(coluna) {
+    const nova = ordenacao.campo === coluna.key
+      ? { campo: coluna.key, dir: ordenacao.dir === "asc" ? "desc" : "asc" }
+      : { campo: coluna.key, dir: coluna.tipo === "texto" ? "asc" : "desc" };
+    setOrdenacao(nova);
+    fetchOrdens(1, nova);
   }
 
   function handleClear() {
@@ -373,19 +411,26 @@ export default function OrdensPanel() {
               </div>
             ) : (
               <div className="table-container">
-                <table>
+                <table className="tabela-ordens">
                   <thead>
                     <tr>
-                      <th>N&uacute;mero</th>
-                      <th>Raz&atilde;o Social</th>
-                      <th>Modelo</th>
-                      <th>Motivo</th>
-                      <th>Procedimento</th>
-                      <th>Situa&ccedil;&atilde;o</th>
-                      <th>Abertura</th>
-                      <th style={{ textAlign: "center" }}>Dias Exec.</th>
-                      <th>&Uacute;ltimo Evento</th>
-                      <th style={{ textAlign: "center" }}>Dias s/ Evento</th>
+                      {COLUNAS.map((c) => {
+                        const ativa = ordenacao.campo === c.key;
+                        return (
+                          <th
+                            key={c.key}
+                            className={`th-sortable${ativa ? " th-sorted" : ""}`}
+                            style={c.tipo === "numero" ? { textAlign: "center" } : undefined}
+                            title={`Ordenar por ${c.label}`}
+                            onClick={() => handleSort(c)}
+                          >
+                            {c.label}
+                            <span className="sort-arrow">
+                              {ativa ? (ordenacao.dir === "asc" ? "▲" : "▼") : "↕"}
+                            </span>
+                          </th>
+                        );
+                      })}
                     </tr>
                   </thead>
                   <tbody>

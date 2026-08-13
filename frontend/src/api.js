@@ -158,6 +158,8 @@ class ApiClient {
     data_encerramento_fim = null,
     pagina = 1,
     limite = 20,
+    ordenar_por = null,
+    ordem = null,
   } = {}) {
     const params = new URLSearchParams();
     if (numero) params.set("numero_os", numero);
@@ -178,6 +180,10 @@ class ApiClient {
     if (data_encerramento_fim) params.set("data_encerramento_fim", data_encerramento_fim);
     params.set("pagina", pagina);
     params.set("limite", limite);
+    if (ordenar_por) {
+      params.set("ordenar_por", ordenar_por);
+      params.set("ordem", ordem || "asc");
+    }
     return this.request(`/ordens?${params.toString()}`);
   }
 
