@@ -124,6 +124,18 @@ export default function OrdensPanel() {
     return <span className="badge normal">{os.status || "-"}</span>;
   }
 
+  /**
+   * Formata "codigo — texto" no mesmo padrao usado pela situacao.
+   * O ATF manda os dois separados; quando um dos lados falta, mostra o
+   * que existir em vez de deixar um travessao solto.
+   */
+  function comCodigo(codigo, texto) {
+    const temCodigo = codigo !== null && codigo !== undefined && codigo !== "";
+    if (temCodigo && texto) return `${codigo} — ${texto}`;
+    if (temCodigo) return String(codigo);
+    return texto || "-";
+  }
+
   const totalPages = paginacao?.total_paginas ?? (ordens ? 1 : 1);
   const totalRegistros = paginacao?.total_registros ?? (ordens?.length ?? 0);
 
@@ -449,11 +461,15 @@ export default function OrdensPanel() {
                 <div className="os-detail-grid">
                   <div className="os-detail-field">
                     <span className="os-detail-label">Modelo</span>
-                    <span className="os-detail-value">{selectedOS.modelo || "-"}</span>
+                    <span className="os-detail-value">
+                      {comCodigo(selectedOS.modelo_codigo, selectedOS.modelo)}
+                    </span>
                   </div>
                   <div className="os-detail-field">
                     <span className="os-detail-label">Motivo de Abertura</span>
-                    <span className="os-detail-value">{selectedOS.motivo_abertura || "-"}</span>
+                    <span className="os-detail-value">
+                      {comCodigo(selectedOS.motivo_abertura_codigo, selectedOS.motivo_abertura)}
+                    </span>
                   </div>
                   <div className="os-detail-field">
                     <span className="os-detail-label">Procedimento</span>
@@ -469,17 +485,21 @@ export default function OrdensPanel() {
                   </div>
                   <div className="os-detail-field">
                     <span className="os-detail-label">&Oacute;rg&atilde;o Executor</span>
-                    {/* O nome do orgao vem muito longo (150+ chars); a sigla
-                        na frente da o reconhecimento imediato. */}
+                    {/* Codigo + sigla + nome: o nome sozinho passa de 150
+                        chars, a sigla da o reconhecimento imediato. */}
                     <span className="os-detail-value">
-                      {selectedOS.orgao_executor_sigla
-                        ? `${selectedOS.orgao_executor_sigla} — ${selectedOS.orgao_executor}`
-                        : selectedOS.orgao_executor || "-"}
+                      {comCodigo(
+                        selectedOS.orgao_executor_codigo,
+                        [selectedOS.orgao_executor_sigla, selectedOS.orgao_executor]
+                          .filter(Boolean).join(" — "),
+                      )}
                     </span>
                   </div>
                   <div className="os-detail-field">
                     <span className="os-detail-label">Equipe Fiscal</span>
-                    <span className="os-detail-value">{selectedOS.equipe_fiscal || "-"}</span>
+                    <span className="os-detail-value">
+                      {comCodigo(selectedOS.equipe_fiscal_codigo, selectedOS.equipe_fiscal)}
+                    </span>
                   </div>
                 </div>
               </div>
