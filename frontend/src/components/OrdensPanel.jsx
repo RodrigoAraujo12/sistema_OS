@@ -456,6 +456,10 @@ export default function OrdensPanel() {
                     <span className="os-detail-value">{selectedOS.motivo_abertura || "-"}</span>
                   </div>
                   <div className="os-detail-field">
+                    <span className="os-detail-label">Procedimento</span>
+                    <span className="os-detail-value">{selectedOS.procedimento || "-"}</span>
+                  </div>
+                  <div className="os-detail-field">
                     <span className="os-detail-label">IE</span>
                     <span className="os-detail-value">{selectedOS.ie || "-"}</span>
                   </div>
@@ -465,7 +469,13 @@ export default function OrdensPanel() {
                   </div>
                   <div className="os-detail-field">
                     <span className="os-detail-label">&Oacute;rg&atilde;o Executor</span>
-                    <span className="os-detail-value">{selectedOS.orgao_executor || "-"}</span>
+                    {/* O nome do orgao vem muito longo (150+ chars); a sigla
+                        na frente da o reconhecimento imediato. */}
+                    <span className="os-detail-value">
+                      {selectedOS.orgao_executor_sigla
+                        ? `${selectedOS.orgao_executor_sigla} — ${selectedOS.orgao_executor}`
+                        : selectedOS.orgao_executor || "-"}
+                    </span>
                   </div>
                   <div className="os-detail-field">
                     <span className="os-detail-label">Equipe Fiscal</span>

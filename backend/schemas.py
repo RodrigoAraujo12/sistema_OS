@@ -189,12 +189,19 @@ class OSListagemATF(BaseModel):
     """
     numero_os: str
     modelo: str = ""
+    modelo_codigo: int | None = None
     motivo_abertura: str = ""
+    motivo_abertura_codigo: int | None = None
     ie: str = ""
     cnpj: str | None = None
     razao_social: str = ""
     orgao_executor: str = ""
+    orgao_executor_sigla: str = ""
+    orgao_executor_codigo: int | None = None
     equipe_fiscal: str = ""
+    equipe_fiscal_codigo: int | None = None
+    # noProcedimento: campo novo na revisao de 13/08/2026 da doc da listagem.
+    procedimento: str = ""
     fiscais: list[FiscalATF] = []
     situacao: SituacaoATF | None = None
     data_abertura: str = ""

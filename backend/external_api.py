@@ -606,8 +606,10 @@ _MODELOS_ATF: dict[str, str] = {
     "8": "ESPECÍFICA",
 }
 
-# Tabela de status de OS (doc da listagem) – usada para mapear o nome
-# retornado (noSituacaoOS) de volta ao codigo numerico.
+# Tabela de status de OS (doc da listagem). O servico devolve o codigo em
+# statusOS, entao ela serve como fallback: completar a descricao a partir
+# do codigo, ou recuperar o codigo a partir do nome (noStatusOS) caso o
+# campo numerico venha vazio.
 _STATUS_ATF: dict[int, str] = {
     0: "AGUARDANDO AUTORIZAÇÃO",
     1: "AUTORIZADA",
@@ -1210,17 +1212,21 @@ def _parse_resposta_soap(xml_text: str) -> list[dict[str, Any]]:
     """
     Extrai e parseia o retorno do listarOrdensServicoWebService.
 
-    Contrato (doc da listagem):
+    Contrato (doc da listagem, revisao recebida em 13/08/2026):
         resultado (operacao, listaOrdemServico*)
         listaOrdemServico (ordemServico*)
-        ordemServico (nrOrdemServico, dataAbertura, dataInicialFisc,
-            nrInscrEstadual, noRazaoSocial, noHumano, nrDocumento,
-            noModeloOS, noMotivoAberturaOS, noOrgaoExecutorOS,
-            noSituacaoOS, dataEncerramento, noEquipeFisc,
-            qtDiasExecucao, dataUltimoEvento, mediaEventosModMot,
+        ordemServico (nrOrdemServico, dataAbertura, nrInscrEstadual,
+            docContribuinte, nomeContribuinte, cdModeloOS, noModeloOS,
+            cdMotivoAberturaOS, noMotivoAberturaOS, statusOS, noStatusOS,
+            dataInicialFisc, dataEncerramentoFisc, cdOrgaoExec,
+            sgOrgaoExec, noOrgaoExec, cdEquipeFisc, qtDiasExecucao,
+            dataUltimoEventoOS, noProcedimento, mediaEventosModMot,
             mediaDiasExecModMot, fiscais+)
         fiscal (matricula, nome, dataDesignacao, dataCiencia,
             dataCancelamento, status)
+
+    O servico tambem devolve noEquipeFisc, que a doc omite na lista de
+    retorno mas vem preenchido na resposta real.
     """
     import xml.etree.ElementTree as ET
 
@@ -1254,35 +1260,44 @@ def _parse_resposta_soap(xml_text: str) -> list[dict[str, Any]]:
                 "status": (f_el.findtext("status", "") or "").strip() or None,
             })
 
-        no_situacao = (os_el.findtext("noSituacaoOS", "") or "").strip()
+        # A situacao ja vem pronta do servico: statusOS (codigo) +
+        # noStatusOS (descricao). Nao mapeamos mais pelo nome porque as
+        # duas fontes divergem — a doc lista "EM ANALISE PARA ENCERRAMENTO"
+        # e o servico responde "EM ANALISE DE ENCERRAMENTO", o que fazia o
+        # mapa por nome cair no -1. O nome so entra como fallback quando o
+        # codigo nao vier.
+        cd_status = _int_ou_none(os_el.findtext("statusOS"))
+        no_status = (os_el.findtext("noStatusOS", "") or "").strip()
         situacao = None
-        if no_situacao:
+        if cd_status is not None or no_status:
+            codigo = cd_status
+            if codigo is None:
+                codigo = _STATUS_ATF_POR_NOME.get(no_status.upper(), -1)
             situacao = {
-                "codigo": _STATUS_ATF_POR_NOME.get(no_situacao.upper(), -1),
-                "descricao": no_situacao,
+                "codigo": codigo,
+                "descricao": no_status or _STATUS_ATF.get(codigo, ""),
             }
 
         ordens.append({
             "numero_os": (os_el.findtext("nrOrdemServico", "") or "").strip(),
             "modelo": (os_el.findtext("noModeloOS", "") or "").strip(),
+            "modelo_codigo": _int_ou_none(os_el.findtext("cdModeloOS")),
             "motivo_abertura": (os_el.findtext("noMotivoAberturaOS", "") or "").strip(),
+            "motivo_abertura_codigo": _int_ou_none(os_el.findtext("cdMotivoAberturaOS")),
             "ie": (os_el.findtext("nrInscrEstadual", "") or "").strip(),
-            "cnpj": (os_el.findtext("nrDocumento", "") or "").strip() or None,
-            # noRazaoSocial e noHumano sao o mesmo dado (razao social do
-            # contribuinte): confirmado com o Laurentino que, por baixo dos
-            # panos, apenas um dos dois vem preenchido para cada OS.
-            "razao_social": (
-                os_el.findtext("noRazaoSocial", "")
-                or os_el.findtext("noHumano", "")
-                or ""
-            ).strip(),
-            "orgao_executor": (os_el.findtext("noOrgaoExecutorOS", "") or "").strip(),
+            "cnpj": (os_el.findtext("docContribuinte", "") or "").strip() or None,
+            "razao_social": (os_el.findtext("nomeContribuinte", "") or "").strip(),
+            "orgao_executor": (os_el.findtext("noOrgaoExec", "") or "").strip(),
+            "orgao_executor_sigla": (os_el.findtext("sgOrgaoExec", "") or "").strip(),
+            "orgao_executor_codigo": _int_ou_none(os_el.findtext("cdOrgaoExec")),
             "equipe_fiscal": (os_el.findtext("noEquipeFisc", "") or "").strip(),
+            "equipe_fiscal_codigo": _int_ou_none(os_el.findtext("cdEquipeFisc")),
+            "procedimento": (os_el.findtext("noProcedimento", "") or "").strip(),
             "situacao": situacao,
             "data_abertura": _data_do_atf(os_el.findtext("dataAbertura")),
             "data_inicio_fiscalizacao": _data_do_atf(os_el.findtext("dataInicialFisc")) or None,
-            "data_encerramento": _data_do_atf(os_el.findtext("dataEncerramento")) or None,
-            "data_ultimo_evento": _data_do_atf(os_el.findtext("dataUltimoEvento")) or None,
+            "data_encerramento": _data_do_atf(os_el.findtext("dataEncerramentoFisc")) or None,
+            "data_ultimo_evento": _data_do_atf(os_el.findtext("dataUltimoEventoOS")) or None,
             "dias_execucao": _int_ou_none(os_el.findtext("qtDiasExecucao")),
             "qtd_media_eventos_modelo_motivo": _float_ou_none(os_el.findtext("mediaEventosModMot")),
             "tempo_medio_execucao_modelo_motivo": _float_ou_none(os_el.findtext("mediaDiasExecModMot")),

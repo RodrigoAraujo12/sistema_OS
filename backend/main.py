@@ -830,8 +830,8 @@ def relatorio_ordens_csv(
     output.write("\ufeff")
     writer = csv.writer(output, delimiter=";")
     writer.writerow([
-        "Numero", "Modelo", "Motivo de Abertura", "IE", "CNPJ/CPF",
-        "Razao Social", "Orgao Executor", "Equipe Fiscal", "Fiscais",
+        "Numero", "Modelo", "Motivo de Abertura", "Procedimento", "IE", "CNPJ/CPF",
+        "Razao Social", "Sigla Orgao", "Orgao Executor", "Equipe Fiscal", "Fiscais",
         "Situacao", "Data Abertura", "Inicio Fiscalizacao", "Data Encerramento",
         "Ultimo Evento", "Dias de Execucao",
         "Tempo Medio Modelo/Motivo (dias)", "Media de Eventos Modelo/Motivo",
@@ -841,9 +841,11 @@ def relatorio_ordens_csv(
             o.get("numero_os", ""),
             o.get("modelo", ""),
             o.get("motivo_abertura", ""),
+            o.get("procedimento", ""),
             o.get("ie", ""),
             o.get("cnpj", "") or "",
             o.get("razao_social", ""),
+            o.get("orgao_executor_sigla", ""),
             o.get("orgao_executor", ""),
             o.get("equipe_fiscal", ""),
             _fiscais_nomes(o),
