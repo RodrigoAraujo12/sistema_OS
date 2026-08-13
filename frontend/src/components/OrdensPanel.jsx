@@ -136,6 +136,21 @@ export default function OrdensPanel() {
     return texto || "-";
   }
 
+  /**
+   * Dias corridos entre a data (YYYY-MM-DD) e hoje.
+   * Retorna null quando nao ha data: o ATF so manda dataUltimoEventoOS
+   * quando existe ao menos um evento lancado na OS — a maioria das OS em
+   * aberto nao tem nenhum, e ai nao ha o que contar.
+   */
+  function diasDesde(dataISO) {
+    if (!dataISO) return null;
+    const d = new Date(`${dataISO}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return null;
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
+    return Math.floor((hoje - d) / 86400000);
+  }
+
   const totalPages = paginacao?.total_paginas ?? (ordens ? 1 : 1);
   const totalRegistros = paginacao?.total_registros ?? (ordens?.length ?? 0);
 
@@ -365,14 +380,18 @@ export default function OrdensPanel() {
                       <th>Raz&atilde;o Social</th>
                       <th>Modelo</th>
                       <th>Motivo</th>
+                      <th>Procedimento</th>
                       <th>Situa&ccedil;&atilde;o</th>
                       <th>Abertura</th>
                       <th style={{ textAlign: "center" }}>Dias Exec.</th>
+                      <th>&Uacute;ltimo Evento</th>
+                      <th style={{ textAlign: "center" }}>Dias s/ Evento</th>
                     </tr>
                   </thead>
                   <tbody>
                     {ordens.map((os) => {
                       const numeroOS = os.numero_os || os.numero;
+                      const diasSemEvento = diasDesde(os.data_ultimo_evento);
                       return (
                         <tr
                           key={numeroOS}
@@ -384,9 +403,12 @@ export default function OrdensPanel() {
                           <td>{os.razao_social || "-"}</td>
                           <td>{os.modelo || "-"}</td>
                           <td>{os.motivo_abertura || "-"}</td>
+                          <td>{os.procedimento || "-"}</td>
                           <td>{renderSituacao(os)}</td>
                           <td>{formatarData(os.data_abertura)}</td>
                           <td style={{ textAlign: "center" }}>{os.dias_execucao ?? "-"}</td>
+                          <td>{formatarData(os.data_ultimo_evento)}</td>
+                          <td style={{ textAlign: "center" }}>{diasSemEvento ?? "-"}</td>
                         </tr>
                       );
                     })}
