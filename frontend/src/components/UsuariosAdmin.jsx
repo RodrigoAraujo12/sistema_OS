@@ -57,7 +57,7 @@ export default function UsuariosAdmin({
     onError("");
     onMessage("");
     try {
-      await apiClient.createUser({
+      const criado = await apiClient.createUser({
         username: createForm.username,
         role: createForm.role,
         gerencia_id: Number(createForm.gerencia_id),
@@ -65,7 +65,11 @@ export default function UsuariosAdmin({
         matricula: createForm.matricula,
       });
       setCreateForm({ ...emptyUserForm });
-      onMessage("Usuario criado. Senha padrao: temp1234");
+      // Vai no aviso persistente (10s), nao na mensagem de 5s: e a unica
+      // vez que essa senha aparece — o backend so guarda o hash.
+      onResetInfo(
+        `Usuario "${criado.username}" criado. Senha temporaria: ${criado.temporary_password} — anote e repasse, ela nao sera exibida de novo.`
+      );
       onRefresh();
     } catch (err) {
       onError(err.message);
@@ -97,7 +101,9 @@ export default function UsuariosAdmin({
     onMessage("");
     try {
       const data = await apiClient.resetUserPassword(userId);
-      onResetInfo(`Senha redefinida: ${data.temporary_password}`);
+      onResetInfo(
+        `Senha redefinida: ${data.temporary_password} — anote e repasse, ela nao sera exibida de novo.`
+      );
     } catch (err) {
       onError(err.message);
     }
@@ -199,7 +205,10 @@ export default function UsuariosAdmin({
             </select>
           </label>
         </div>
-        <p className="muted">Senha padrao: temp1234</p>
+        <p className="muted">
+          Uma senha tempor&aacute;ria ser&aacute; gerada e exibida ap&oacute;s a cria&ccedil;&atilde;o.
+          O usu&aacute;rio ter&aacute; que troc&aacute;-la no primeiro acesso.
+        </p>
         <button type="submit">Criar Usuario</button>
       </form>
 
@@ -376,7 +385,7 @@ export default function UsuariosAdmin({
       <ConfirmModal
         open={!!confirmReset}
         title="Resetar senha"
-        message={confirmReset ? `Tem certeza que deseja resetar a senha de "${confirmReset.username}"? A senha será redefinida para a padrão.` : ""}
+        message={confirmReset ? `Tem certeza que deseja resetar a senha de "${confirmReset.username}"? Uma senha temporária será gerada e exibida uma única vez.` : ""}
         confirmLabel="Resetar Senha"
         cancelLabel="Cancelar"
         variant="danger"

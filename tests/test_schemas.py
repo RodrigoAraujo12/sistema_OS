@@ -108,11 +108,10 @@ class TestOSResponse(unittest.TestCase):
             numero="OS-001", tipo="Normal", ie="123", razao_social="Empresa",
             matricula_supervisor="111", fiscais=["Carlos"], status="aberta",
             prioridade="alta", data_abertura="2026-01-01",
-            data_ciencia="2026-01-02", data_ultima_movimentacao="2026-01-03",
-            dias_parado=5,
+            data_ciencia="2026-01-02",
         )
         self.assertEqual(os.numero, "OS-001")
-        self.assertEqual(os.dias_parado, 5)
+        self.assertEqual(os.data_ciencia, "2026-01-02")
 
     def test_os_sem_prioridade(self):
         os = OSResponse(
@@ -121,7 +120,6 @@ class TestOSResponse(unittest.TestCase):
             data_abertura="2026-01-01",
         )
         self.assertEqual(os.prioridade, "")
-        self.assertEqual(os.dias_parado, 0)
 
     def test_os_optional_dates(self):
         os = OSResponse(
@@ -130,7 +128,6 @@ class TestOSResponse(unittest.TestCase):
             prioridade="normal", data_abertura="2026-01-01",
         )
         self.assertIsNone(os.data_ciencia)
-        self.assertIsNone(os.data_ultima_movimentacao)
 
 
 class TestAlertaResponse(unittest.TestCase):
@@ -146,8 +143,13 @@ class TestAlertaResponse(unittest.TestCase):
 class TestPasswordSchemas(unittest.TestCase):
 
     def test_change_valid(self):
-        req = PasswordChangeRequest(current_password="old", new_password="new1234")
-        self.assertEqual(req.new_password, "new1234")
+        req = PasswordChangeRequest(current_password="old", new_password="Nova@1234")
+        self.assertEqual(req.new_password, "Nova@1234")
+
+    def test_change_rejeita_senha_sem_maiuscula_digito_ou_simbolo(self):
+        for fraca in ("semmaiuscula1!", "SEMMINUSCULA1!", "SemDigito!!", "SemSimbolo1"):
+            with self.subTest(senha=fraca), self.assertRaises(ValidationError):
+                PasswordChangeRequest(current_password="old", new_password=fraca)
 
     def test_change_min_length(self):
         with self.assertRaises(ValidationError):

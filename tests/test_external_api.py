@@ -1,50 +1,164 @@
 """
 Testes unitarios para o modulo external_api.py – logica de OS e dashboard.
 
-Cobre: filtragem hierarquica, geracao de alertas,
-normalizacao de dados do Informix, e dashboard.
+Cobre: montagem do envelope SOAP, cache das respostas do ATF,
+filtragem hierarquica, geracao de alertas e dashboard.
 """
 
 from __future__ import annotations
 
 import unittest
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from backend.external_api import (
+    _chamar_atf_https,
     _filtrar_por_hierarquia,
-    _normalizar_row,
+    _montar_envelope_soap,
+    _montar_parametros_atf,
+    filtrar_atf_por_matriculas,
     gerar_alertas,
     gerar_dashboard,
+    limpar_cache_atf,
     listar_ordens_servico,
 )
 
 
-class TestNormalizarRow(unittest.TestCase):
-    """Testes para _normalizar_row."""
+def _resposta_soap(numeros_e_matriculas: dict[str, str]) -> str:
+    """Monta uma resposta do ATF com as OS informadas (numero -> matricula)."""
+    ordens = "".join(
+        f"<ordemServico><nrOrdemServico>{n}</nrOrdemServico>"
+        f"<fiscais><fiscal><matricula>{m}</matricula><nome>F {m}</nome></fiscal></fiscais>"
+        f"</ordemServico>"
+        for n, m in numeros_e_matriculas.items()
+    )
+    return (
+        "<resultado><listaOrdemServico>"
+        f"{ordens}"
+        "</listaOrdemServico></resultado>"
+    )
 
-    def test_fiscais_string_to_list(self):
-        row = {"fiscais": "Carlos Mendes, Ana Ribeiro", "data_abertura": "2026-01-01"}
-        result = _normalizar_row(row)
-        self.assertEqual(result["fiscais"], ["Carlos Mendes", "Ana Ribeiro"])
 
-    def test_fiscais_already_list(self):
-        row = {"fiscais": ["Carlos"], "data_abertura": "2026-01-01"}
-        result = _normalizar_row(row)
-        self.assertEqual(result["fiscais"], ["Carlos"])
+class TestCacheATF(unittest.TestCase):
+    """
+    O ATF devolve a lista completa e nao pagina. Sem cache, cada troca de
+    pagina ou de ordenacao refazia a consulta inteira.
+    """
 
-    def test_date_fields_from_datetime(self):
-        from datetime import date
-        row = {
-            "fiscais": "A",
-            "data_abertura": date(2026, 1, 15),
-            "data_ciencia": None,
-            "data_ultima_movimentacao": datetime(2026, 2, 1, 10, 30),
-        }
-        result = _normalizar_row(row)
-        self.assertEqual(result["data_abertura"], "2026-01-15")
-        self.assertIsNone(result["data_ciencia"])
-        self.assertEqual(result["data_ultima_movimentacao"], "2026-02-01")
+    def setUp(self):
+        limpar_cache_atf()
+        self.addCleanup(limpar_cache_atf)
+
+    def _post_falso(self, xml: str) -> MagicMock:
+        resp = MagicMock()
+        resp.text = xml
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    def test_segunda_chamada_igual_nao_vai_na_rede(self):
+        xml = _resposta_soap({"OS-1": "111", "OS-2": "222"})
+        with patch("requests.post", return_value=self._post_falso(xml)) as post:
+            a = _chamar_atf_https("https://atf.local", numero_os="X")
+            b = _chamar_atf_https("https://atf.local", numero_os="X")
+        self.assertEqual(post.call_count, 1, "a segunda chamada deveria vir do cache")
+        self.assertEqual([o["numero_os"] for o in a], [o["numero_os"] for o in b])
+
+    def test_filtro_diferente_e_consulta_diferente(self):
+        xml = _resposta_soap({"OS-1": "111"})
+        with patch("requests.post", return_value=self._post_falso(xml)) as post:
+            _chamar_atf_https("https://atf.local", numero_os="X")
+            _chamar_atf_https("https://atf.local", numero_os="Y")
+        self.assertEqual(post.call_count, 2)
+
+    def test_cache_devolve_copias_independentes(self):
+        """
+        Quem chama preenche dias_execucao nas OS. Se o cache devolvesse os
+        mesmos dicionarios, uma requisicao alteraria o que a outra ve.
+        """
+        xml = _resposta_soap({"OS-1": "111"})
+        with patch("requests.post", return_value=self._post_falso(xml)):
+            primeira = _chamar_atf_https("https://atf.local", numero_os="X")
+            primeira[0]["dias_execucao"] = 999
+            segunda = _chamar_atf_https("https://atf.local", numero_os="X")
+        self.assertIsNone(segunda[0]["dias_execucao"])
+
+    def test_cache_nao_vaza_entre_hierarquias(self):
+        """
+        O cache guarda a resposta CRUA e a hierarquia e aplicada depois, por
+        requisicao. Duas pessoas com equipes diferentes compartilham a ida
+        ao ATF, mas nunca o resultado filtrado.
+        """
+        xml = _resposta_soap({"OS-A": "111", "OS-B": "222"})
+        with patch("requests.post", return_value=self._post_falso(xml)) as post:
+            bruto_1 = _chamar_atf_https("https://atf.local", numero_os="X")
+            bruto_2 = _chamar_atf_https("https://atf.local", numero_os="X")
+        self.assertEqual(post.call_count, 1)
+        visao_1 = filtrar_atf_por_matriculas(bruto_1, {"111"})
+        visao_2 = filtrar_atf_por_matriculas(bruto_2, {"222"})
+        self.assertEqual([o["numero_os"] for o in visao_1], ["OS-A"])
+        self.assertEqual([o["numero_os"] for o in visao_2], ["OS-B"])
+
+    def test_erro_nao_e_guardado(self):
+        """Falha de rede nao pode ficar grudada no cache durante o TTL."""
+        ok = self._post_falso(_resposta_soap({"OS-1": "111"}))
+        with patch("requests.post", side_effect=[ConnectionError("caiu"), ok]) as post:
+            with self.assertRaises(ConnectionError):
+                _chamar_atf_https("https://atf.local", numero_os="X")
+            ordens = _chamar_atf_https("https://atf.local", numero_os="X")
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(len(ordens), 1)
+
+    def test_ttl_zero_desliga_o_cache(self):
+        from backend.external_api import _cache_atf
+
+        xml = _resposta_soap({"OS-1": "111"})
+        with patch.object(_cache_atf, "_ttl", 0):
+            with patch("requests.post", return_value=self._post_falso(xml)) as post:
+                _chamar_atf_https("https://atf.local", numero_os="X")
+                _chamar_atf_https("https://atf.local", numero_os="X")
+        self.assertEqual(post.call_count, 2)
+
+
+class TestEscapeParametrosATF(unittest.TestCase):
+    """
+    Os valores dos filtros vem da query string. Sem escape da para
+    reescrever a consulta enviada ao ATF ou quebrar o CDATA do envelope.
+    """
+
+    def test_valor_normal_nao_e_alterado(self):
+        p = _montar_parametros_atf(numero_os="93300008.12.00000001/2026-99")
+        self.assertIn("<numeroOS>93300008.12.00000001/2026-99</numeroOS>", p)
+
+    def test_nao_injeta_filtro_extra(self):
+        """Fechar a tag no valor nao pode criar um segundo filtro."""
+        p = _montar_parametros_atf(
+            numero_os="X</numeroOS><cdOrgaoExec>629</cdOrgaoExec><numeroOS>"
+        )
+        root = ET.fromstring(p)
+        self.assertEqual([el.tag for el in root], ["numeroOS"])
+        self.assertIsNone(root.find("cdOrgaoExec"))
+        # O valor chega inteiro do outro lado, so que como texto
+        self.assertEqual(
+            root.findtext("numeroOS"),
+            "X</numeroOS><cdOrgaoExec>629</cdOrgaoExec><numeroOS>",
+        )
+
+    def test_nao_quebra_o_cdata(self):
+        """']]>' no valor nao pode encerrar o CDATA do elementoEntrada."""
+        envelope = _montar_envelope_soap(
+            _montar_parametros_atf(ie="A]]><ns:injetado>oi</ns:injetado><![CDATA[")
+        )
+        # Um unico CDATA, fechado uma unica vez, no fim dos parametros
+        self.assertEqual(envelope.count("]]>"), 1)
+        self.assertIn("</parametros>]]>", envelope)
+        # E o envelope continua sendo XML valido, sem a tag injetada
+        root = ET.fromstring(envelope)
+        self.assertIsNone(next((el for el in root.iter() if "injetado" in el.tag), None))
+
+    def test_ampersand_sobrevive_ao_round_trip(self):
+        p = _montar_parametros_atf(ie="A & B")
+        self.assertEqual(ET.fromstring(p).findtext("inscrEstadual"), "A & B")
 
 
 class TestFiltrarPorHierarquia(unittest.TestCase):
@@ -254,10 +368,12 @@ class TestGerarDashboard(unittest.TestCase):
         self.assertEqual(meses, sorted(meses))
 
     def test_dashboard_sem_os(self):
-        result = gerar_dashboard([], self.gerencias, self.supervisoes, self.users)
-        self.assertEqual(result["visao_geral"]["total_os"], 0)
-        self.assertEqual(result["visao_geral"]["dias_parado_medio"], 0)
-        self.assertEqual(result["visao_geral"]["tempo_medio_conclusao"], 0)
+        visao = gerar_dashboard([], self.gerencias, self.supervisoes, self.users)["visao_geral"]
+        self.assertEqual(visao["total_os"], 0)
+        self.assertEqual(visao["os_abertas"], 0)
+        self.assertEqual(visao["os_concluidas"], 0)
+        self.assertEqual(visao["os_sem_ciencia"], 0)
+        self.assertEqual(visao["taxa_conclusao"], 0)
 
     def test_os_sem_ciencia_count(self):
         result = gerar_dashboard(self.ordens, self.gerencias, self.supervisoes, self.users)

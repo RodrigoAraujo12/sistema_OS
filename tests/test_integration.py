@@ -17,6 +17,13 @@ from fastapi.testclient import TestClient
 
 # ─── Helpers ────────────────────────────────────────────────────
 
+# Senha do admin nos testes (o seed real gera uma aleatoria).
+ADMIN_PASSWORD_TESTE = "admin123"
+
+# Senha atribuida aos usuarios do seed quando um teste precisa entrar como
+# eles. Passa no validador de forca de PasswordChangeRequest.
+SENHA_TESTE = "Teste@123"
+
 
 def _create_app(db_path: str) -> TestClient:
     """
@@ -44,6 +51,9 @@ def _create_app(db_path: str) -> TestClient:
     main_module.gerencia_repo = gerencia_repo
     main_module.supervisao_repo = supervisao_repo
     main_module.auth_service = auth_service
+    # Sem isso o seed gera uma senha aleatoria para o admin e o teste nao
+    # teria como entrar (e o proposito de nao existir senha fixa).
+    main_module.ADMIN_PASSWORD = ADMIN_PASSWORD_TESTE
 
     client = TestClient(main_module.app)
     return client
@@ -53,6 +63,11 @@ class IntegrationTestBase(unittest.TestCase):
     """Base com setup/teardown que cria um banco isolado + TestClient."""
 
     def setUp(self):
+        # ATF_BASE_URL vazio forca o caminho MOCK. Sem isso a suite chama o
+        # servico real do ATF (o .env de desenvolvimento tem a URL), o que
+        # deixa o resultado dependente da rede e de dados de terceiros.
+        self._atf_patch = patch("backend.config.ATF_BASE_URL", "")
+        self._atf_patch.start()
         self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self._tmp.close()
         self.db_path = self._tmp.name
@@ -62,6 +77,7 @@ class IntegrationTestBase(unittest.TestCase):
 
     def tearDown(self):
         self.client.__exit__(None, None, None)
+        self._atf_patch.stop()
         try:
             Path(self._tmp.name).unlink(missing_ok=True)
         except OSError:
@@ -69,11 +85,27 @@ class IntegrationTestBase(unittest.TestCase):
 
     # ── Helpers de conveniencia ─────────────────────────────────
 
-    def _login(self, username: str = "admin", password: str = "admin123") -> str:
+    def _login(self, username: str = "admin", password: str = ADMIN_PASSWORD_TESTE) -> str:
         """Faz login e retorna o token."""
         r = self.client.post("/auth/login", json={"username": username, "password": password})
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()["token"]
+
+    def _login_como(self, username: str) -> str:
+        """
+        Loga como um usuario do seed.
+
+        Os usuarios do seed nascem com senha aleatoria que e descartada, e
+        com must_change_password ativa. O teste define uma senha conhecida
+        direto pelo servico — change_password tambem baixa a flag, que e o
+        que permite chamar o resto da API.
+        """
+        import backend.main as main_module
+
+        user = main_module.user_repo.get_user_by_username(username)
+        self.assertIsNotNone(user, f"usuario '{username}' nao existe no seed")
+        main_module.auth_service.change_password(int(user["id"]), SENHA_TESTE)
+        return self._login(username, SENHA_TESTE)
 
     def _auth_header(self, token: str) -> dict[str, str]:
         return {"Authorization": f"Bearer {token}"}
@@ -91,7 +123,7 @@ class TestAuthEndpoints(IntegrationTestBase):
     """Testa fluxo de login e troca de senha via HTTP."""
 
     def test_login_success(self):
-        r = self.client.post("/auth/login", json={"username": "admin", "password": "admin123"})
+        r = self.client.post("/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD_TESTE})
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertIn("token", body)
@@ -109,9 +141,13 @@ class TestAuthEndpoints(IntegrationTestBase):
 
     def test_login_returns_seed_user_fields(self):
         """Garante que o seed cria gerentes com gerencia_name preenchido."""
+        import backend.main as main_module
+
+        user = main_module.user_repo.get_user_by_username("Roberto Santos")
+        main_module.auth_service.reset_password(int(user["id"]), SENHA_TESTE)
         r = self.client.post(
             "/auth/login",
-            json={"username": "Roberto Santos", "password": "temp1234"},
+            json={"username": "Roberto Santos", "password": SENHA_TESTE},
         )
         self.assertEqual(r.status_code, 200)
         body = r.json()
@@ -124,20 +160,20 @@ class TestAuthEndpoints(IntegrationTestBase):
         token = self._login()
         r = self.client.post(
             "/auth/change-password",
-            json={"current_password": "admin123", "new_password": "nova1234"},
+            json={"current_password": ADMIN_PASSWORD_TESTE, "new_password": "Nova@1234"},
             headers=self._auth_header(token),
         )
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["status"], "ok")
         # Verifica que a nova senha funciona
-        r2 = self.client.post("/auth/login", json={"username": "admin", "password": "nova1234"})
+        r2 = self.client.post("/auth/login", json={"username": "admin", "password": "Nova@1234"})
         self.assertEqual(r2.status_code, 200)
 
     def test_change_password_wrong_current(self):
         token = self._login()
         r = self.client.post(
             "/auth/change-password",
-            json={"current_password": "errada", "new_password": "nova"},
+            json={"current_password": "errada", "new_password": "Nova@1234"},
             headers=self._auth_header(token),
         )
         self.assertEqual(r.status_code, 400)
@@ -146,7 +182,7 @@ class TestAuthEndpoints(IntegrationTestBase):
         token = self._login()
         r = self.client.post(
             "/auth/change-password",
-            json={"current_password": "admin123", "new_password": "ab"},
+            json={"current_password": ADMIN_PASSWORD_TESTE, "new_password": "ab"},
             headers=self._auth_header(token),
         )
         self.assertEqual(r.status_code, 422)  # validation error
@@ -155,6 +191,114 @@ class TestAuthEndpoints(IntegrationTestBase):
 # ═══════════════════════════════════════════════════════════════
 # 2. Middleware / Autorizacao
 # ═══════════════════════════════════════════════════════════════
+
+
+class TestSessaoEToken(IntegrationTestBase):
+    """Prazo de validade, revogacao e logout do token de sessao."""
+
+    def test_logout_invalida_o_token_no_servidor(self):
+        token = self._login()
+        H = self._auth_header(token)
+        self.assertEqual(self.client.get("/alertas", headers=H).status_code, 200)
+
+        self.assertEqual(self.client.post("/auth/logout", headers=H).status_code, 200)
+        r = self.client.get("/alertas", headers=H)
+        self.assertEqual(r.status_code, 401, "o token deveria estar revogado")
+
+    def test_token_vencido_e_recusado(self):
+        import backend.main as main_module
+
+        token = self._login()
+        H = self._auth_header(token)
+        self.assertEqual(self.client.get("/alertas", headers=H).status_code, 200)
+
+        # Encurta o TTL e reposiciona o vencimento do token para o passado
+        store = main_module.auth_service._token_store
+        user_id, _ = store._tokens[token]
+        store._tokens[token] = (user_id, 0.0)
+
+        r = self.client.get("/alertas", headers=H)
+        self.assertEqual(r.status_code, 401)
+        self.assertIn("expirada", r.json()["detail"])
+
+    def test_reset_pelo_admin_derruba_a_sessao_do_usuario(self):
+        """
+        Conta resetada administrativamente nao pode continuar aberta na
+        maquina de quem estava usando.
+        """
+        token_fiscal = self._login_como("Carlos Mendes")
+        H = self._auth_header(token_fiscal)
+        self.assertEqual(self.client.get("/ordens", headers=H).status_code, 200)
+
+        admin = self._admin_header()
+        alvo = next(
+            u for u in self.client.get("/admin/users", headers=admin).json()
+            if u["username"] == "Carlos Mendes"
+        )
+        self.client.post(f"/admin/users/{alvo['id']}/reset-password", headers=admin)
+
+        self.assertEqual(self.client.get("/ordens", headers=H).status_code, 401)
+
+    def test_troca_de_senha_mantem_a_sessao_atual_e_derruba_as_outras(self):
+        token_a = self._login()
+        token_b = self._login()  # segunda sessao do mesmo usuario
+        self.assertNotEqual(token_a, token_b)
+
+        r = self.client.post(
+            "/auth/change-password",
+            json={"current_password": ADMIN_PASSWORD_TESTE, "new_password": "Nova@1234"},
+            headers=self._auth_header(token_b),
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+
+        # A sessao que trocou continua; a outra caiu
+        self.assertEqual(self.client.get("/alertas", headers=self._auth_header(token_b)).status_code, 200)
+        self.assertEqual(self.client.get("/alertas", headers=self._auth_header(token_a)).status_code, 401)
+
+
+class TestLimiteDeTentativasLogin(IntegrationTestBase):
+    """Forca bruta em /auth/login e o custo de CPU que ela provocava."""
+
+    def setUp(self):
+        super().setUp()
+        import backend.main as main_module
+
+        main_module.limitador_login.limpar()
+        self.addCleanup(main_module.limitador_login.limpar)
+
+    def _tenta(self, senha: str):
+        return self.client.post("/auth/login", json={"username": "admin", "password": senha})
+
+    def test_bloqueia_apos_o_limite_de_falhas(self):
+        for i in range(5):
+            self.assertEqual(self._tenta("errada").status_code, 401, f"tentativa {i + 1}")
+        r = self._tenta("errada")
+        self.assertEqual(r.status_code, 429)
+        self.assertIn("Retry-After", r.headers)
+        self.assertIn("Muitas tentativas", r.json()["detail"])
+
+    def test_bloqueio_vale_mesmo_com_a_senha_certa(self):
+        """
+        Senao a rajada poderia continuar indefinidamente: bastaria a
+        tentativa certa passar no meio para o atacante saber que acertou.
+        """
+        for _ in range(5):
+            self._tenta("errada")
+        self.assertEqual(self._tenta(ADMIN_PASSWORD_TESTE).status_code, 429)
+
+    def test_login_valido_zera_o_contador_do_usuario(self):
+        for _ in range(3):
+            self._tenta("errada")
+        self.assertEqual(self._tenta(ADMIN_PASSWORD_TESTE).status_code, 200)
+        # Depois do sucesso, o orcamento de falhas comeca de novo
+        for i in range(5):
+            self.assertEqual(self._tenta("errada").status_code, 401, f"tentativa {i + 1}")
+
+    def test_usuario_inexistente_tambem_conta(self):
+        for _ in range(5):
+            self.client.post("/auth/login", json={"username": "fantasma", "password": "x"})
+        r = self.client.post("/auth/login", json={"username": "fantasma", "password": "x"})
+        self.assertEqual(r.status_code, 429)
 
 
 class TestAuthMiddleware(IntegrationTestBase):
@@ -168,17 +312,19 @@ class TestAuthMiddleware(IntegrationTestBase):
     def test_invalid_token_returns_401(self):
         r = self.client.get("/admin/gerencias", headers={"Authorization": "Bearer invalidtoken"})
         self.assertEqual(r.status_code, 401)
-        self.assertIn("Token invalido", r.json()["detail"])
+        # Mensagem unica para token inexistente, revogado ou vencido — nao
+        # ha ganho em distinguir os casos para quem esta do lado de fora.
+        self.assertIn("Sessao invalida ou expirada", r.json()["detail"])
 
     def test_non_admin_cannot_access_admin_routes(self):
         """Fiscal nao pode acessar /admin/*."""
-        token = self._login("Carlos Mendes", "temp1234")
+        token = self._login_como("Carlos Mendes")
         r = self.client.get("/admin/gerencias", headers=self._auth_header(token))
         self.assertEqual(r.status_code, 403)
         self.assertIn("Acesso negado", r.json()["detail"])
 
     def test_gerente_cannot_access_admin_routes(self):
-        token = self._login("Roberto Santos", "temp1234")
+        token = self._login_como("Roberto Santos")
         r = self.client.get("/admin/users", headers=self._auth_header(token))
         self.assertEqual(r.status_code, 403)
 
@@ -508,7 +654,7 @@ class TestDeleteUser(IntegrationTestBase):
     def test_delete_self_forbidden(self):
         token = self._login()
         login_data = self.client.post(
-            "/auth/login", json={"username": "admin", "password": "admin123"}
+            "/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD_TESTE}
         ).json()
         admin_id = login_data["user_id"]
         r = self.client.delete(
@@ -570,51 +716,183 @@ _MOCK_OS_LIST = [
 
 
 class TestOrdensEndpoints(IntegrationTestBase):
-    """Testa endpoints de OS com dados mockados da API externa."""
+    """
+    Testa /ordens contra o MOCK ATF (25 OS), cujas matriculas de fiscais
+    (34567-34571) sao as mesmas dos fiscais criados pelo seed.
+    """
 
-    @patch("backend.main.listar_ordens_servico", return_value=_MOCK_OS_LIST)
-    @patch("backend.main._filtrar_por_hierarquia", side_effect=lambda ordens, **kw: ordens)
-    def test_list_os(self, _mock_filtrar, _mock_listar):
-        token = self._login()
-        r = self.client.get("/ordens", headers=self._auth_header(token))
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(len(r.json()), 2)
+    def _ordens(self, token: str, **params) -> dict:
+        r = self.client.get("/ordens", headers=self._auth_header(token), params=params)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
 
-    @patch("backend.main.listar_ordens_servico", return_value=_MOCK_OS_LIST)
-    @patch("backend.main._filtrar_por_hierarquia", side_effect=lambda ordens, **kw: ordens)
-    def test_list_os_returns_fields(self, _mock_filtrar, _mock_listar):
-        token = self._login()
-        r = self.client.get("/ordens", headers=self._auth_header(token))
-        os1 = r.json()[0]
-        self.assertEqual(os1["numero"], "OS-001")
-        self.assertEqual(os1["tipo"], "Fiscalizacao")
-        self.assertEqual(os1["status"], "Em andamento")
+    def test_admin_ve_todas(self):
+        body = self._ordens(self._login())
+        self.assertEqual(body["paginacao"]["total_registros"], 25)
 
-    @patch("backend.main.consultar_os_por_numero", return_value=_MOCK_OS_LIST[0])
-    @patch("backend.main._filtrar_por_hierarquia", side_effect=lambda ordens, **kw: ordens)
-    def test_get_os_by_numero(self, _mock_filtrar, _mock_consultar):
-        token = self._login()
-        r = self.client.get("/ordens/OS-001", headers=self._auth_header(token))
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["numero"], "OS-001")
+    def test_fiscal_so_ve_as_proprias(self):
+        """Carlos Mendes (34567) nao pode ver OS de outro fiscal."""
+        body = self._ordens(self._login_como("Carlos Mendes"), limite=50)
+        self.assertGreater(len(body["ordens"]), 0, "o fiscal deveria ter OS no mock")
+        for os_item in body["ordens"]:
+            matriculas = {f["matricula"] for f in os_item["fiscais"]}
+            self.assertIn("34567", matriculas, f"OS {os_item['numero_os']} nao e do fiscal")
 
-    @patch("backend.main.consultar_os_por_numero", return_value=None)
-    def test_get_os_not_found(self, _mock_consultar):
+    def test_supervisor_ve_a_equipe_e_nao_a_de_outra_supervisao(self):
+        """
+        Patricia Oliveira supervisiona a Supervisao Fiscal A (34567-34569).
+
+        O criterio e "toda OS vista tem alguem da equipe designado", e nao
+        "matricula de fora nunca aparece": uma OS pode ter fiscais das duas
+        supervisoes — OS-2026-005 tem 34568 (equipe A) e 34571 (equipe B) —
+        e nesse caso ela aparece corretamente para as duas.
+        """
+        body = self._ordens(self._login_como("Patricia Oliveira"), limite=50)
+        equipe_a = {"23456", "34567", "34568", "34569"}
+        numeros = set()
+        for o in body["ordens"]:
+            numeros.add(o["numero_os"])
+            matriculas = {f["matricula"] for f in o["fiscais"]}
+            self.assertTrue(
+                matriculas & equipe_a,
+                f"OS {o['numero_os']} nao tem ninguem da equipe A designado",
+            )
+        self.assertIn("OS-2026-005", numeros, "OS compartilhada deveria aparecer")
+        # OS-2026-009 e exclusiva da Fernanda Costa (34571), da equipe B
+        self.assertNotIn("OS-2026-009", numeros)
+
+    def test_paginacao_conta_so_o_que_o_usuario_ve(self):
+        """
+        A contagem tem que sair do conjunto ja filtrado — se o filtro
+        rodasse depois da paginacao, o total continuaria sendo 25 e as
+        paginas viriam parcialmente vazias.
+        """
+        total_admin = self._ordens(self._login())["paginacao"]["total_registros"]
+        body = self._ordens(self._login_como("Carlos Mendes"), limite=50)
+        total_fiscal = body["paginacao"]["total_registros"]
+        self.assertLess(total_fiscal, total_admin)
+        self.assertEqual(total_fiscal, len(body["ordens"]))
+
+    def test_get_os_de_outra_equipe_da_403(self):
+        """OS-2026-004 e do Jose Almeida (34570), da outra supervisao."""
+        token = self._login_como("Carlos Mendes")
+        r = self.client.get("/ordens/OS-2026-004", headers=self._auth_header(token))
+        self.assertEqual(r.status_code, 403)
+
+    def test_get_os_propria_funciona(self):
+        """OS-2026-003 tem o Carlos Mendes (34567) designado."""
+        token = self._login_como("Carlos Mendes")
+        r = self.client.get("/ordens/OS-2026-003", headers=self._auth_header(token))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["numero_os"], "OS-2026-003")
+
+    def test_get_os_inexistente_da_404(self):
         token = self._login()
-        r = self.client.get("/ordens/OS-999", headers=self._auth_header(token))
+        r = self.client.get("/ordens/OS-9999", headers=self._auth_header(token))
         self.assertEqual(r.status_code, 404)
 
-    @patch("backend.main.consultar_os_por_numero", return_value=_MOCK_OS_LIST[0])
-    @patch("backend.main._filtrar_por_hierarquia", return_value=[])
-    def test_get_os_no_permission(self, _mock_filtrar, _mock_consultar):
-        """Fiscal sem permissao para a OS recebe 403."""
-        token = self._login()
-        r = self.client.get("/ordens/OS-001", headers=self._auth_header(token))
-        self.assertEqual(r.status_code, 403)
+    def test_relatorio_csv_respeita_a_hierarquia(self):
+        """O CSV nao pode exportar o que a tela nao mostra."""
+        token = self._login_como("Carlos Mendes")
+        r = self.client.get("/relatorios/ordens", headers=self._auth_header(token))
+        self.assertEqual(r.status_code, 200, r.text)
+        linhas = [ln for ln in r.text.splitlines() if ln.strip()]
+        # OS-2026-004 e do Jose Almeida, nao pode estar no arquivo
+        self.assertNotIn("OS-2026-004", r.text)
+        self.assertGreater(len(linhas), 1, "deveria haver ao menos o cabecalho e uma OS")
 
     def test_list_os_no_token(self):
         r = self.client.get("/ordens")
         self.assertEqual(r.status_code, 401)
+
+
+class TestTrocaDeSenhaObrigatoria(IntegrationTestBase):
+    """
+    A flag must_change_password precisa bloquear a API, nao so a tela: o
+    login emite token normalmente com ela ativa.
+    """
+
+    def _token_com_troca_pendente(self) -> tuple[str, str]:
+        h = self._admin_header()
+        supervisoes = self.client.get("/admin/supervisoes", headers=h).json()
+        s = supervisoes[0]
+        criado = self.client.post(
+            "/admin/users",
+            json={
+                "username": "Pendente",
+                "role": "fiscal",
+                "gerencia_id": s["gerencia_id"],
+                "supervisao_id": s["id"],
+                "matricula": "55555",
+            },
+            headers=h,
+        ).json()
+        temporaria = criado["temporary_password"]
+        r = self.client.post(
+            "/auth/login", json={"username": "Pendente", "password": temporaria}
+        )
+        self.assertTrue(r.json()["must_change_password"])
+        return r.json()["token"], temporaria
+
+    def test_api_bloqueada_enquanto_a_troca_esta_pendente(self):
+        token, _ = self._token_com_troca_pendente()
+        for rota in ("/ordens", "/alertas", "/relatorios/ordens"):
+            with self.subTest(rota=rota):
+                r = self.client.get(rota, headers=self._auth_header(token))
+                self.assertEqual(r.status_code, 403, f"{rota}: {r.text}")
+                self.assertIn("Troca de senha", r.json()["detail"])
+
+    def test_troca_de_senha_continua_acessivel(self):
+        token, temporaria = self._token_com_troca_pendente()
+        r = self.client.post(
+            "/auth/change-password",
+            json={"current_password": temporaria, "new_password": "Nova@1234"},
+            headers=self._auth_header(token),
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        # E depois da troca a API volta a responder, com o mesmo token
+        r2 = self.client.get("/ordens", headers=self._auth_header(token))
+        self.assertEqual(r2.status_code, 200, r2.text)
+
+    def test_senha_temporaria_e_diferente_a_cada_usuario(self):
+        """
+        Nao pode existir uma senha padrao compartilhada: quem a conhecesse
+        entraria em qualquer conta ainda nao trocada.
+        """
+        h = self._admin_header()
+        s = self.client.get("/admin/supervisoes", headers=h).json()[0]
+        senhas = set()
+        for i in range(3):
+            criado = self.client.post(
+                "/admin/users",
+                json={
+                    "username": f"Aleatorio {i}",
+                    "role": "fiscal",
+                    "gerencia_id": s["gerencia_id"],
+                    "supervisao_id": s["id"],
+                    "matricula": f"6666{i}",
+                },
+                headers=h,
+            ).json()
+            senhas.add(criado["temporary_password"])
+        self.assertEqual(len(senhas), 3)
+
+    def test_reset_gera_senha_nova_a_cada_chamada(self):
+        h = self._admin_header()
+        users = self.client.get("/admin/users", headers=h).json()
+        alvo = next(u for u in users if u["role"] == "fiscal")
+        primeira = self.client.post(
+            f"/admin/users/{alvo['id']}/reset-password", headers=h
+        ).json()["temporary_password"]
+        segunda = self.client.post(
+            f"/admin/users/{alvo['id']}/reset-password", headers=h
+        ).json()["temporary_password"]
+        self.assertNotEqual(primeira, segunda)
+        # A ultima e que vale
+        r = self.client.post(
+            "/auth/login", json={"username": alvo["username"], "password": segunda}
+        )
+        self.assertEqual(r.status_code, 200)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -664,7 +942,7 @@ class TestDashboardEndpoints(IntegrationTestBase):
     @patch("backend.main.listar_ordens_servico", return_value=_MOCK_OS_LIST)
     @patch("backend.main.gerar_dashboard", return_value={"total_os": 2})
     def test_dashboard_non_admin_forbidden(self, _mock_dash, _mock_os):
-        token = self._login("Carlos Mendes", "temp1234")
+        token = self._login_como("Carlos Mendes")
         r = self.client.get("/admin/dashboard", headers=self._auth_header(token))
         self.assertEqual(r.status_code, 403)
 
@@ -681,7 +959,7 @@ class TestEndToEndFlows(IntegrationTestBase):
         """Admin cria usuario -> usuario faz login -> must_change_password = True."""
         h = self._admin_header()
         gid, sid = self._get_valid_ids(h)
-        self.client.post(
+        criado = self.client.post(
             "/admin/users",
             json={
                 "username": "Teste E2E",
@@ -691,10 +969,11 @@ class TestEndToEndFlows(IntegrationTestBase):
                 "matricula": "44444",
             },
             headers=h,
-        )
-        # Login com senha padrao
+        ).json()
+        # Login com a senha temporaria devolvida na criacao
         r = self.client.post(
-            "/auth/login", json={"username": "Teste E2E", "password": "temp1234"}
+            "/auth/login",
+            json={"username": "Teste E2E", "password": criado["temporary_password"]},
         )
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["must_change_password"])
@@ -703,7 +982,7 @@ class TestEndToEndFlows(IntegrationTestBase):
         """Admin cria usuario -> usuario troca senha -> login com nova senha."""
         h = self._admin_header()
         gid, sid = self._get_valid_ids(h)
-        self.client.post(
+        criado = self.client.post(
             "/admin/users",
             json={
                 "username": "Senha E2E",
@@ -713,23 +992,26 @@ class TestEndToEndFlows(IntegrationTestBase):
                 "matricula": "33333",
             },
             headers=h,
-        )
+        ).json()
+        temporaria = criado["temporary_password"]
+
         # Login do novo usuario
         r_login = self.client.post(
-            "/auth/login", json={"username": "Senha E2E", "password": "temp1234"}
+            "/auth/login", json={"username": "Senha E2E", "password": temporaria}
         )
         token = r_login.json()["token"]
 
         # Troca senha
-        self.client.post(
+        r_troca = self.client.post(
             "/auth/change-password",
-            json={"current_password": "temp1234", "new_password": "segura123"},
+            json={"current_password": temporaria, "new_password": "Segura@123"},
             headers=self._auth_header(token),
         )
+        self.assertEqual(r_troca.status_code, 200, r_troca.text)
 
         # Login com a nova senha
         r2 = self.client.post(
-            "/auth/login", json={"username": "Senha E2E", "password": "segura123"}
+            "/auth/login", json={"username": "Senha E2E", "password": "Segura@123"}
         )
         self.assertEqual(r2.status_code, 200)
         self.assertFalse(r2.json()["must_change_password"])
@@ -799,7 +1081,7 @@ class TestEndToEndFlows(IntegrationTestBase):
         # Tenta logar
         r2 = self.client.post(
             "/auth/login",
-            json={"username": target["username"], "password": "temp1234"},
+            json={"username": target["username"], "password": SENHA_TESTE},
         )
         self.assertEqual(r2.status_code, 401)
 

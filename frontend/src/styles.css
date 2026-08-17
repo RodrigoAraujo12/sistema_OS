@@ -168,7 +168,10 @@ body {
   letter-spacing: 0.5px;
 }
 
-.btn-logout {
+/* Botoes do canto direito da topbar: fundo translucido sobre o azul, em
+   vez do estilo padrao de botao, que e claro e sumiria na barra. */
+.btn-logout,
+.btn-topbar {
   background: rgba(255, 255, 255, 0.12) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.25) !important;
@@ -179,10 +182,16 @@ body {
   transition: all 0.2s ease;
 }
 
-.btn-logout:hover {
+.btn-logout:hover,
+.btn-topbar:hover {
   background: rgba(255, 255, 255, 0.22) !important;
   transform: none !important;
   box-shadow: none !important;
+}
+
+.btn-topbar.active {
+  background: rgba(255, 255, 255, 0.26) !important;
+  font-weight: 600;
 }
 
 /* Dark mode toggle */
@@ -532,6 +541,18 @@ tr:hover td {
    tela estreita em vez de coluna espremida. */
 .tabela-ordens {
   min-width: 1450px;
+  font-size: 11.5px;
+}
+
+/* Cabecalho e celulas menores que o padrao: sao 10 colunas, a fonte
+   reduzida cabe mais linha na tela sem precisar rolar. */
+.tabela-ordens th {
+  font-size: 10.5px;
+  padding: 8px 10px;
+}
+
+.tabela-ordens td {
+  padding: 8px 10px;
 }
 
 /* Datas e contadores nao devem quebrar em duas linhas */
@@ -540,6 +561,51 @@ tr:hover td {
 .tabela-ordens td:nth-child(9),
 .tabela-ordens td:nth-child(10) {
   white-space: nowrap;
+}
+
+/* Numero da OS + botao de copiar */
+.os-numero-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+/* Reset completo do estilo global de button (fundo azul, padding, hover
+   com translate) — aqui e so o icone. */
+.btn-copiar-os {
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 2px;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+/* So aparece de vez quando o mouse esta na linha, para nao poluir a
+   coluna com 20 icones sempre acesos. */
+.os-row-clickable:hover .btn-copiar-os {
+  opacity: 0.8;
+}
+
+.btn-copiar-os:hover {
+  background: var(--btn-secondary-hover);
+  color: var(--text-primary);
+  opacity: 1;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-copiar-os:focus-visible {
+  opacity: 1;
+  outline: 2px solid #1a3a6c;
+  outline-offset: 1px;
 }
 
 th.th-sortable {

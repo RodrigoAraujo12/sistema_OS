@@ -105,6 +105,16 @@ class UserResponse(BaseModel):
     supervisao_name: str | None = None
 
 
+class UserCreatedResponse(UserResponse):
+    """
+    Resposta da criacao de usuario.
+
+    Carrega a senha temporaria porque e o unico momento em que ela existe
+    em texto: e gerada aleatoria e so o hash fica no banco.
+    """
+    temporary_password: str
+
+
 # ─── Senha ──────────────────────────────────────────────────────
 
 class PasswordChangeRequest(BaseModel):

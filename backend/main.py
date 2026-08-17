@@ -19,12 +19,18 @@ from fpdf import FPDF
 from sqlite3 import IntegrityError
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from .auth import AuthService, PasswordHasher, TokenStore
-from .config import APP_TITLE, CORS_ORIGINS, DEFAULT_PASSWORD, setup_logging
+from .auth import (
+    AuthService,
+    LimitadorLogin,
+    PasswordHasher,
+    TokenStore,
+    gerar_senha_temporaria,
+)
+from .config import ADMIN_PASSWORD, APP_TITLE, CORS_ORIGINS, setup_logging
 from .db import (
     DB_PATH,
     Database,
@@ -33,7 +39,7 @@ from .db import (
     UserRepository,
 )
 from .external_api import (
-    _filtrar_por_hierarquia,
+    filtrar_atf_por_matriculas,
     gerar_alertas,
     gerar_dashboard,
     listar_ordens_atf,
@@ -54,6 +60,7 @@ from .schemas import (
     SupervisaoResponse,
     SupervisaoUpdateRequest,
     UserCreateRequest,
+    UserCreatedResponse,
     UserResponse,
     UserUpdateRequest,
 )
@@ -90,6 +97,7 @@ user_repo = UserRepository(database)
 gerencia_repo = GerenciaRepository(database)
 supervisao_repo = SupervisaoRepository(database)
 auth_service = AuthService(user_repo, PasswordHasher(), TokenStore())
+limitador_login = LimitadorLogin()
 
 # Cargos permitidos para usuarios comuns (admin e criado automaticamente)
 ALLOWED_ROLES = {"gerente", "supervisor", "fiscal"}
@@ -117,7 +125,17 @@ def _seed_database() -> None:
 
     if user_repo.count_users() == 0:
         logger.info("Banco vazio – criando dados iniciais (admin + seed)...")
-        auth_service.register_user("admin", "admin123", "admin")
+
+        # A senha do admin vem do .env; sem ela, gera uma aleatoria e
+        # registra no log. Em nenhum caso ha credencial fixa no codigo.
+        admin_password = ADMIN_PASSWORD or gerar_senha_temporaria()
+        auth_service.register_user("admin", admin_password, "admin")
+        if not ADMIN_PASSWORD:
+            logger.warning(
+                "ADMIN_PASSWORD nao definido no .env. Senha gerada para 'admin': %s "
+                "— anote agora, ela nao sera exibida de novo.",
+                admin_password,
+            )
 
         # Gerencias de exemplo
         gerencias = [
@@ -143,6 +161,10 @@ def _seed_database() -> None:
             4: gerencias[2], 5: gerencias[2],  # Tributacao
         }
 
+        # Os usuarios do seed nascem com senha aleatoria individual, que e
+        # descartada: ninguem precisa dela. O acesso se da pelo admin, que
+        # usa "Resetar Senha" e recebe uma senha nova na hora.
+
         # ── Gerentes (1 por gerencia, matriculas 12345-12347) ─────
         gerentes = [
             ("Roberto Santos", "12345", gerencias[0]),
@@ -152,7 +174,7 @@ def _seed_database() -> None:
         for nome, mat, gid in gerentes:
             auth_service.register_user_with_options(
                 username=nome,
-                password=DEFAULT_PASSWORD,
+                password=gerar_senha_temporaria(),
                 role="gerente",
                 gerencia_id=gid,
                 supervisao_id=None,
@@ -172,7 +194,7 @@ def _seed_database() -> None:
         for index, (nome, mat) in enumerate(supervisores):
             auth_service.register_user_with_options(
                 username=nome,
-                password=DEFAULT_PASSWORD,
+                password=gerar_senha_temporaria(),
                 role="supervisor",
                 gerencia_id=sup_ger[index],
                 supervisao_id=supervisoes[index],
@@ -207,7 +229,7 @@ def _seed_database() -> None:
         for nome, mat, sup_idx in fiscais:
             auth_service.register_user_with_options(
                 username=nome,
-                password=DEFAULT_PASSWORD,
+                password=gerar_senha_temporaria(),
                 role="fiscal",
                 gerencia_id=sup_ger[sup_idx],
                 supervisao_id=supervisoes[sup_idx],
@@ -224,14 +246,43 @@ def _seed_database() -> None:
 
 
 def get_current_user(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    """Extrai e valida o token Bearer do header Authorization."""
+    """
+    Extrai e valida o token Bearer do header Authorization.
+
+    NAO verifica must_change_password — use apenas em endpoints que o
+    usuario precisa alcancar justamente para trocar a senha. Todo o resto
+    da API depende de get_active_user.
+    """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token ausente")
     token = authorization.split(" ", 1)[1]
     user = auth_service.get_user_from_token(token)
     if not user:
-        logger.warning("Tentativa de acesso com token invalido.")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido")
+        logger.warning("Tentativa de acesso com token invalido, revogado ou vencido.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sessao invalida ou expirada. Entre novamente.",
+        )
+    # O token acompanha o usuario para que logout e troca de senha possam
+    # revogar sessoes sem reabrir o header.
+    user["token_sessao"] = token
+    return user
+
+
+def get_active_user(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """
+    Usuario autenticado E com a senha ja definida.
+
+    O bloqueio precisa estar aqui, no backend: a tela de troca de senha do
+    frontend nao protege nada contra quem chama a API direto com o token
+    devolvido pelo login, que e emitido normalmente mesmo com a flag ativa.
+    """
+    if user.get("must_change_password"):
+        logger.info("Acesso bloqueado – troca de senha pendente (user=%s).", user["username"])
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Troca de senha obrigatoria antes de usar o sistema.",
+        )
     return user
 
 
@@ -245,12 +296,33 @@ def require_admin(user: dict[str, Any]) -> None:
 # ─── Auth ───────────────────────────────────────────────────────
 
 @app.post("/auth/login", response_model=LoginResponse)
-def login(payload: LoginRequest) -> LoginResponse:
-    """Autentica o usuario e retorna um token de acesso."""
+def login(payload: LoginRequest, request: Request) -> LoginResponse:
+    """
+    Autentica o usuario e retorna um token de acesso.
+
+    O bloqueio por tentativas e conferido antes de verificar a senha: alem
+    de conter forca bruta, evita que uma rajada gaste CPU com PBKDF2.
+    """
+    ip = request.client.host if request.client else None
+    espera = limitador_login.segundos_de_bloqueio(payload.username, ip)
+    if espera:
+        logger.warning(
+            "Login bloqueado por excesso de tentativas (usuario='%s', ip=%s).",
+            payload.username, ip,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Muitas tentativas. Tente novamente em {espera // 60 + 1} minuto(s).",
+            headers={"Retry-After": str(espera)},
+        )
+
     user = auth_service.authenticate_user(payload.username, payload.password)
     if not user:
-        logger.info("Login falhou para usuario '%s'.", payload.username)
+        limitador_login.registrar_falha(payload.username, ip)
+        logger.info("Login falhou para usuario '%s' (ip=%s).", payload.username, ip)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciais invalidas")
+
+    limitador_login.registrar_sucesso(payload.username)
     token = auth_service.create_token(int(user["id"]))
     logger.info("Login bem-sucedido: usuario '%s' (role=%s).", user["username"], user["role"])
     return LoginResponse(
@@ -271,12 +343,32 @@ def login(payload: LoginRequest) -> LoginResponse:
 def change_password(
     payload: PasswordChangeRequest, user: dict[str, Any] = Depends(get_current_user)
 ) -> dict[str, str]:
-    """Permite que o usuario autenticado troque sua propria senha."""
+    """
+    Permite que o usuario autenticado troque sua propria senha.
+
+    Unico endpoint em get_current_user em vez de get_active_user: quem tem
+    must_change_password pendente precisa justamente chegar aqui.
+    """
     if not auth_service.authenticate_user(user["username"], payload.current_password):
         logger.info("Troca de senha falhou – senha atual incorreta (user=%s).", user["username"])
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Senha atual invalida")
-    auth_service.change_password(int(user["id"]), payload.new_password)
+    auth_service.change_password(
+        int(user["id"]), payload.new_password, manter_token=user.get("token_sessao"),
+    )
     logger.info("Senha alterada com sucesso para usuario '%s'.", user["username"])
+    return {"status": "ok"}
+
+
+@app.post("/auth/logout")
+def logout(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, str]:
+    """
+    Encerra a sessao atual no servidor.
+
+    Sem isto, sair da aplicacao apenas descartava o token no navegador — no
+    backend ele continuava valido ate vencer.
+    """
+    auth_service.revoke_token(user["token_sessao"])
+    logger.info("Logout de '%s'.", user["username"])
     return {"status": "ok"}
 
 
@@ -284,7 +376,7 @@ def change_password(
 
 @app.post("/admin/gerencias", response_model=GerenciaResponse)
 def create_gerencia(
-    payload: GerenciaCreateRequest, user: dict[str, Any] = Depends(get_current_user)
+    payload: GerenciaCreateRequest, user: dict[str, Any] = Depends(get_active_user)
 ) -> GerenciaResponse:
     """Cria uma nova gerencia. Apenas admin."""
     require_admin(user)
@@ -297,7 +389,7 @@ def create_gerencia(
 
 
 @app.get("/admin/gerencias", response_model=list[GerenciaResponse])
-def list_gerencias(user: dict[str, Any] = Depends(get_current_user)) -> list[GerenciaResponse]:
+def list_gerencias(user: dict[str, Any] = Depends(get_active_user)) -> list[GerenciaResponse]:
     """Lista todas as gerencias. Apenas admin."""
     require_admin(user)
     return [GerenciaResponse(**row) for row in gerencia_repo.list_gerencias()]
@@ -307,7 +399,7 @@ def list_gerencias(user: dict[str, Any] = Depends(get_current_user)) -> list[Ger
 def update_gerencia(
     gerencia_id: int,
     payload: GerenciaUpdateRequest,
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_active_user),
 ) -> dict[str, str]:
     """Atualiza o nome de uma gerencia existente. Apenas admin."""
     require_admin(user)
@@ -322,7 +414,7 @@ def update_gerencia(
 
 @app.post("/admin/supervisoes", response_model=SupervisaoResponse)
 def create_supervisao(
-    payload: SupervisaoCreateRequest, user: dict[str, Any] = Depends(get_current_user)
+    payload: SupervisaoCreateRequest, user: dict[str, Any] = Depends(get_active_user)
 ) -> SupervisaoResponse:
     """Cria uma supervisao vinculada a uma gerencia. Apenas admin."""
     require_admin(user)
@@ -335,7 +427,7 @@ def create_supervisao(
 
 
 @app.get("/admin/supervisoes", response_model=list[SupervisaoResponse])
-def list_supervisoes(user: dict[str, Any] = Depends(get_current_user)) -> list[SupervisaoResponse]:
+def list_supervisoes(user: dict[str, Any] = Depends(get_active_user)) -> list[SupervisaoResponse]:
     """Lista todas as supervisoes com nome da gerencia. Apenas admin."""
     require_admin(user)
     return [SupervisaoResponse(**row) for row in supervisao_repo.list_supervisoes()]
@@ -345,7 +437,7 @@ def list_supervisoes(user: dict[str, Any] = Depends(get_current_user)) -> list[S
 def update_supervisao(
     supervisao_id: int,
     payload: SupervisaoUpdateRequest,
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_active_user),
 ) -> dict[str, str]:
     """Atualiza nome e gerencia de uma supervisao. Apenas admin."""
     require_admin(user)
@@ -360,17 +452,24 @@ def update_supervisao(
 
 # ─── Users ──────────────────────────────────────────────────────
 
-@app.post("/admin/users", response_model=UserResponse)
+@app.post("/admin/users", response_model=UserCreatedResponse)
 def create_user(
-    payload: UserCreateRequest, user: dict[str, Any] = Depends(get_current_user)
-) -> UserResponse:
-    """Cria um novo usuario com senha padrao temporaria. Apenas admin."""
+    payload: UserCreateRequest, user: dict[str, Any] = Depends(get_active_user)
+) -> UserCreatedResponse:
+    """
+    Cria um novo usuario com senha temporaria aleatoria. Apenas admin.
+
+    A senha vai na resposta porque e a unica vez que ela existe em texto —
+    o admin precisa repassa-la ao usuario, que sera obrigado a troca-la no
+    primeiro acesso.
+    """
     require_admin(user)
     _validate_user_payload(payload.role, payload.gerencia_id, payload.supervisao_id)
+    senha_temporaria = gerar_senha_temporaria()
     try:
         user_id = auth_service.register_user_with_options(
             username=payload.username,
-            password=DEFAULT_PASSWORD,
+            password=senha_temporaria,
             role=payload.role,
             gerencia_id=payload.gerencia_id,
             supervisao_id=payload.supervisao_id,
@@ -381,12 +480,12 @@ def create_user(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Usuario ja existe") from exc
     logger.info("Usuario criado: id=%d, username='%s', role='%s'.", user_id, payload.username, payload.role)
     created = user_repo.get_user_by_id(user_id)
-    return UserResponse(**created)
+    return UserCreatedResponse(**created, temporary_password=senha_temporaria)
 
 
 @app.put("/admin/users/{user_id}")
 def update_user(
-    user_id: int, payload: UserUpdateRequest, user: dict[str, Any] = Depends(get_current_user)
+    user_id: int, payload: UserUpdateRequest, user: dict[str, Any] = Depends(get_active_user)
 ) -> dict[str, str]:
     """Atualiza dados de um usuario (exceto admin). Apenas admin."""
     require_admin(user)
@@ -412,7 +511,7 @@ def update_user(
 
 
 @app.get("/admin/users", response_model=list[UserResponse])
-def list_users(user: dict[str, Any] = Depends(get_current_user)) -> list[UserResponse]:
+def list_users(user: dict[str, Any] = Depends(get_active_user)) -> list[UserResponse]:
     """Lista todos os usuarios com suas gerencias e supervisoes. Apenas admin."""
     require_admin(user)
     return [UserResponse(**row) for row in user_repo.list_users()]
@@ -420,21 +519,22 @@ def list_users(user: dict[str, Any] = Depends(get_current_user)) -> list[UserRes
 
 @app.post("/admin/users/{user_id}/reset-password", response_model=PasswordResetResponse)
 def reset_user_password(
-    user_id: int, user: dict[str, Any] = Depends(get_current_user)
+    user_id: int, user: dict[str, Any] = Depends(get_active_user)
 ) -> PasswordResetResponse:
-    """Reseta a senha do usuario para a senha padrao temporaria. Apenas admin."""
+    """Reseta a senha do usuario para uma temporaria aleatoria. Apenas admin."""
     require_admin(user)
     target = user_repo.get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario nao encontrado")
-    auth_service.reset_password(user_id, DEFAULT_PASSWORD)
+    senha_temporaria = gerar_senha_temporaria()
+    auth_service.reset_password(user_id, senha_temporaria)
     logger.info("Senha resetada para usuario id=%d por admin '%s'.", user_id, user["username"])
-    return PasswordResetResponse(temporary_password=DEFAULT_PASSWORD)
+    return PasswordResetResponse(temporary_password=senha_temporaria)
 
 
 @app.delete("/admin/users/{user_id}")
 def delete_user(
-    user_id: int, user: dict[str, Any] = Depends(get_current_user)
+    user_id: int, user: dict[str, Any] = Depends(get_active_user)
 ) -> Response:
     """Remove um usuario do sistema. Apenas admin. Nao permite auto-exclusao."""
     require_admin(user)
@@ -463,7 +563,12 @@ def delete_user(
 # ─── Ordens de Servico (somente consulta - API externa) ────────
 
 def _build_hierarchy_filters(user: dict[str, Any]) -> dict[str, Any]:
-    """Monta os parametros de filtragem hierarquica a partir do usuario logado."""
+    """
+    Parametros de filtragem hierarquica no formato interno legado.
+
+    Usado so por /alertas, que consome o MOCK legado (com
+    matricula_supervisor). A consulta de OS usa _matriculas_visiveis.
+    """
     filters: dict[str, Any] = {
         "user_role": user["role"],
         "user_matricula": user.get("matricula"),
@@ -475,6 +580,37 @@ def _build_hierarchy_filters(user: dict[str, Any]) -> dict[str, Any]:
             int(user["gerencia_id"])
         )
     return filters
+
+
+def _matriculas_visiveis(user: dict[str, Any]) -> set[str] | None:
+    """
+    Matriculas cujas OS o usuario pode ver. None = admin, sem restricao.
+
+    A OS no formato ATF so se liga as pessoas por fiscais[].matricula, entao
+    a hierarquia vira um conjunto de matriculas resolvido no banco local:
+
+    - fiscal:     apenas a propria
+    - supervisor: a propria + todos os lotados na sua supervisao
+    - gerente:    a propria + todos os lotados na sua gerencia
+
+    Quem nao tem matricula nem lotacao recebe um conjunto vazio e nao ve
+    nenhuma OS. E o comportamento correto: um cadastro incompleto nao pode
+    virar acesso irrestrito.
+    """
+    role = user["role"]
+    if role == "admin":
+        return None
+
+    matriculas: set[str] = set()
+    if user.get("matricula"):
+        matriculas.add(str(user["matricula"]))
+
+    if role == "supervisor" and user.get("supervisao_id"):
+        matriculas.update(user_repo.get_matriculas_by_supervisao(int(user["supervisao_id"])))
+    elif role == "gerente" and user.get("gerencia_id"):
+        matriculas.update(user_repo.get_matriculas_by_gerencia(int(user["gerencia_id"])))
+
+    return matriculas
 
 
 @app.get("/ordens", response_model=OrdensATFResponse)
@@ -499,7 +635,7 @@ def list_os(
     limite: int = Query(default=20, ge=1, le=50),
     ordenar_por: str | None = Query(default=None),
     ordem: str = Query(default="asc", pattern="^(asc|desc)$"),
-    _user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_active_user),
 ) -> OrdensATFResponse:
     """Lista Ordens de Servico via API ATF (SOAP, doc da listagem) ou MOCK se ATF_BASE_URL nao configurado."""
     try:
@@ -514,18 +650,23 @@ def list_os(
             data_encerramento_fim=data_encerramento_fim,
             pagina=pagina, limite=limite,
             ordenar_por=ordenar_por, ordem=ordem,
+            matriculas_visiveis=_matriculas_visiveis(user),
         )
     except ValueError as e:
         # Erros de negocio do ATF (dsMensagemErro) viram 400 com a mensagem
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
-def _buscar_os_atf(numero: str) -> dict[str, Any]:
+def _buscar_os_atf(numero: str, user: dict[str, Any]) -> dict[str, Any]:
     """
-    Busca uma OS pelo numero no ATF.
+    Busca uma OS pelo numero no ATF, respeitando a hierarquia do usuario.
 
     O ATF nao tem servico de detalhe: usa-se o mesmo
     listarOrdensServicoWebService filtrando por numeroOS.
+
+    A busca vai sem restricao e a visibilidade e checada depois, de
+    proposito: assim da para distinguir "nao existe" (404) de "existe mas
+    nao e sua" (403), o que uma busca ja filtrada tornaria indistinguivel.
     """
     try:
         resultado = listar_ordens_atf(numero_os=numero, pagina=1, limite=1)
@@ -535,7 +676,18 @@ def _buscar_os_atf(numero: str) -> dict[str, Any]:
     ordens = resultado.get("ordens", [])
     if not ordens:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OS nao encontrada")
-    return ordens[0]
+
+    ordem = ordens[0]
+    if not filtrar_atf_por_matriculas([ordem], _matriculas_visiveis(user)):
+        logger.warning(
+            "Acesso negado a OS %s para '%s' (role=%s): fora da sua equipe.",
+            numero, user["username"], user["role"],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Esta OS nao esta designada a voce nem a sua equipe.",
+        )
+    return ordem
 
 
 # NOTA: o numero da OS contem barra (ex: 93300008.12.00000001/2026-99) e o
@@ -546,10 +698,10 @@ def _buscar_os_atf(numero: str) -> dict[str, Any]:
 
 @app.get("/ordens/{numero:path}/pdf")
 def get_os_pdf(
-    numero: str, user: dict[str, Any] = Depends(get_current_user)
+    numero: str, user: dict[str, Any] = Depends(get_active_user)
 ) -> Response:
     """Gera PDF de uma OS individual com os dados retornados pelo ATF."""
-    ordem = _buscar_os_atf(numero)
+    ordem = _buscar_os_atf(numero, user)
     numero_os = ordem.get("numero_os", numero)
 
     pdf = _PDF(f"Ordem de Servico - {numero_os}")
@@ -637,15 +789,15 @@ def get_os_pdf(
 
 @app.get("/ordens/{numero:path}", response_model=OSDetalheResponse)
 def get_os(
-    numero: str, _user: dict[str, Any] = Depends(get_current_user)
+    numero: str, user: dict[str, Any] = Depends(get_active_user)
 ) -> OSDetalheResponse:
     """Busca uma OS por numero no ATF (mesmo servico da listagem)."""
-    return OSDetalheResponse(**_buscar_os_atf(numero))
+    return OSDetalheResponse(**_buscar_os_atf(numero, user))
 
 
 @app.get("/alertas", response_model=list[AlertaResponse])
 def list_alertas(
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_active_user),
 ) -> list[AlertaResponse]:
     """Lista alertas gerados a partir das OS visiveis ao usuario."""
     filters = _build_hierarchy_filters(user)
@@ -656,7 +808,7 @@ def list_alertas(
 
 @app.get("/admin/dashboard")
 def get_dashboard(
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_active_user),
     data_inicio: str | None = Query(None, description="Filtro data inicio (YYYY-MM-DD)"),
     data_fim: str | None = Query(None, description="Filtro data fim (YYYY-MM-DD)"),
 ) -> dict[str, Any]:
@@ -775,9 +927,9 @@ def filtros_relatorio_os(
     )
 
 
-def _filtrar_ordens(f: FiltrosRelatorioOS) -> list[dict[str, Any]]:
+def _filtrar_ordens(f: FiltrosRelatorioOS, user: dict[str, Any]) -> list[dict[str, Any]]:
     """
-    Busca as OS do relatorio no ATF.
+    Busca as OS do relatorio no ATF, respeitando a hierarquia do usuario.
 
     Usa os mesmos filtros do painel de Ordens de Servico; 'search' e um
     refinamento adicional aplicado localmente sobre o resultado.
@@ -794,6 +946,7 @@ def _filtrar_ordens(f: FiltrosRelatorioOS) -> list[dict[str, Any]]:
             data_encerramento_ini=f.data_encerramento_ini,
             data_encerramento_fim=f.data_encerramento_fim,
             pagina=1, limite=_RELATORIO_LIMITE,
+            matriculas_visiveis=_matriculas_visiveis(user),
         )
     except ValueError as e:
         # Regras de negocio do ATF (ex.: filtro que exige periodo)
@@ -823,11 +976,11 @@ def _fiscais_nomes(o: dict[str, Any]) -> str:
 
 @app.get("/relatorios/ordens")
 def relatorio_ordens_csv(
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_active_user),
     filtros: FiltrosRelatorioOS = Depends(filtros_relatorio_os),
 ) -> StreamingResponse:
     """Gera relatorio CSV das Ordens de Servico com filtros."""
-    rows = _filtrar_ordens(filtros)
+    rows = _filtrar_ordens(filtros, user)
 
     output = io.StringIO()
     output.write("\ufeff")
@@ -921,11 +1074,11 @@ def _safe(val) -> str:
 
 @app.get("/relatorios/ordens/pdf")
 def relatorio_ordens_pdf(
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_active_user),
     filtros: FiltrosRelatorioOS = Depends(filtros_relatorio_os),
 ) -> Response:
     """Gera relatorio PDF das Ordens de Servico."""
-    rows = _filtrar_ordens(filtros)
+    rows = _filtrar_ordens(filtros, user)
 
     pdf = _PDF("Relatorio de Ordens de Servico")
     pdf.alias_nb_pages()
@@ -983,7 +1136,7 @@ def relatorio_ordens_pdf(
 
 @app.get("/relatorios/dashboard/pdf")
 def relatorio_dashboard_pdf(
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_active_user),
     data_inicio: str | None = Query(None),
     data_fim: str | None = Query(None),
 ) -> Response:
@@ -1108,7 +1261,7 @@ def relatorio_dashboard_pdf(
 
 @app.get("/relatorios/dashboard")
 def relatorio_dashboard_csv(
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_active_user),
     data_inicio: str | None = Query(None),
     data_fim: str | None = Query(None),
 ) -> StreamingResponse:

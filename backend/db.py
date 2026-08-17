@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +31,24 @@ class Database:
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    def connect(self) -> sqlite3.Connection:
-        """Abre uma conexao com row_factory = sqlite3.Row (acesso por nome)."""
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        """
+        Conexao com row_factory = sqlite3.Row, commit/rollback e fechamento.
+
+        O `with` do proprio sqlite3 faz commit no sucesso e rollback na
+        excecao, mas NAO fecha a conexao. Usa-lo sozinho — como era feito
+        aqui — deixava um handle aberto por chamada de metodo, esperando o
+        coletor de lixo. Este wrapper mantem o mesmo commit/rollback e
+        garante o close() no finally, sem mudar nenhum ponto de uso.
+        """
         conn = sqlite3.connect(self._path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def init_schema(self) -> None:
         """Cria as tabelas (se nao existirem) e adiciona colunas novas."""
@@ -68,22 +83,29 @@ class Database:
                 )
                 """
             )
-        # Colunas adicionadas apos a versao inicial (migracao simples)
-        self._ensure_column("users", "gerencia_id", "INTEGER")
-        self._ensure_column("users", "supervisao_id", "INTEGER")
-        self._ensure_column("users", "must_change_password", "INTEGER DEFAULT 0")
-        self._ensure_column("users", "matricula", "TEXT")
+            # Colunas adicionadas apos a versao inicial (migracao simples).
+            # Na mesma conexao das tabelas: sao operacoes de startup, nao ha
+            # motivo para abrir uma conexao por coluna.
+            for coluna, definicao in (
+                ("gerencia_id", "INTEGER"),
+                ("supervisao_id", "INTEGER"),
+                ("must_change_password", "INTEGER DEFAULT 0"),
+                ("matricula", "TEXT"),
+            ):
+                self._ensure_column(conn, "users", coluna, definicao)
         logger.info("Schema do banco inicializado com sucesso.")
 
-    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+    @staticmethod
+    def _ensure_column(
+        conn: sqlite3.Connection, table: str, column: str, definition: str,
+    ) -> None:
         """Adiciona uma coluna a tabela apenas se ainda nao existir (migracao segura)."""
-        with self.connect() as conn:
-            existing = conn.execute(f"PRAGMA table_info({table})").fetchall()
-            columns = {row["name"] for row in existing}
-            if column in columns:
-                return
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-            logger.debug("Coluna '%s' adicionada a tabela '%s'.", column, table)
+        existing = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        columns = {row["name"] for row in existing}
+        if column in columns:
+            return
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        logger.debug("Coluna '%s' adicionada a tabela '%s'.", column, table)
 
 
 class UserRepository:
@@ -200,6 +222,29 @@ class UserRepository:
         with self._db.connect() as conn:
             rows = conn.execute(
                 "SELECT matricula FROM users WHERE role = 'supervisor' AND gerencia_id = ?",
+                (gerencia_id,),
+            ).fetchall()
+        return [row["matricula"] for row in rows if row["matricula"]]
+
+    def get_matriculas_by_supervisao(self, supervisao_id: int) -> list[str]:
+        """
+        Matriculas de todos os usuarios lotados na supervisao.
+
+        Sem filtro por cargo de proposito: e a base do que um supervisor
+        enxerga, e um supervisor tambem pode estar designado em uma OS.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT matricula FROM users WHERE supervisao_id = ?",
+                (supervisao_id,),
+            ).fetchall()
+        return [row["matricula"] for row in rows if row["matricula"]]
+
+    def get_matriculas_by_gerencia(self, gerencia_id: int) -> list[str]:
+        """Matriculas de todos os usuarios lotados na gerencia (todos os cargos)."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT matricula FROM users WHERE gerencia_id = ?",
                 (gerencia_id,),
             ).fetchall()
         return [row["matricula"] for row in rows if row["matricula"]]

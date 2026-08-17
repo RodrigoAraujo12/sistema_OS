@@ -22,12 +22,33 @@ load_dotenv(_ENV_PATH)
 
 APP_TITLE: str = os.getenv("APP_TITLE", "Sistema Sefaz")
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
-DEFAULT_PASSWORD: str = os.getenv("DEFAULT_PASSWORD", "temp1234")
+
+# Senha do admin criado no primeiro boot. Sem valor no .env, o main gera
+# uma aleatoria e registra no log — nunca ha credencial fixa no codigo.
+ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "")
+
+# ─── Sessao e login ─────────────────────────────────────────────
+
+# Validade do token de sessao. O padrao e uma jornada de trabalho: sem
+# prazo, um token vazado valeria para sempre.
+SESSION_TTL_MINUTES: int = int(os.getenv("SESSION_TTL_MINUTES", "480"))
+
+# Limite de falhas de login antes do bloqueio temporario. O limite por
+# usuario protege a conta; o por IP, mais folgado, existe para nao travar
+# um predio inteiro que sai pelo mesmo IP.
+LOGIN_MAX_FALHAS_USUARIO: int = int(os.getenv("LOGIN_MAX_FALHAS_USUARIO", "5"))
+LOGIN_MAX_FALHAS_IP: int = int(os.getenv("LOGIN_MAX_FALHAS_IP", "20"))
+LOGIN_BLOQUEIO_MINUTOS: int = int(os.getenv("LOGIN_BLOQUEIO_MINUTOS", "15"))
 
 # ─── ATF API ────────────────────────────────────────────────────
 # URL base do servico ATF. Quando vazia, o sistema usa dados MOCK.
 # Exemplo: https://<host-do-atf>
 ATF_BASE_URL: str = os.getenv("ATF_BASE_URL", "")
+
+# Por quantos segundos a resposta do ATF fica em cache. O servico devolve
+# a lista inteira e nao pagina, entao sem cache cada troca de pagina ou de
+# ordenacao refaz a consulta completa. 0 desliga o cache.
+ATF_CACHE_TTL: float = float(os.getenv("ATF_CACHE_TTL", "60"))
 
 # ─── CORS ───────────────────────────────────────────────────────
 

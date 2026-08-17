@@ -69,6 +69,16 @@ class ApiClient {
     });
   }
 
+  /** Revoga a sessao no servidor. Falha em silencio: se a rede caiu ou o
+   *  token ja venceu, o logout local acontece de qualquer forma. */
+  async logout() {
+    try {
+      await this.request("/auth/logout", { method: "POST" });
+    } catch {
+      /* sessao ja invalida do outro lado — nada a fazer */
+    }
+  }
+
   // Gerencias
   listGerencias() {
     return this.request("/admin/gerencias");

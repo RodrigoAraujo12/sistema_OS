@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import apiClient from "../api.js";
-import { situacaoLabels, modeloLabels, motivoLabels, formatarData } from "../constants.js";
+import { situacaoLabels, modeloLabels, motivoLabels, orgaoExecutorOptions, formatarData } from "../constants.js";
 import { EMPTY_OS_FILTERS, validarFiltrosOS, filtrosParaPayload } from "../atfFilters.js";
 
 const LIMITE_POR_PAGINA = 20;
@@ -27,6 +27,21 @@ const COLUNAS = [
   { key: "dias_sem_evento", label: "Dias s/ Evento", tipo: "numero" },
 ];
 
+const IconeCopiar = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+  </svg>
+);
+
+const IconeCheck = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
 export default function OrdensPanel() {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [ordens, setOrdens] = useState(null); // null = ainda nao pesquisou
@@ -35,6 +50,7 @@ export default function OrdensPanel() {
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [ordenacao, setOrdenacao] = useState({ campo: null, dir: "asc" });
+  const [copiedOS, setCopiedOS] = useState(null);
 
   const [selectedOS, setSelectedOS] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -131,6 +147,34 @@ export default function OrdensPanel() {
       setDetailError(err.message || "Erro ao carregar detalhes da OS");
     } finally {
       setLoadingDetail(false);
+    }
+  }
+
+  /**
+   * Copia o numero da OS. O stopPropagation e essencial: a linha inteira e
+   * clicavel e abre o modal de detalhes — copiar nao pode disparar isso.
+   * navigator.clipboard so existe em contexto seguro (https ou localhost);
+   * em intranet http o fallback do textarea + execCommand ainda funciona.
+   */
+  async function handleCopyNumero(e, numero) {
+    e.stopPropagation();
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(numero);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = numero;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      setCopiedOS(numero);
+      setTimeout(() => setCopiedOS(atual => (atual === numero ? null : atual)), 1500);
+    } catch {
+      // Sem clipboard disponivel: o numero continua selecionavel na tela.
     }
   }
 
@@ -278,15 +322,13 @@ export default function OrdensPanel() {
               />
             </div>
             <div className="filter-group">
-              <label className="filter-label">&Oacute;rg&atilde;o Executor (c&oacute;digo)</label>
-              <input
-                type="text"
-                name="orgao_executor"
-                value={filters.orgao_executor}
-                onChange={handleFilterChange}
-                placeholder="Ex: 5"
-                className="filter-select"
-              />
+              <label className="filter-label">&Oacute;rg&atilde;o Executor</label>
+              <select name="orgao_executor" value={filters.orgao_executor} onChange={handleFilterChange} className="filter-select">
+                <option value="">Todos</option>
+                {orgaoExecutorOptions.map(({ codigo, sigla }) => (
+                  <option key={codigo} value={codigo}>{sigla} ({codigo})</option>
+                ))}
+              </select>
             </div>
           </div>
 
@@ -444,7 +486,20 @@ export default function OrdensPanel() {
                           onClick={() => handleOSClick(numeroOS)}
                           title="Clique para ver detalhes"
                         >
-                          <td><strong>{numeroOS}</strong></td>
+                          <td>
+                            <span className="os-numero-cell">
+                              <strong>{numeroOS}</strong>
+                              <button
+                                type="button"
+                                className="btn-copiar-os"
+                                title={copiedOS === numeroOS ? "Copiado!" : "Copiar número da OS"}
+                                aria-label={`Copiar número da OS ${numeroOS}`}
+                                onClick={(e) => handleCopyNumero(e, numeroOS)}
+                              >
+                                {copiedOS === numeroOS ? <IconeCheck /> : <IconeCopiar />}
+                              </button>
+                            </span>
+                          </td>
                           <td>{os.razao_social || "-"}</td>
                           <td>{os.modelo || "-"}</td>
                           <td>{os.motivo_abertura || "-"}</td>

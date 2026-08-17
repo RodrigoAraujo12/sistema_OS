@@ -34,7 +34,8 @@ export default function LoginPage({ onLogin }) {
             <input
               value={loginForm.username}
               onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
-              placeholder="admin"
+              placeholder="Seu usu&aacute;rio"
+              autoComplete="username"
             />
           </label>
           <label>
@@ -43,17 +44,15 @@ export default function LoginPage({ onLogin }) {
               type="password"
               value={loginForm.password}
               onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-              placeholder="admin123"
+              placeholder="Sua senha"
+              autoComplete="current-password"
             />
           </label>
           <button type="submit">Entrar</button>
         </form>
-        {import.meta.env.DEV && (
-          <div className="hint">
-            <div>Admin: admin / admin123</div>
-            <div>Supervisor: Patricia Oliveira / temp1234</div>
-          </div>
-        )}
+        {/* O bloco de credenciais de exemplo saiu daqui: nao existe mais
+            senha padrao. Cada usuario recebe uma temporaria aleatoria, que
+            o admin ve uma unica vez na criacao ou no reset. */}
         {error && <div className="alert error">{error}</div>}
       </div>
     </div>

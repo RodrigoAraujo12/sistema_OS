@@ -104,6 +104,39 @@ export const motivoLabels = {
   241: "MONITORAMENTO SMPC",
 };
 
+/** Orgaos executores de OS (codigo no ATF => sigla).
+ *  Lista fechada, informada pela area fiscal em 17/08/2026. O ATF nao
+ *  expoe endpoint para consultar esses codigos, entao ficam fixos aqui —
+ *  se a area criar/extinguir um orgao, e aqui que se atualiza. */
+export const orgaoExecutorLabels = {
+  4: "GR2",
+  5: "GR3",
+  147: "P.F-N LOPES-CAJAZEIR",
+  254: "GOFE-GEFTE",
+  255: "SUPEA-GOFE",
+  275: "GOFSE",
+  337: "SGFE-GR4",
+  339: "GOFMT",
+  378: "SGFMT-GR3",
+  379: "SGFE-GR5",
+  380: "SGFE-GR2",
+  383: "SGFMT-GR1",
+  384: "SGFE-GR3",
+  512: "GOFITCD/IPVA",
+  513: "GOAC",
+  535: "SF-SGFE-GR1",
+  575: "GOP-GEFTE",
+  629: "GECOF",
+};
+
+/** Opcoes do filtro de orgao executor, em ordem alfabetica pela sigla.
+ *  Diferente de modelo/motivo, aqui a sigla vem antes do codigo: quem usa
+ *  o filtro conhece a sigla e nao o numero, e num <select> nativo digitar
+ *  as primeiras letras so salta para a opcao quando o texto comeca por elas. */
+export const orgaoExecutorOptions = Object.entries(orgaoExecutorLabels)
+  .map(([codigo, sigla]) => ({ codigo, sigla }))
+  .sort((a, b) => a.sigla.localeCompare(b.sigla, "pt-BR"));
+
 /** Mantido para compatibilidade com componentes de dashboard. */
 export const statusLabels = {
   aberta: "Aberta",

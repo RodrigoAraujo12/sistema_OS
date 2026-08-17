@@ -82,6 +82,12 @@ export default function TopBar({
           <span>{authData.username}</span>
           <span className="user-badge">{authData.role}</span>
         </div>
+        <button
+          className={`btn-topbar${activeMenu === "senha" ? " active" : ""}`}
+          onClick={() => onMenuChange("senha")}
+        >
+          Trocar Senha
+        </button>
         <button className="btn-logout" onClick={onLogout}>
           Sair
         </button>

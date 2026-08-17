@@ -7,7 +7,7 @@
 
 import React, { useState } from "react";
 import apiClient from "../api.js";
-import { situacaoLabels, modeloLabels, motivoLabels } from "../constants.js";
+import { situacaoLabels, modeloLabels, motivoLabels, orgaoExecutorOptions } from "../constants.js";
 import { EMPTY_OS_FILTERS, validarFiltrosOS } from "../atfFilters.js";
 
 const SITUACOES = Object.entries(situacaoLabels);
@@ -203,9 +203,13 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
                 onChange={handleFilterChange} placeholder="Ex: 12" />
             </div>
             <div className="filter-group">
-              <label>&Oacute;rg&atilde;o Executor (c&oacute;digo)</label>
-              <input type="text" name="orgao_executor" value={filters.orgao_executor}
-                onChange={handleFilterChange} placeholder="Ex: 5" />
+              <label>&Oacute;rg&atilde;o Executor</label>
+              <select name="orgao_executor" value={filters.orgao_executor} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                {orgaoExecutorOptions.map(({ codigo, sigla }) => (
+                  <option key={codigo} value={codigo}>{sigla} ({codigo})</option>
+                ))}
+              </select>
             </div>
           </div>
 

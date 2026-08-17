@@ -86,11 +86,13 @@ export default function App() {
   }, [darkMode]);
 
   useEffect(() => {
-    if (authData) {
-      apiClient.setToken(authData.token);
-      setActiveMenu("ordens");
-      refreshAllData();
-    }
+    if (!authData) return;
+    apiClient.setToken(authData.token);
+    setActiveMenu("ordens");
+    // Com a troca de senha pendente o backend recusa todo o resto da API
+    // (403), entao nao ha o que carregar ainda — os dados vem depois da
+    // troca, quando este efeito roda de novo.
+    if (!authData.must_change_password) refreshAllData();
   }, [authData]);
 
   // ─── Data fetching ──────────────────────────────────
@@ -148,7 +150,10 @@ export default function App() {
     setAuthData((prev) => ({ ...prev, must_change_password: false }));
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    // Revoga no servidor antes de limpar o token daqui — na ordem inversa
+    // o cliente nao teria mais como se autenticar para pedir a revogacao.
+    await apiClient.logout();
     setAuthData(null);
     apiClient.setToken(null);
     setGerencias([]);
@@ -168,7 +173,7 @@ export default function App() {
   }
 
   if (authData.must_change_password) {
-    return <ChangePasswordPage onPasswordChanged={handlePasswordChanged} />;
+    return <ChangePasswordPage onPasswordChanged={handlePasswordChanged} obrigatoria />;
   }
 
   return (
@@ -241,6 +246,10 @@ export default function App() {
             onMessage={setMessage}
             onError={setError}
           />
+        )}
+
+        {activeMenu === "senha" && (
+          <ChangePasswordPage onPasswordChanged={() => setMessage("Senha alterada com sucesso.")} />
         )}
       </div>
     </>

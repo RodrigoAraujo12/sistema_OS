@@ -11,7 +11,12 @@ import logging
 import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timezone
+from threading import Lock
+from time import monotonic
 from typing import Any
+from xml.sax.saxutils import escape as _escape_xml
+
+from .config import ATF_CACHE_TTL
 
 logger = logging.getLogger("sefaz.external_api")
 
@@ -206,6 +211,33 @@ def _filtrar_por_hierarquia(
         ]
 
     return ordens
+
+
+def filtrar_atf_por_matriculas(
+    ordens: list[dict[str, Any]],
+    matriculas_visiveis: set[str] | None,
+) -> list[dict[str, Any]]:
+    """
+    Restringe OS no formato ATF as matriculas que o usuario pode enxergar.
+
+    None = sem restricao (admin). Conjunto vazio = nao ve nada — esse e o
+    resultado correto para quem nao tem matricula ou equipe, e nao "ve
+    tudo": este filtro falha fechado de proposito.
+
+    O formato ATF nao tem 'matricula_supervisor', que e do formato legado
+    usado por alertas e dashboard. A unica ligacao entre a OS e as pessoas
+    e a lista fiscais[].matricula, entao a hierarquia inteira e resolvida
+    como um conjunto de matriculas montado no banco local (ver
+    _matriculas_visiveis, em main.py).
+    """
+    if matriculas_visiveis is None:
+        return ordens
+    if not matriculas_visiveis:
+        return []
+    return [
+        o for o in ordens
+        if any(f.get("matricula") in matriculas_visiveis for f in o.get("fiscais", []))
+    ]
 
 
 def listar_ordens_servico(
@@ -1021,9 +1053,10 @@ def _filtrar_mock_atf(
     data_encerramento_fim: str | None = None,
     pagina: int = 1,
     limite: int = 20,
+    matriculas_visiveis: set[str] | None = None,
 ) -> dict[str, Any]:
     """Filtra o mock ATF e retorna paginacao + ordens."""
-    resultados = list(_MOCK_ATF_ORDENS)
+    resultados = filtrar_atf_por_matriculas(list(_MOCK_ATF_ORDENS), matriculas_visiveis)
 
     if numero_os:
         resultados = [o for o in resultados if o["numero_os"] == numero_os]
@@ -1114,6 +1147,77 @@ def _filtrar_mock_atf(
 _ATF_WS_PATH = "/<caminho-do-servico>"
 
 
+# ─── Cache das respostas do ATF ──────────────────────────────────
+#
+# O servico devolve a lista completa e nao pagina — a paginacao e feita
+# aqui. Sem cache, virar de pagina ou clicar num cabecalho para ordenar
+# refazia a consulta inteira, com timeout de 60s. O cache guarda a
+# resposta crua por alguns segundos para que paginacao, ordenacao e o
+# relatorio dos mesmos filtros reaproveitem uma unica ida ao ATF.
+
+
+class _CacheATF:
+    """
+    Cache por tempo das listas devolvidas pelo ATF.
+
+    A chave e o XML de parametros enviado ao servico: a representacao
+    exata do que foi pedido, que nao tem como sair de sincronia com os
+    filtros da funcao.
+
+    O usuario NAO entra na chave. Isso e proposital e seguro porque o que
+    se guarda e a resposta crua do ATF — a filtragem por hierarquia roda
+    depois, por requisicao, em listar_ordens_atf. Guardar ja filtrado por
+    usuario e que seria perigoso, porque uma chave montada errado passaria
+    a servir dados de um usuario para outro.
+    """
+
+    def __init__(self, ttl_segundos: float, max_entradas: int = 32) -> None:
+        self._ttl = ttl_segundos
+        self._max = max_entradas
+        self._dados: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        self._lock = Lock()
+
+    def get(self, chave: str) -> list[dict[str, Any]] | None:
+        if self._ttl <= 0:
+            return None
+        agora = monotonic()
+        with self._lock:
+            item = self._dados.get(chave)
+            if item is None:
+                return None
+            gravado_em, ordens = item
+            if agora - gravado_em > self._ttl:
+                del self._dados[chave]
+                return None
+            # Copia rasa na saida: quem chama preenche dias_execucao nas OS.
+            # Sem a copia, duas requisicoes simultaneas mexeriam nos mesmos
+            # dicionarios — e a segunda ainda os veria alterados pela primeira.
+            return [dict(o) for o in ordens]
+
+    def set(self, chave: str, ordens: list[dict[str, Any]]) -> None:
+        if self._ttl <= 0:
+            return
+        agora = monotonic()
+        with self._lock:
+            for k in [k for k, (t, _) in self._dados.items() if agora - t > self._ttl]:
+                del self._dados[k]
+            if len(self._dados) >= self._max:
+                del self._dados[min(self._dados, key=lambda k: self._dados[k][0])]
+            self._dados[chave] = (agora, [dict(o) for o in ordens])
+
+    def limpar(self) -> None:
+        with self._lock:
+            self._dados.clear()
+
+
+_cache_atf = _CacheATF(ATF_CACHE_TTL)
+
+
+def limpar_cache_atf() -> None:
+    """Descarta o cache do ATF. Usado pelos testes e util para depuracao."""
+    _cache_atf.limpar()
+
+
 def _data_para_atf(data_iso: str) -> str:
     """Converte YYYY-MM-DD (formato interno) para dd/mm/aaaa (ATF)."""
     try:
@@ -1168,8 +1272,15 @@ def _montar_parametros_atf(
     campos: list[str] = []
 
     def _add(tag: str, valor: Any) -> None:
+        # O escape e obrigatorio: os valores vem da query string do usuario.
+        # Sem ele da para (a) fechar a tag e injetar um filtro que o usuario
+        # nao deveria controlar — "X</numeroOS><cdOrgaoExec>629</cdOrgaoExec>"
+        # — e (b) fechar o CDATA do envelope com "]]>" e escrever direto no
+        # corpo SOAP. Escapar o ">" resolve os dois: sem ">" literal nao se
+        # forma a sequencia "]]>", e o ATF desfaz o escape ao reparsear o
+        # conteudo do CDATA como XML.
         if valor not in (None, ""):
-            campos.append(f"<{tag}>{valor}</{tag}>")
+            campos.append(f"<{tag}>{_escape_xml(str(valor))}</{tag}>")
 
     _add("numeroOS", numero_os)
     _add("cdModeloOS", modelo)
@@ -1487,6 +1598,12 @@ def _chamar_atf_https(
         data_encerramento_ini=data_encerramento_ini,
         data_encerramento_fim=data_encerramento_fim,
     )
+    chave = f"{url}|{parametros}"
+    em_cache = _cache_atf.get(chave)
+    if em_cache is not None:
+        logger.debug("Cache ATF: reaproveitando %d OS para %s", len(em_cache), parametros)
+        return em_cache
+
     envelope = _montar_envelope_soap(parametros)
 
     try:
@@ -1497,10 +1614,17 @@ def _chamar_atf_https(
             timeout=60,
         )
         resp.raise_for_status()
-        return _parse_resposta_soap(resp.text)
+        ordens = _parse_resposta_soap(resp.text)
     except Exception:
         logger.exception("Erro ao chamar API ATF em %s", url)
         raise
+
+    # So o sucesso vai para o cache: erro de negocio do ATF (ValueError) e
+    # falha de rede sobem sem serem guardados, para nao repetir a mesma
+    # resposta ruim durante todo o TTL.
+    _cache_atf.set(chave, ordens)
+    logger.debug("Cache ATF: %d OS guardadas para %s", len(ordens), parametros)
+    return ordens
 
 
 # ─── Campos calculados (demanda Pedro Henrique) ──────────────────
@@ -1595,6 +1719,7 @@ def listar_ordens_atf(
     limite: int = 20,
     ordenar_por: str | None = None,
     ordem: str = "asc",
+    matriculas_visiveis: set[str] | None = None,
 ) -> dict[str, Any]:
     """
     Lista OS via API ATF.
@@ -1607,6 +1732,11 @@ def listar_ordens_atf(
 
     ordenar_por aceita os campos de _ORDENACAO_ATF; a ordenacao roda sobre
     o conjunto inteiro, antes do recorte da pagina.
+
+    matriculas_visiveis aplica a hierarquia do usuario (None = admin). Ela
+    entra antes da ordenacao e da paginacao de proposito: filtrar depois
+    deixaria total_registros e total_paginas contando OS que o usuario nao
+    pode ver, e ainda entregaria paginas parcialmente vazias.
     """
     from .config import ATF_BASE_URL
 
@@ -1639,6 +1769,7 @@ def listar_ordens_atf(
             razao_social=razao_social,
             data_ciencia_ini=data_ciencia_ini, data_ciencia_fim=data_ciencia_fim,
         )
+        ordens = filtrar_atf_por_matriculas(ordens, matriculas_visiveis)
         # dias_execucao vem calculado do ATF; completa localmente se faltar
         for o in ordens:
             if o.get("dias_execucao") is None:
@@ -1657,6 +1788,7 @@ def listar_ordens_atf(
         data_encerramento_ini=data_encerramento_ini,
         data_encerramento_fim=data_encerramento_fim,
         pagina=pagina, limite=limite,
+        matriculas_visiveis=matriculas_visiveis,
     )
     # Medias calculadas sobre TODO o universo mock (nao apenas a pagina)
     medias = _calcular_medias_modelo_motivo(_MOCK_ATF_ORDENS, hoje)
