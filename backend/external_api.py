@@ -20,6 +20,7 @@ from time import monotonic
 from typing import Any
 from xml.sax.saxutils import escape as _escape_xml
 
+from . import config
 from .config import ATF_CACHE_TTL
 
 logger = logging.getLogger("sefaz.external_api")
@@ -1338,7 +1339,9 @@ def _detalhe_mock_atf(numero_os: str) -> dict[str, Any] | None:
 # O retorno traz TODOS os dados de cada OS (inclusive os campos
 # calculados) e NAO e paginado — a paginacao e feita neste backend.
 
-_ATF_WS_PATH = "/<caminho-do-servico>"
+# Vem do .env (ATF_WS_PATH) — ver backend/config.py.
+def _atf_ws_path() -> str:
+    return config.ATF_WS_PATH
 
 
 # ─── Cache das respostas do ATF ──────────────────────────────────
@@ -1837,7 +1840,7 @@ def _chamar_atf_https(
     import requests
 
     base = base_url.rstrip("/")
-    url = base if base.endswith("OrdemServico") else f"{base}{_ATF_WS_PATH}"
+    url = base if base.endswith("OrdemServico") else f"{base}{_atf_ws_path()}"
 
     parametros = _montar_parametros_atf(
         numero_os=numero_os, modelo=modelo, motivo_abertura=motivo_abertura,
@@ -2285,7 +2288,7 @@ def _chamar_detalhe_atf_https(base_url: str, numero_os: str) -> dict[str, Any] |
     import requests
 
     base = base_url.rstrip("/")
-    url = base if base.endswith("OrdemServico") else f"{base}{_ATF_WS_PATH}"
+    url = base if base.endswith("OrdemServico") else f"{base}{_atf_ws_path()}"
 
     chave = f"{url}|detalhe|{numero_os}"
     em_cache = _cache_detalhe_atf.get(chave)

@@ -548,9 +548,10 @@ class TestAmbienteDoDetalheATF(unittest.TestCase):
         resp.raise_for_status = MagicMock()
         with patch("backend.config.ATF_BASE_URL", "https://prod.local"):
             with patch("backend.config.ATF_DETALHE_BASE_URL", "https://dev.local:8443"):
-                with patch("requests.post", return_value=resp) as post:
-                    detalhar_ordem_atf("OS-1")
-        self.assertEqual(post.call_args.args[0], "https://dev.local:8443/<caminho-do-servico>")
+                with patch("backend.config.ATF_WS_PATH", "/ws/Recurso"):
+                    with patch("requests.post", return_value=resp) as post:
+                        detalhar_ordem_atf("OS-1")
+        self.assertEqual(post.call_args.args[0], "https://dev.local:8443/ws/Recurso")
 
 
 class TestFiltrarPorHierarquia(unittest.TestCase):

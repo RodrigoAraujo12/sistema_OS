@@ -687,15 +687,14 @@ contribuinte, outra situacao e outros fiscais em cada um. Misturar
 produz um registro incoerente na tela e — pior — faria a checagem de
 hierarquia ser decidida por dados de desenvolvimento.
 
-Hoje so **desenvolvimento** (`https://<host-homologacao>`)
-responde aos dois. Em producao (`https://<host-producao>`) a
-listagem funciona, mas o detalhe levanta
-`erro de operacao ausente no ambiente` — nao foi implantado (verificado em
-21/08/2026). Por isso `ATF_BASE_URL` aponta para desenvolvimento.
+Os dois servicos nem sempre estao publicados no mesmo ambiente: pode
+haver um momento em que so o ambiente de homologacao responde aos dois,
+enquanto producao atende apenas a listagem. Por isso o ambiente ativo e
+decidido por `.env` — **nenhum endereco vive no repositorio**.
 
-Para voltar a producao quando o detalhe subir:
+Para migrar de ambiente:
 
-1. Trocar `ATF_BASE_URL` para `https://<host-producao>`.
+1. Trocar `ATF_BASE_URL` no `.env`.
 2. **Conferir o `?wsdl` de producao antes**: o nome da operacao difere
    entre os ambientes (ver a armadilha abaixo).
 3. Refazer o mapeamento de qualquer codigo do ATF guardado no banco
