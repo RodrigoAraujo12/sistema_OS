@@ -709,10 +709,11 @@ outro banco — ver `_buscar_detalhe_os_atf`, em `main.py`.
 
 ### Armadilhas da doc do detalhe
 
-- **Nome da operacao.** O elemento da requisicao e
-  `detalharOrdemServicoRequest` em desenvolvimento (como a doc descreve),
-  mas `detalharOrdemServicoRequest` em producao. Errar devolve HTTP
-  500 com o SOAP Fault `Message part [...] was not recognized`.
+- **Nome da operacao muda por ambiente.** O elemento da requisicao e
+  `detalharOrdemServicoRequest`, como a doc descreve — mas um dos
+  ambientes publica a operacao com um infixo a mais no nome. Errar
+  devolve HTTP 500 com o SOAP Fault `Message part [...] was not
+  recognized`. Sempre conferir no `?wsdl` do ambiente de destino.
 - **SOAP Fault vem com HTTP 500.** Um `raise_for_status()` seco descarta
   justamente a mensagem que explica o erro; por isso `_erro_soap()` le o
   `<faultstring>` antes de tratar como falha de transporte.

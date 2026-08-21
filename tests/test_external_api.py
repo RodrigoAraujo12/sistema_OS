@@ -222,14 +222,18 @@ class TestEnvelopeDetalheATF(unittest.TestCase):
         self.assertIn("<parametro><numeroOS>", envelope)
         self.assertIn("93300008.12.00005561/2025-59</numeroOS></parametro>", envelope)
 
-    def test_nao_usa_o_nome_da_operacao_de_producao(self):
+    def test_usa_o_nome_de_operacao_da_doc(self):
         """
-        Producao expoe "detalharOrdemServico" e desenvolvimento — o
-        unico ambiente onde o detalhe responde hoje — expoe
-        "detalharOrdemServico", como na doc. Trocar os dois derruba a
-        chamada com SOAP Fault de operacao desconhecida.
+        Cada ambiente do ATF expoe a operacao do detalhe com um nome
+        diferente (o de producao tem um infixo a mais). O envelope tem
+        de sair com o nome da doc, exatamente; qualquer variante derruba
+        a chamada com SOAP Fault de operacao desconhecida.
+
+        Os nomes por ambiente estao em NOTAS-INTERNAS.md, fora do repo.
         """
-        self.assertNotIn("detalharOrdemServico", _montar_envelope_detalhe_soap("OS-1"))
+        envelope = _montar_envelope_detalhe_soap("OS-1")
+        self.assertIn("<ns:detalharOrdemServicoRequest ", envelope)
+        self.assertNotIn("Lista", envelope)
 
     def test_numero_nao_quebra_o_cdata(self):
         """O numero vem da URL: sem escape da para sair do CDATA."""

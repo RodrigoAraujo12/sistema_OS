@@ -1901,12 +1901,13 @@ def _montar_envelope_detalhe_soap(numero_os: str) -> str:
     elemento raiz dos filtros e <parametro>, no singular (a listagem usa
     <parametros>).
 
-    ATENCAO ao nome da operacao: a doc do detalhe diz
-    "detalharOrdemServicoRequest", mas o servico so reconhece
-    "detalharOrdemServicoRequest" — com "Lista" no meio. Com o nome
-    da doc o ATF responde HTTP 500 e o SOAP Fault "Message part [...]
-    was not recognized. (Does it exist in service WSDL?)". Conferido no
-    WSDL do proprio servico (?wsdl) em 21/08/2026.
+    ATENCAO ao nome da operacao: ele MUDA conforme o ambiente do ATF.
+    Este envelope usa "detalharOrdemServicoRequest", o nome da doc, que
+    e o aceito pelo ambiente para onde ATF_BASE_URL aponta. Em outro
+    ambiente o servico pode publicar a operacao com um infixo a mais e
+    responder HTTP 500 com o SOAP Fault "Message part [...] was not
+    recognized. (Does it exist in service WSDL?)". Antes de migrar de
+    ambiente, conferir o ?wsdl — nomes em NOTAS-INTERNAS.md.
 
     O escape do numero e obrigatorio pela mesma razao da listagem: o
     valor vem da URL, e sem ele da para fechar o CDATA com "]]>" e
