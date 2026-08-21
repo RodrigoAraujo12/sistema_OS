@@ -201,6 +201,12 @@ class ApiClient {
     return this.request(`/ordens/${encodeURIComponent(numero)}`);
   }
 
+  /** Detalhe completo de UMA OS (servico detalharOrdemServico, doc do detalhe).
+   *  Chamado a cada clique numa linha da listagem — uma ordem por vez. */
+  getOrdemDetalhe(numero) {
+    return this.request(`/ordens/${encodeURIComponent(numero)}/detalhe`);
+  }
+
   async downloadOrdemPdf(numero) {
     const headers = {};
     if (this.token) headers.Authorization = `Bearer ${this.token}`;

@@ -1,13 +1,17 @@
 """
 Servico de dados externos - Ordens de Servico.
 
-Fonte de dados: API ATF via SOAP (doc da listagem). Quando ATF_BASE_URL
+Fonte de dados: API ATF via SOAP. Dois servicos, no mesmo endpoint:
+listarOrdensServicoWebService (doc da listagem), que alimenta o grid, e
+detalharOrdemServicoWebService (doc do detalhe), chamado ao abrir uma OS
+— uma por vez — e que traz o cadastro completo. Quando ATF_BASE_URL
 nao esta configurado, o sistema usa dados MOCK para desenvolvimento.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -1136,6 +1140,196 @@ def _filtrar_mock_atf(
     }
 
 
+
+# ─── MOCK do detalhe da OS (doc do detalhe) ────────────────────────
+# O servico de detalhe traz blocos que a listagem nao tem (endereco do
+# contribuinte, eventos, prorrogacoes, notificacoes, processos). Sem
+# ATF_BASE_URL eles sao gerados aqui, deterministicamente a partir da
+# OS do mock, para o modal de detalhes continuar navegavel em
+# desenvolvimento.
+
+_MUNICIPIOS_MOCK = [
+    ("JOAO PESSOA", "2507507", "58010-000"),
+    ("CAMPINA GRANDE", "2504009", "58400-000"),
+    ("PATOS", "2510808", "58700-000"),
+    ("SOUSA", "2516300", "58800-000"),
+    ("BAYEUX", "2501807", "58305-000"),
+]
+_LOGRADOUROS_MOCK = [
+    ("AV", "EPITACIO PESSOA"), ("R", "DAS TRINCHEIRAS"),
+    ("AV", "GETULIO VARGAS"), ("R", "JOAO SUASSUNA"),
+]
+_BAIRROS_MOCK = ["CENTRO", "TAMBAU", "MANAIRA", "CATOLE", "JAGUARIBE"]
+_EVENTOS_MOCK = [
+    ("1", "INICIO DE FISCALIZACAO", "ANALISE PRELIMINAR"),
+    ("2", "SOLICITACAO DE DOCUMENTOS", "INTIMACAO DE DOCUMENTOS"),
+    ("3", "ANALISE DE ESCRITURACAO", "CONFERENCIA EFD X GIM"),
+    ("4", "LEVANTAMENTO FISCAL", "LEVANTAMENTO DA CONTA MERCADORIAS"),
+    ("5", "ENCERRAMENTO", "RELATORIO CONCLUSIVO"),
+]
+
+
+def _detalhe_mock_atf(numero_os: str) -> dict[str, Any] | None:
+    """Monta o detalhe completo de uma OS do MOCK. None se nao existir."""
+    from datetime import timedelta
+
+    indice = next(
+        (i for i, o in enumerate(_MOCK_ATF_ORDENS) if o["numero_os"] == numero_os), None,
+    )
+    if indice is None:
+        return None
+
+    os_item = _MOCK_ATF_ORDENS[indice]
+    abertura = datetime.strptime(os_item["data_abertura"], "%Y-%m-%d").date()
+    inicio_fisc = datetime.strptime(os_item["data_inicio_fiscalizacao"], "%Y-%m-%d").date()
+    prazo_final = inicio_fisc + timedelta(days=60)
+    encerrada = os_item["situacao"]["codigo"] == 4
+
+    municipio, cd_ibge, cep = _MUNICIPIOS_MOCK[indice % len(_MUNICIPIOS_MOCK)]
+    sg_logradouro, logradouro = _LOGRADOUROS_MOCK[indice % len(_LOGRADOUROS_MOCK)]
+
+    qtd_eventos = os_item.get("qtd_eventos") or 0
+    eventos = []
+    for n in range(qtd_eventos):
+        tipo_cd, tipo_ds, procedimento = _EVENTOS_MOCK[n % len(_EVENTOS_MOCK)]
+        inicio_evento = inicio_fisc + timedelta(days=n * 2)
+        eventos.append({
+            "tipo_codigo": tipo_cd,
+            "tipo": tipo_ds,
+            "data_inicial": inicio_evento.strftime("%Y-%m-%d"),
+            "data_final": (inicio_evento + timedelta(days=1)).strftime("%Y-%m-%d"),
+            "referencia_inicial": abertura.strftime("%m/%Y"),
+            "referencia_final": inicio_evento.strftime("%m/%Y"),
+            "procedimento": procedimento,
+            "valor_levantado": round(1500.0 * (n + 1) + indice * 137.5, 2) if n % 2 else None,
+            "observacao": f"Evento {n + 1} de acompanhamento da OS {numero_os}.",
+            "arquivo": None,
+        })
+
+    prorrogacoes = []
+    if indice % 3 == 0:
+        prorrogacoes.append({
+            "dias": 30,
+            "prazo_atual": (prazo_final + timedelta(days=30)).strftime("%Y-%m-%d"),
+            "prazo_anterior": prazo_final.strftime("%Y-%m-%d"),
+            "situacao_prazo": "HOMOLOGADA",
+            "justificativa": "Volume de documentos acima do previsto.",
+            "usuario": os_item["fiscais"][0]["nome"],
+            "data_homologacao": (prazo_final - timedelta(days=5)).strftime("%Y-%m-%d"),
+            "usuario_homologacao": "SUPERVISOR GEFIS",
+            "status": "ATIVA",
+        })
+
+    return {
+        "numero_os": os_item["numero_os"],
+        "modelo": os_item["modelo"],
+        "modelo_codigo": os_item.get("modelo_codigo"),
+        "motivo_abertura": os_item.get("motivo_abertura", ""),
+        "motivo_abertura_codigo": os_item.get("motivo_abertura_codigo"),
+        "situacao": dict(os_item["situacao"]),
+        "termo_os": f"TERMO-{indice + 1:04d}",
+        "termo_os_descricao": "TERMO DE INICIO DE FISCALIZACAO",
+        "tipo_funcionario": "AUDITOR FISCAL",
+        "periodo_fiscalizar": {
+            "inicio": (abertura - timedelta(days=365)).strftime("%m/%Y"),
+            "fim": abertura.strftime("%m/%Y"),
+        },
+        "orgao_origem": "GEFIS - GERENCIA EXECUTIVA DE FISCALIZACAO",
+        "orgao_origem_codigo": 600,
+        "orgao_executor": os_item.get("orgao_executor", ""),
+        "orgao_executor_sigla": f"GR{indice % 5 + 1}",
+        "orgao_executor_codigo": 620 + indice % 5,
+        "data_abertura": os_item["data_abertura"],
+        "data_inicio_fiscalizacao": os_item["data_inicio_fiscalizacao"],
+        "data_emissao": abertura.strftime("%Y-%m-%d"),
+        "data_prazo_final": prazo_final.strftime("%Y-%m-%d"),
+        "data_encerramento": os_item.get("data_encerramento"),
+        "data_inicio_exercicio": f"{abertura.year}-01-01",
+        "data_final_exercicio": f"{abertura.year}-12-31",
+        "situacao_prazo": "ENCERRADA" if encerrada else "DENTRO DO PRAZO",
+        "data_ultimo_evento": os_item.get("data_ultimo_evento"),
+        "descricoes_complementares": [{
+            "data_inclusao": abertura.strftime("%Y-%m-%d"),
+            "usuario": "SISTEMA ATF",
+            "descricao": (
+                f"OS {numero_os} aberta por {os_item.get('motivo_abertura', '')} "
+                f"para o contribuinte {os_item['razao_social']}."
+            ),
+            "descricao_formatada": None,
+        }],
+        "contribuinte": {
+            "nome": os_item["razao_social"],
+            "natureza": "PESSOA JURIDICA",
+            "ie": os_item["ie"],
+            "documento": os_item.get("cnpj") or "",
+            "tipo_documento": "CNPJ",
+            "endereco": {
+                "logradouro": f"{sg_logradouro} {logradouro}",
+                "numero": str(100 + indice * 7),
+                "complemento": "SALA 201" if indice % 4 == 0 else None,
+                "bairro": _BAIRROS_MOCK[indice % len(_BAIRROS_MOCK)],
+                "municipio": municipio,
+                "municipio_codigo": cd_ibge,
+                "uf": "PB",
+                "cep": cep,
+                "latitude": None,
+                "longitude": None,
+                "nao_decodificado": None,
+                "reparticao": os_item.get("orgao_executor", ""),
+                "atualizado_em": abertura.strftime("%Y-%m-%d"),
+            },
+        },
+        "periodo_nf": {
+            "inicio": (abertura - timedelta(days=365)).strftime("%Y-%m-%d"),
+            "fim": abertura.strftime("%Y-%m-%d"),
+        },
+        "periodo_efd": {
+            "inicio": (abertura - timedelta(days=365)).strftime("%Y-%m-%d"),
+            "fim": abertura.strftime("%Y-%m-%d"),
+        },
+        "autorizacao": {
+            "data": (abertura + timedelta(days=1)).strftime("%Y-%m-%d"),
+            "usuario": "SUPERVISOR GEFIS",
+            "matricula": "23456",
+        },
+        "notificacoes": [{
+            "codigo": f"{9000 + indice}",
+            "nome": f"NOTIFICACAO {9000 + indice}/{abertura.year}",
+        }] if indice % 2 == 0 else [],
+        "notificacoes_scamf": [],
+        "processos": [{
+            "numero": f"{1230 + indice}.000.{abertura.year}-4",
+            "tipo": "PROCESSO ADMINISTRATIVO TRIBUTARIO",
+        }] if indice % 5 == 0 else [],
+        "fiscais": [
+            {
+                "matricula": f["matricula"],
+                "nome": f["nome"],
+                "status": f.get("status"),
+                "data_ciencia": f.get("data_ciencia"),
+                "data_designacao": f.get("data_designacao"),
+                "data_cancelamento": f.get("data_cancelamento"),
+                "responsavel": "SIM" if i == 0 else "NAO",
+            }
+            for i, f in enumerate(os_item["fiscais"])
+        ],
+        "prorrogacoes": prorrogacoes,
+        "eventos": eventos,
+        "qtd_eventos": len(eventos),
+        "justificativas": [{
+            "tipo": "ATRASO NA ENTREGA DE DOCUMENTOS",
+            "descricao": "Contribuinte solicitou prazo adicional para entrega da EFD.",
+            "usuario": os_item["fiscais"][0]["nome"],
+            "data_inclusao": (inicio_fisc + timedelta(days=10)).strftime("%Y-%m-%d"),
+        }] if indice % 4 == 1 else [],
+        "valor_total_recolhido": round(5230.75 + indice * 411.3, 2) if encerrada else None,
+        "id_os_gerou_banco": None,
+        "ie": os_item["ie"],
+        "cnpj": os_item.get("cnpj"),
+        "razao_social": os_item["razao_social"],
+    }
+
+
 # ─── Cliente SOAP do ATF (doc da listagem) ───────────────────────────
 #
 # Servico unico: listarOrdensServicoWebService()
@@ -1212,10 +1406,23 @@ class _CacheATF:
 
 _cache_atf = _CacheATF(ATF_CACHE_TTL)
 
+# Cache do detalhe (doc do detalhe), separado porque a chave e outra: uma
+# entrada por OS consultada, guardada como lista de um item so. Existe
+# pelo mesmo motivo do de cima — reabrir a mesma OS logo em seguida (ou
+# um duplo clique na linha) nao precisa de outra ida ao ATF. O usuario
+# tambem nao entra na chave: o que se guarda e a resposta crua, e a
+# hierarquia e aplicada depois, por requisicao, em main.py.
+_cache_detalhe_atf = _CacheATF(ATF_CACHE_TTL)
+
 
 def limpar_cache_atf() -> None:
-    """Descarta o cache do ATF. Usado pelos testes e util para depuracao."""
+    """
+    Descarta os caches do ATF (listagem e detalhe).
+
+    Usado pelos testes e util para depuracao.
+    """
     _cache_atf.limpar()
+    _cache_detalhe_atf.limpar()
 
 
 def _data_para_atf(data_iso: str) -> str:
@@ -1320,6 +1527,49 @@ def _montar_envelope_soap(parametros_xml: str) -> str:
     )
 
 
+# Casa um "&" que NAO inicia uma entidade valida (&amp; &#38; &#x26; ...).
+_AMP_SOLTO = re.compile(r"&(?!(?:#\d+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);)")
+
+
+def _escapar_amp_solto(xml_text: str) -> str:
+    """
+    Escapa "&" soltos no XML de dados devolvido pelo ATF.
+
+    O servico escapa o payload uma unica vez dentro de <retorno>, entao um
+    "&" que ja era literal no dado (razao social tipo "PROCTER & GAMBLE")
+    volta cru depois do unescape e quebra o parser. Reescapa so esses,
+    preservando entidades legitimas.
+    """
+    return _AMP_SOLTO.sub("&amp;", xml_text)
+
+
+def _erro_soap(resposta: Any) -> str | None:
+    """
+    Extrai o <faultstring> de um SOAP Fault, se a resposta for um.
+
+    O SOAP 1.1 devolve falha com HTTP 500, entao um raise_for_status()
+    seco descarta justamente a mensagem que diz o que houve — foi assim
+    que o nome errado da operacao na doc do detalhe custou uma investigacao
+    ("Message part [...] was not recognized"). Devolve None quando a
+    resposta nao e um Fault.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        raiz = ET.fromstring(resposta.text)
+    except ET.ParseError:
+        return None
+    fault = next((el for el in raiz.iter() if el.tag.lower().endswith("fault")), None)
+    if fault is None:
+        return None
+    texto = next(
+        (el.text for el in fault.iter()
+         if el.tag.lower().endswith("faultstring") and (el.text or "").strip()),
+        None,
+    )
+    return (texto or "").strip() or "falha SOAP sem mensagem"
+
+
 def _parse_resposta_soap(xml_text: str) -> list[dict[str, Any]]:
     """
     Extrai e parseia o retorno do listarOrdensServicoWebService.
@@ -1350,7 +1600,7 @@ def _parse_resposta_soap(xml_text: str) -> list[dict[str, Any]]:
         (el for el in root.iter() if el.tag.lower().endswith("retorno")), None,
     )
     if retorno_el is not None and (retorno_el.text or "").strip():
-        dados_root = ET.fromstring(retorno_el.text.strip())
+        dados_root = ET.fromstring(_escapar_amp_solto(retorno_el.text.strip()))
     else:
         dados_root = root
 
@@ -1613,6 +1863,9 @@ def _chamar_atf_https(
             headers={"Content-Type": "text/xml; charset=utf-8"},
             timeout=60,
         )
+        falha = _erro_soap(resp)
+        if falha:
+            raise ValueError(f"ATF: {falha}")
         resp.raise_for_status()
         ordens = _parse_resposta_soap(resp.text)
     except Exception:
@@ -1625,6 +1878,493 @@ def _chamar_atf_https(
     _cache_atf.set(chave, ordens)
     logger.debug("Cache ATF: %d OS guardadas para %s", len(ordens), parametros)
     return ordens
+
+
+# ─── Detalhe da OS (doc do detalhe) ─────────────────────────────────
+#
+# Servico detalharOrdemServicoWebService(), no MESMO endpoint da
+# listagem (POST {ATF_BASE_URL}/<caminho-do-servico>): muda so a operacao
+# dentro do envelope. Recebe apenas o numero da OS e devolve o cadastro
+# completo — contribuinte com endereco, eventos de acompanhamento,
+# prorrogacoes, notificacoes, processos, justificativas e recolhimentos
+# — que a listagem (doc da listagem) nao traz.
+
+
+def _montar_envelope_detalhe_soap(numero_os: str) -> str:
+    """
+    Monta o envelope SOAP do servico de detalhe (doc do detalhe).
+
+    Duas diferencas em relacao ao da listagem: a operacao e outra e o
+    elemento raiz dos filtros e <parametro>, no singular (a listagem usa
+    <parametros>).
+
+    ATENCAO ao nome da operacao: a doc do detalhe diz
+    "detalharOrdemServicoRequest", mas o servico so reconhece
+    "detalharOrdemServicoRequest" — com "Lista" no meio. Com o nome
+    da doc o ATF responde HTTP 500 e o SOAP Fault "Message part [...]
+    was not recognized. (Does it exist in service WSDL?)". Conferido no
+    WSDL do proprio servico (?wsdl) em 21/08/2026.
+
+    O escape do numero e obrigatorio pela mesma razao da listagem: o
+    valor vem da URL, e sem ele da para fechar o CDATA com "]]>" e
+    escrever direto no corpo SOAP.
+    """
+    parametro = f"<parametro><numeroOS>{_escape_xml(numero_os)}</numeroOS></parametro>"
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">\n'
+        "    <soap:Body>\n"
+        '        <ns:detalharOrdemServicoRequest xmlns:ns="http://www.receita.pb.gov.br">\n'
+        f"            <ns:elementoEntrada><![CDATA[{parametro}]]></ns:elementoEntrada>\n"
+        "        </ns:detalharOrdemServicoRequest>\n"
+        "    </soap:Body>\n"
+        "</soap:Envelope>"
+    )
+
+
+def _txt(el: Any, caminho: str) -> str:
+    """Texto de um filho do elemento, sem espacos nas pontas ("" se ausente)."""
+    if el is None:
+        return ""
+    return (el.findtext(caminho, "") or "").strip()
+
+
+def _txt_ou_none(el: Any, caminho: str) -> str | None:
+    """Como _txt, mas devolve None no lugar de "" — para campos opcionais."""
+    return _txt(el, caminho) or None
+
+
+def _parse_notificacoes(lista_el: Any) -> list[dict[str, str]]:
+    """
+    Le uma das duas listas de notificacao do detalhe.
+
+    A doc do detalhe escreve as tags de forma inconsistente entre elas
+    (<notificao> com <cdnotificacao> numa, <notificacaoSCAMF> com
+    <cdnotificao> na outra), entao a leitura vai por prefixo do nome da
+    tag: filho que comeca com "cd" e o codigo, filho que comeca com "no"
+    e o nome. Assim qualquer das grafias e aceita.
+    """
+    if lista_el is None:
+        return []
+
+    notificacoes: list[dict[str, str]] = []
+    for item_el in list(lista_el):
+        codigo = nome = ""
+        for filho in item_el:
+            tag = filho.tag.lower()
+            valor = (filho.text or "").strip()
+            if tag.startswith("cd"):
+                codigo = valor
+            elif tag.startswith("no"):
+                nome = valor
+        if codigo or nome:
+            notificacoes.append({"codigo": codigo, "nome": nome})
+    return notificacoes
+
+
+def _parse_detalhe_soap(xml_text: str) -> dict[str, Any] | None:
+    """
+    Extrai e parseia o retorno do detalharOrdemServicoWebService.
+
+    Contrato: doc do detalhe (<resultado>, com <operacao> e <ordServ>).
+    Devolve None quando a resposta nao traz <ordServ>, que e como o
+    servico indica que a OS nao existe.
+
+    As chaves do dicionario repetem de proposito as da listagem
+    (numero_os, modelo, situacao, data_abertura, fiscais...) onde os dois
+    servicos trazem o mesmo dado: assim o detalhe se sobrepoe a linha do
+    grid campo a campo, sem tradutor no meio.
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml_text)
+
+    # Mesmo empacotamento da listagem: o XML de dados vem escapado dentro
+    # de <retorno>; o ElementTree desfaz o escape no .text.
+    retorno_el = next(
+        (el for el in root.iter() if el.tag.lower().endswith("retorno")), None,
+    )
+    if retorno_el is not None and (retorno_el.text or "").strip():
+        dados_root = ET.fromstring(_escapar_amp_solto(retorno_el.text.strip()))
+    else:
+        dados_root = root
+
+    erro = (dados_root.findtext(".//dsMensagemErro") or "").strip()
+    if erro:
+        # "Nenhum registro satisfaz a pesquisa" e como o ATF diz que a OS
+        # nao existe. Numa busca por numero isso e 404, e nao erro de
+        # negocio — os outros dsMensagemErro continuam subindo como erro.
+        if "nenhum registro" in _sem_acento(erro).casefold():
+            return None
+        raise ValueError(f"ATF: {erro}")
+
+    os_el = dados_root.find(".//ordServ")
+    if os_el is None:
+        return None
+
+    outras_el = os_el.find("outrasInfo")
+    org_el = os_el.find("elementoOrg")
+    exec_el = os_el.find("elementoOrgExecutor")
+    contrib_el = os_el.find("contribuinte")
+    endereco_el = contrib_el.find("endereco") if contrib_el is not None else None
+    autoriz_el = os_el.find("autorizacao")
+    periodo_el = os_el.find("periodoAFiscalizar")
+    cargas_el = os_el.find("periodoCargas")
+    nf_el = cargas_el.find("periodoNF") if cargas_el is not None else None
+    efd_el = cargas_el.find("periodoEFD") if cargas_el is not None else None
+
+    # Situacao: tpSituacaoOS (codigo) + noSituacaoOS (descricao). Mesma
+    # forma da listagem, para o badge do modal nao precisar de outro caso.
+    cd_situacao = _int_ou_none(_txt(os_el, "tpSituacaoOS"))
+    no_situacao = _txt(os_el, "noSituacaoOS")
+    situacao = None
+    if cd_situacao is not None or no_situacao:
+        codigo = cd_situacao
+        if codigo is None:
+            codigo = _STATUS_ATF_POR_NOME.get(no_situacao.upper(), -1)
+        situacao = {"codigo": codigo, "descricao": no_situacao or _STATUS_ATF.get(codigo, "")}
+
+    fiscais = [
+        {
+            "matricula": _txt(f_el, "nrMatFiscal"),
+            "nome": _txt(f_el, "noHumFiscal"),
+            # stFiscalOS e o CODIGO do status ("0"); a listagem manda o
+            # texto ("DESIGNADO") na chave "status". Guardar os dois com o
+            # mesmo nome fazia o codigo apagar a descricao ao mesclar.
+            "status_codigo": _txt_ou_none(f_el, "stFiscalOS"),
+            "data_ciencia": _data_do_atf(_txt(f_el, "dtCiencia")) or None,
+            "data_designacao": _data_do_atf(_txt(f_el, "dtDesigna")) or None,
+            # A doc do detalhe nao devolve a data de cancelamento do fiscal,
+            # que a listagem tem: fica None e o front recupera da linha.
+            "data_cancelamento": None,
+            "responsavel": _txt_ou_none(f_el, "responsavel"),
+        }
+        for f_el in os_el.findall(".//fiscal")
+    ]
+
+    eventos = [
+        {
+            "tipo_codigo": _txt_ou_none(e_el, "tpEventoAcompOS"),
+            "tipo": _txt(e_el, "dsTpEventoAcompOS"),
+            "data_inicial": _data_do_atf(_txt(e_el, "dtInicialEvento")) or None,
+            "data_final": _data_do_atf(_txt(e_el, "dtFinalEvento")) or None,
+            "referencia_inicial": _txt_ou_none(e_el, "dtReferInicial"),
+            "referencia_final": _txt_ou_none(e_el, "dtReferFinal"),
+            "procedimento": _txt(e_el, "noProcedimento"),
+            "valor_levantado": _float_ou_none(_txt(e_el, "vlLevantado")),
+            "observacao": _txt_ou_none(e_el, "dsObservacao"),
+            "arquivo": _txt_ou_none(e_el, "arquivoEvento"),
+        }
+        for e_el in os_el.findall(".//eventos")
+    ]
+
+    prorrogacoes = [
+        {
+            "dias": _int_ou_none(_txt(p_el, "nrDiasProrrog")),
+            "prazo_atual": _data_do_atf(_txt(p_el, "dtPrazoAtual")) or None,
+            "prazo_anterior": _data_do_atf(_txt(p_el, "dtPrazoAnt")) or None,
+            "situacao_prazo": _txt_ou_none(p_el, "idSituacaoPrazo"),
+            "justificativa": _txt_ou_none(p_el, "dsJustifProrrogaOS"),
+            "usuario": _txt_ou_none(p_el, "noUsrProrrog"),
+            "data_homologacao": _data_do_atf(_txt(p_el, "dtHomologacao")) or None,
+            "usuario_homologacao": _txt_ou_none(p_el, "noUsrHomolog"),
+            "status": _txt_ou_none(p_el, "stProrrogOS"),
+        }
+        for p_el in os_el.findall(".//prorrogacao")
+    ]
+
+    justificativas = [
+        {
+            "tipo": _txt(j_el, "dsTipoJustifAtraso"),
+            "descricao": _txt(j_el, "dsJustifAtrasoOS"),
+            "usuario": _txt_ou_none(j_el, "noUsrRespJustif"),
+            "data_inclusao": _data_do_atf(_txt(j_el, "dtInclusaoJustif")) or None,
+        }
+        for j_el in os_el.findall(".//justificativa")
+    ]
+
+    processos = [
+        {
+            "numero": _txt(pr_el, "nrprocesso"),
+            "tipo": _txt_ou_none(pr_el, "tposprocesso"),
+        }
+        for pr_el in os_el.findall(".//processo")
+    ]
+
+    descricoes = [
+        {
+            "data_inclusao": _data_do_atf(_txt(d_el, "dtInclusao")) or None,
+            "usuario": _txt_ou_none(d_el, "noUsrCriador"),
+            "descricao": _txt(d_el, "dsComplementarOS"),
+            "descricao_formatada": _txt_ou_none(d_el, "dsTxtComplOSFormatado"),
+        }
+        for d_el in os_el.findall(".//descricaoComplementarOS")
+    ]
+
+    contribuinte = None
+    if contrib_el is not None:
+        contribuinte = {
+            "nome": _txt(contrib_el, "noHumanoInst"),
+            "natureza": _txt_ou_none(contrib_el, "tpNatureza"),
+            "ie": _txt(contrib_el, "nrInscrEstadual"),
+            "documento": _txt(contrib_el, "nrDocHumanoInst"),
+            "tipo_documento": _txt_ou_none(contrib_el, "tpDocumento"),
+            "endereco": None,
+        }
+        if endereco_el is not None:
+            contribuinte["endereco"] = {
+                "logradouro": " ".join(
+                    p for p in (
+                        _txt(endereco_el, "sgTpLogradouro"),
+                        _txt(endereco_el, "noLogradouro"),
+                    ) if p
+                ),
+                "numero": _txt_ou_none(endereco_el, "nrresidencia"),
+                "complemento": _txt_ou_none(endereco_el, "dscomplemento"),
+                "bairro": _txt(endereco_el, "noBairro"),
+                "municipio": _txt(endereco_el, "noMunicipio"),
+                "municipio_codigo": _txt_ou_none(endereco_el, "cdMunicipio"),
+                # cdibge tambem nao esta na doc, mas e o codigo padrao do
+                # municipio — o unico que serve fora do ATF.
+                "municipio_ibge": _txt_ou_none(endereco_el, "cdibge"),
+                "uf": _txt(endereco_el, "dsAbrevUf") or _txt(endereco_el, "noUf"),
+                "cep": _txt_ou_none(endereco_el, "nrCep"),
+                "latitude": _txt_ou_none(endereco_el, "nrLatitude"),
+                "longitude": _txt_ou_none(endereco_el, "nrLongitude"),
+                # Endereco que o cadastro nao conseguiu decodificar: quando
+                # vem preenchido, e o unico texto util do bloco.
+                "nao_decodificado": _txt_ou_none(endereco_el, "dsEndNaoDecodifica"),
+                "reparticao": _txt(endereco_el, "elementoOrg/noElementoOrg") or None,
+                "atualizado_em": _data_do_atf(_txt(endereco_el, "tsAtualizacao")) or None,
+            }
+
+    # O executor sai de <elementoOrgExecutor>; <elementoOrg> traz o orgao
+    # de origem da OS e repete o executor em cdElementoOrgExec — que serve
+    # de reserva quando o bloco do executor nao vem.
+    orgao_executor_codigo = (
+        _int_ou_none(_txt(exec_el, "cdElementoOrg"))
+        if exec_el is not None else _int_ou_none(_txt(org_el, "cdElementoOrgExec"))
+    )
+    orgao_executor_nome = (
+        _txt(exec_el, "noElementoOrg") if exec_el is not None
+        else _txt(org_el, "noElementoOrgExec")
+    )
+
+    detalhe: dict[str, Any] = {
+        "numero_os": _txt(os_el, "nrOrdemServico"),
+        "modelo": _txt(os_el, "noModeloOrdServ"),
+        "modelo_codigo": _int_ou_none(_txt(os_el, "cdModeloOS")),
+        "motivo_abertura": _txt(os_el, "noMotivoAberturaOS"),
+        "motivo_abertura_codigo": _int_ou_none(_txt(os_el, "cdMotivoAberturaOS")),
+        "situacao": situacao,
+        "termo_os": _txt_ou_none(os_el, "idTermoOS"),
+        "termo_os_descricao": _txt_ou_none(os_el, "dsIdTermoOS"),
+        "tipo_funcionario": _txt_ou_none(os_el, "tpFuncionario"),
+        "periodo_fiscalizar": {
+            "inicio": _txt(periodo_el, "dpRefInicial"),
+            "fim": _txt(periodo_el, "dpRefFinal"),
+        } if periodo_el is not None else None,
+        # Tres campos que a resposta traz e a doc do detalhe nao lista:
+        # equipeFiscalizacao/noEquipe, tpBdFiscal e dsTpBdFiscal. O nome
+        # da equipe sai com a mesma chave da listagem (equipe_fiscal),
+        # que e onde o painel ja o espera.
+        "equipe_fiscal": _txt(os_el, "equipeFiscalizacao/noEquipe"),
+        # cdEquipe entra na doc em 21/08/2026 mas o servico ainda nao o
+        # devolve (conferido em 5 OS com equipe): fica lido desde ja, e
+        # ate la o codigo continua vindo da listagem pela mesclagem.
+        "equipe_fiscal_codigo": _int_ou_none(_txt(os_el, "equipeFiscalizacao/cdEquipe")),
+        "bd_fiscal": _txt_ou_none(os_el, "dsTpBdFiscal"),
+        "bd_fiscal_codigo": _txt_ou_none(os_el, "tpBdFiscal"),
+        "orgao_origem": _txt(org_el, "noElementoOrg") or None,
+        "orgao_origem_codigo": _int_ou_none(_txt(org_el, "cdElementoOrg")),
+        "orgao_executor": orgao_executor_nome,
+        "orgao_executor_sigla": _txt(exec_el, "sgElementoOrg"),
+        "orgao_executor_codigo": orgao_executor_codigo,
+        "data_abertura": _data_do_atf(_txt(outras_el, "dtAbertura")),
+        "data_inicio_fiscalizacao": _data_do_atf(_txt(outras_el, "dtInicialFisc")) or None,
+        "data_emissao": _data_do_atf(_txt(outras_el, "dtEmissao")) or None,
+        "data_prazo_final": _data_do_atf(_txt(outras_el, "dtPrazoFinal")) or None,
+        "data_encerramento": _data_do_atf(_txt(outras_el, "dtEncerramento")) or None,
+        "data_inicio_exercicio": _data_do_atf(_txt(outras_el, "dtInicioExercicio")) or None,
+        "data_final_exercicio": _data_do_atf(_txt(outras_el, "dtFinalExercicio")) or None,
+        "situacao_prazo": _txt_ou_none(outras_el, "stPrazoOS"),
+        "descricoes_complementares": descricoes,
+        "contribuinte": contribuinte,
+        "periodo_nf": {
+            "inicio": _data_do_atf(_txt(nf_el, "dtemisinicnf")),
+            "fim": _data_do_atf(_txt(nf_el, "dtemisfimnf")),
+        } if nf_el is not None else None,
+        "periodo_efd": {
+            "inicio": _data_do_atf(_txt(efd_el, "dtrefiniefd")),
+            "fim": _data_do_atf(_txt(efd_el, "dtreffimefd")),
+        } if efd_el is not None else None,
+        "autorizacao": {
+            "data": _data_do_atf(_txt(autoriz_el, "dtAutorizacao")) or None,
+            "usuario": _txt_ou_none(autoriz_el, "noUsrAtualSit"),
+            "matricula": _txt_ou_none(autoriz_el, "nrMatricula"),
+        } if autoriz_el is not None else None,
+        "notificacoes": _parse_notificacoes(os_el.find("listaNotificacao")),
+        "notificacoes_scamf": _parse_notificacoes(os_el.find("listaNotificacaoSCAMF")),
+        "processos": processos,
+        "fiscais": fiscais,
+        "prorrogacoes": prorrogacoes,
+        "eventos": eventos,
+        "qtd_eventos": len(eventos),
+        "justificativas": justificativas,
+        "valor_total_recolhido": _float_ou_none(
+            _txt(os_el, "listaRecolhimentosOS/vlTotalRecolheOS"),
+        ),
+        "id_os_gerou_banco": _txt_ou_none(os_el, "idOsGerouBanco"),
+    }
+
+    # Repete os dados do contribuinte na raiz porque sao os mesmos campos
+    # que a listagem entrega soltos (ie, cnpj, razao_social) — assim o
+    # detalhe se basta, sem depender da linha do grid para o cabecalho.
+    if contribuinte:
+        detalhe["ie"] = contribuinte["ie"]
+        detalhe["cnpj"] = contribuinte["documento"] or None
+        detalhe["razao_social"] = contribuinte["nome"]
+
+    # dataUltimoEventoOS nao existe neste servico: o ultimo evento sai da
+    # propria lista, que aqui vem completa.
+    datas_evento = [d for d in (e["data_final"] or e["data_inicial"] for e in eventos) if d]
+    if datas_evento:
+        detalhe["data_ultimo_evento"] = max(datas_evento)
+
+    return detalhe
+
+
+
+def _sobrepor(base: dict[str, Any], novo: dict[str, Any]) -> dict[str, Any]:
+    """Copia sobre `base` apenas os campos preenchidos de `novo`."""
+    resultado = dict(base)
+    for chave, valor in (novo or {}).items():
+        if valor is None or valor == "" or (isinstance(valor, list) and not valor):
+            continue
+        resultado[chave] = valor
+    return resultado
+
+
+def mesclar_detalhe_os(linha: dict[str, Any], detalhe: dict[str, Any]) -> dict[str, Any]:
+    """
+    Junta a OS da listagem (doc da listagem) com o detalhe (doc do detalhe).
+
+    Nenhum dos dois servicos e superconjunto do outro: a listagem tem os
+    campos calculados (dias de execucao, medias por Modelo/Motivo), o
+    procedimento e o codigo da equipe; o detalhe tem contribuinte com
+    endereco, eventos, prorrogacoes e o resto. Por isso o detalhe se
+    sobrepoe campo a campo, e o que vier vazio nao apaga o que a listagem
+    ja trouxe.
+
+    Esta e a regra canonica. O painel repete a mesma logica em
+    OrdensPanel.jsx (sobrepor/mesclarDetalhe) porque la a linha ja esta
+    em maos e refazer a consulta da listagem custaria 1,5s a cada clique
+    — se mudar aqui, mude la tambem.
+    """
+    os_completa = _sobrepor(linha, detalhe)
+
+    # Fiscais: o detalhe manda, mas a data de cancelamento e a descricao
+    # do status so existem na listagem — casa por matricula para nao
+    # perde-las.
+    if detalhe.get("fiscais"):
+        da_linha = {f.get("matricula"): f for f in linha.get("fiscais", [])}
+        os_completa["fiscais"] = [
+            _sobrepor(da_linha.get(f.get("matricula"), {}), f)
+            for f in detalhe["fiscais"]
+        ]
+    return os_completa
+
+
+def _chamar_detalhe_atf_https(base_url: str, numero_os: str) -> dict[str, Any] | None:
+    """
+    Chama o detalharOrdemServicoWebService via SOAP (doc do detalhe).
+
+    POST https://.../<caminho-do-servico> com o numero da OS em CDATA.
+    Devolve o detalhe da OS, ou None quando o ATF nao a encontra.
+    """
+    import requests
+
+    base = base_url.rstrip("/")
+    url = base if base.endswith("OrdemServico") else f"{base}{_ATF_WS_PATH}"
+
+    chave = f"{url}|detalhe|{numero_os}"
+    em_cache = _cache_detalhe_atf.get(chave)
+    if em_cache is not None:
+        logger.debug("Cache ATF: reaproveitando detalhe da OS %s", numero_os)
+        return em_cache[0] if em_cache else None
+
+    envelope = _montar_envelope_detalhe_soap(numero_os)
+
+    try:
+        resp = requests.post(
+            url,
+            data=envelope.encode("utf-8"),
+            headers={"Content-Type": "text/xml; charset=utf-8"},
+            timeout=60,
+        )
+        # O SOAP Fault chega com HTTP 500: le a mensagem antes de tratar
+        # como erro de transporte, senao ela se perde.
+        falha = _erro_soap(resp)
+        if falha:
+            raise ValueError(f"ATF: {falha}")
+        resp.raise_for_status()
+        detalhe = _parse_detalhe_soap(resp.text)
+    except Exception:
+        logger.exception("Erro ao detalhar OS %s na API ATF em %s", numero_os, url)
+        raise
+
+    # "OS nao encontrada" tambem vai para o cache (como lista vazia): e
+    # uma resposta valida do servico, e nao adianta reperguntar em
+    # seguida. Erro de negocio e falha de rede sobem sem ser guardados.
+    _cache_detalhe_atf.set(chave, [detalhe] if detalhe else [])
+    return detalhe
+
+
+def url_base_detalhe_atf() -> str:
+    """
+    URL do servico de detalhe: a propria, se configurada; senao a da
+    listagem. Vazia nos dois casos significa MOCK.
+    """
+    from .config import ATF_BASE_URL, ATF_DETALHE_BASE_URL
+
+    return ATF_DETALHE_BASE_URL or ATF_BASE_URL
+
+
+def detalhe_em_outro_ambiente() -> bool:
+    """
+    Diz se o detalhe esta apontando para um ambiente diferente do da
+    listagem.
+
+    Quando esta, os dados vem de outro banco: a mesma OS volta com
+    contribuinte, situacao e fiscais diferentes. Quem chama precisa saber
+    disso para nao decidir permissao pela resposta do detalhe (main.py).
+    """
+    from .config import ATF_BASE_URL, ATF_DETALHE_BASE_URL
+
+    if not ATF_DETALHE_BASE_URL or not ATF_BASE_URL:
+        return False
+    return ATF_DETALHE_BASE_URL.rstrip("/") != ATF_BASE_URL.rstrip("/")
+
+
+def detalhar_ordem_atf(numero_os: str) -> dict[str, Any] | None:
+    """
+    Detalhe completo de uma OS (doc do detalhe).
+
+    Uma OS por chamada — e o unico filtro que o servico aceita. Vai ao
+    servico real quando ha URL configurada (ATF_DETALHE_BASE_URL, ou a
+    da listagem); sem nenhuma, monta o detalhe a partir do MOCK, para o
+    painel continuar navegavel em desenvolvimento.
+
+    Devolve None quando a OS nao existe.
+    """
+    base_url = url_base_detalhe_atf()
+
+    if base_url:
+        logger.debug("Detalhando OS %s em %s", numero_os, base_url)
+        return _chamar_detalhe_atf_https(base_url, numero_os)
+
+    logger.debug("Sem URL do ATF configurada – detalhe da OS %s vem do MOCK", numero_os)
+    return _detalhe_mock_atf(numero_os)
 
 
 # ─── Campos calculados (demanda Pedro Henrique) ──────────────────

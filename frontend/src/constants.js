@@ -155,6 +155,11 @@ export const tipoLabels = {
 /** Formata data de YYYY-MM-DD para DD/MM/AAAA. */
 export function formatarData(dataISO) {
   if (!dataISO) return "-";
-  const [ano, mes, dia] = dataISO.split("-");
+  // O ATF nem sempre manda data: alguns campos sao referencia de periodo
+  // ("01/2024") e o backend os repassa crus. Sem esta guarda, o split por
+  // "-" produziria "undefined/undefined/01/2024".
+  const partes = /^(\d{4})-(\d{2})-(\d{2})/.exec(dataISO);
+  if (!partes) return dataISO;
+  const [, ano, mes, dia] = partes;
   return `${dia}/${mes}/${ano}`;
 }

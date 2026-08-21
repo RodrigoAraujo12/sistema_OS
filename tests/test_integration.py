@@ -791,6 +791,109 @@ class TestOrdensEndpoints(IntegrationTestBase):
         r = self.client.get("/ordens/OS-9999", headers=self._auth_header(token))
         self.assertEqual(r.status_code, 404)
 
+    # ── Detalhe completo da OS (doc do detalhe) ────────────────────
+
+    def _detalhe(self, token: str, numero: str):
+        return self.client.get(f"/ordens/{numero}/detalhe", headers=self._auth_header(token))
+
+    def test_detalhe_traz_o_que_a_listagem_nao_tem(self):
+        r = self._detalhe(self._login(), "OS-2026-003")
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["numero_os"], "OS-2026-003")
+        self.assertTrue(body["contribuinte"]["endereco"]["municipio"])
+        self.assertGreater(len(body["eventos"]), 0)
+        self.assertTrue(body["fiscais"][0]["responsavel"])
+
+    def test_detalhe_e_uma_os_por_chamada(self):
+        """
+        Cada clique na listagem detalha a ordem clicada — a resposta nunca
+        pode ser a da OS aberta antes.
+        """
+        token = self._login()
+        for numero in ("OS-2026-003", "OS-2026-001", "OS-2026-003"):
+            r = self._detalhe(token, numero)
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(r.json()["numero_os"], numero)
+
+    def test_detalhe_de_outra_equipe_da_403(self):
+        """A hierarquia vale para o detalhe como vale para a listagem."""
+        r = self._detalhe(self._login_como("Carlos Mendes"), "OS-2026-004")
+        self.assertEqual(r.status_code, 403)
+
+    def test_detalhe_inexistente_da_404(self):
+        r = self._detalhe(self._login(), "OS-9999")
+        self.assertEqual(r.status_code, 404)
+
+    def test_detalhe_exige_autenticacao(self):
+        r = self.client.get("/ordens/OS-2026-003/detalhe")
+        self.assertEqual(r.status_code, 401)
+
+    # ── PDF de uma OS ───────────────────────────────────────────
+
+    @staticmethod
+    def _texto_do_pdf(conteudo: bytes) -> str:
+        """Extrai o texto dos streams do PDF, sem dependencia externa."""
+        import re
+        import zlib
+
+        partes: list[str] = []
+        for bloco in re.finditer(rb"stream\r?\n(.*?)endstream", conteudo, re.S):
+            try:
+                fluxo = zlib.decompress(bloco.group(1))
+            except zlib.error:
+                continue
+            partes += [t.decode("latin-1") for t in re.findall(rb"\((.*?)\)\s*Tj", fluxo, re.S)]
+        return "\n".join(partes)
+
+    def test_pdf_traz_o_conteudo_do_detalhamento(self):
+        """
+        O PDF sai com o mesmo conteudo do modal — nao so o que a listagem
+        devolve. Ate a versao anterior ele parava nos fiscais.
+        """
+        r = self.client.get(
+            "/ordens/OS-2026-003/pdf", headers=self._auth_header(self._login()),
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.headers["content-type"], "application/pdf")
+        texto = self._texto_do_pdf(r.content)
+        for secao in ("Informacoes Gerais", "Contribuinte", "Datas e Execucao",
+                      "Cargas e Autorizacao", "Fiscais", "Eventos de Acompanhamento",
+                      "Descricoes Complementares"):
+            self.assertIn(secao, texto, f"secao '{secao}' faltando no PDF")
+
+    def test_pdf_nao_mostra_codigo_da_situacao(self):
+        """Mesma regra da tela: o usuario le o nome, o codigo fica interno."""
+        r = self.client.get(
+            "/ordens/OS-2026-003/pdf", headers=self._auth_header(self._login()),
+        )
+        texto = self._texto_do_pdf(r.content)
+        self.assertIn("AUTORIZADA", texto)
+        self.assertNotIn("1 - AUTORIZADA", texto)
+
+    def test_pdf_sai_mesmo_se_o_detalhe_falhar(self):
+        """
+        O servico de detalhe pode nao estar publicado no ambiente em uso
+        (e o caso de producao hoje). Nesse caso o PDF sai com o que a
+        listagem tem, em vez de estourar um erro na cara do usuario.
+        """
+        with patch("backend.main.detalhar_ordem_atf", side_effect=ConnectionError("caiu")):
+            r = self.client.get(
+                "/ordens/OS-2026-003/pdf", headers=self._auth_header(self._login()),
+            )
+        self.assertEqual(r.status_code, 200, r.text)
+        texto = self._texto_do_pdf(r.content)
+        self.assertIn("Informacoes Gerais", texto)
+        self.assertNotIn("Eventos de Acompanhamento", texto)
+
+    def test_pdf_respeita_a_hierarquia(self):
+        """OS-2026-004 e do Jose Almeida, de outra supervisao."""
+        r = self.client.get(
+            "/ordens/OS-2026-004/pdf",
+            headers=self._auth_header(self._login_como("Carlos Mendes")),
+        )
+        self.assertEqual(r.status_code, 403)
+
     def test_relatorio_csv_respeita_a_hierarquia(self):
         """O CSV nao pode exportar o que a tela nao mostra."""
         token = self._login_como("Carlos Mendes")

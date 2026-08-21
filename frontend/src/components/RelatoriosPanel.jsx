@@ -148,10 +148,12 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
             </div>
             <div className="filter-group">
               <label>Modelo</label>
+              {/* O value continua sendo o codigo, que e o que o ATF aceita;
+                  na tela aparece so o nome. */}
               <select name="modelo" value={filters.modelo} onChange={handleFilterChange}>
                 <option value="">Todos</option>
                 {Object.entries(modeloLabels).map(([cod, label]) => (
-                  <option key={cod} value={cod}>{cod} — {label}</option>
+                  <option key={cod} value={cod}>{label}</option>
                 ))}
               </select>
             </div>
@@ -173,7 +175,7 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
               <select name="motivo_abertura" value={filters.motivo_abertura} onChange={handleFilterChange}>
                 <option value="">Todos</option>
                 {MOTIVOS.map(([cod, label]) => (
-                  <option key={cod} value={cod}>{cod} — {label}</option>
+                  <option key={cod} value={cod}>{label}</option>
                 ))}
               </select>
             </div>
@@ -200,7 +202,7 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
             <div className="filter-group">
               <label>Equipe Fiscal (c&oacute;digo)</label>
               <input type="text" name="equipe_fiscal" value={filters.equipe_fiscal}
-                onChange={handleFilterChange} placeholder="Ex: 12" />
+                onChange={handleFilterChange} placeholder="Ex: 427" />
             </div>
             <div className="filter-group">
               <label>&Oacute;rg&atilde;o Executor</label>

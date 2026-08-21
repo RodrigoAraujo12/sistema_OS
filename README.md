@@ -21,8 +21,9 @@ Sistema web para gestao e acompanhamento de Ordens de Servico (OS) da Secretaria
 - [Estrutura do Projeto](#estrutura-do-projeto)
 - [API REST – Endpoints](#api-rest--endpoints)
 - [Testes](#testes)
-- [Integracao Informix](#integracao-informix)
+- [Integracao ATF](#integracao-atf)
 - [Configuracao](#configuracao)
+- [Decisoes e Pendencias](#decisoes-e-pendencias)
 - [Troubleshooting](#troubleshooting)
 - [Notas de Producao](#notas-de-producao)
 
@@ -468,8 +469,25 @@ curl -X POST http://localhost:8000/auth/login \
 | ------ | ---------------------- | ----------------------------------------------- | ----- |
 | GET    | `/ordens`              | Lista OS via ATF (com filtros e paginacao)      | Token |
 | GET    | `/ordens/{numero}`     | Busca OS por numero (com verificacao hierarquica) | Token |
+| GET    | `/ordens/{numero}/detalhe` | Detalhe completo de UMA OS (servico detalharOrdemServico) | Token |
 | GET    | `/ordens/{numero}/pdf` | Gera e baixa PDF detalhado de uma OS            | Token |
 | GET    | `/alertas`             | Lista alertas gerados                           | Token |
+
+**Dois servicos do ATF, dois usos.** `/ordens` consome o
+`listarOrdensServicoWebService` (doc da listagem) e alimenta o grid.
+`/ordens/{numero}/detalhe` consome o `detalharOrdemServicoWebService`
+(doc do detalhe) e e chamado a cada clique numa linha — uma OS por
+chamada. O detalhe traz o que a listagem nao tem: contribuinte com
+endereco, eventos de acompanhamento, prorrogacoes, notificacoes,
+processos, justificativas de atraso, descricoes complementares e o
+total recolhido. Como nenhum dos dois e superconjunto do outro (equipe
+fiscal, dias de execucao e as medias por Modelo/Motivo so existem na
+listagem), o painel sobrepoe o detalhe a linha ja carregada, campo a
+campo, sem apagar o que vier vazio.
+
+Os dois servicos precisam apontar para o mesmo ambiente do ATF, e a
+doc do detalhe tem armadilhas no nome da operacao e na lista de retorno —
+ver [Integracao ATF](#integracao-atf).
 
 **Query params de `/ordens`:**
 
@@ -629,12 +647,98 @@ python -m pytest tests/ --cov=backend --cov-report=term-missing
 
 ## Integracao ATF
 
-O sistema consulta a **API ATF (SEFAZ PB)** via HTTPS para ler Ordens de Servico no formato XML. Se `ATF_BASE_URL` nao estiver configurado, usa **dados MOCK** automaticamente.
+O sistema consulta a **API ATF (SEFAZ PB)** via SOAP sobre HTTPS para ler
+Ordens de Servico. Se `ATF_BASE_URL` nao estiver configurado, usa **dados
+MOCK** automaticamente — e o que permite desenvolver sem rede.
+
+### Os dois servicos
+
+Ambos ficam no mesmo endpoint (`POST {ATF_BASE_URL}/<caminho-do-servico>`);
+o que muda e a operacao dentro do envelope SOAP.
+
+| Servico | Doc | Usado em | Traz |
+| ------- | --- | -------- | ---- |
+| `listarOrdensServicoWebService` | doc da listagem | grid de OS, relatorios, PDF | lista completa (sem paginacao), com equipe fiscal, dias de execucao e medias por Modelo/Motivo |
+| `detalharOrdemServicoWebService` | doc do detalhe | clique numa linha do grid — uma OS por vez | contribuinte com endereco, eventos, prorrogacoes, notificacoes, processos, justificativas, recolhimentos |
+
+Nenhum dos dois e superconjunto do outro, entao a OS exibida e a
+**sobreposicao** dos dois: o detalhe cobre a linha do grid campo a campo,
+e o que vier vazio nao apaga o que a listagem trouxe. Sem isso, abrir uma
+OS apagaria da tela a equipe fiscal e os campos calculados.
+
+A regra canonica e `mesclar_detalhe_os()`, em `external_api.py`, usada
+pelo PDF de uma OS. O painel repete a mesma logica em `OrdensPanel.jsx`
+(`sobrepor` / `mesclarDetalhe`) porque la a linha ja esta em maos:
+refazer a consulta da listagem custaria ~1,5s a cada clique, contra 0,5s
+do detalhe sozinho. **Sao duas implementacoes da mesma regra — mexeu numa,
+mexa na outra.**
+
+O **PDF de uma OS** (`/ordens/{numero}/pdf`) sai com o mesmo conteudo do
+modal. Como o servidor nao tem a linha do grid em maos, ele busca os dois
+servicos e mescla — por isso o download demora mais que abrir o modal. Se
+o servico de detalhe falhar, o PDF sai so com os dados da listagem em vez
+de nao sair: em producao ele ainda nao esta publicado.
+
+### Ambientes — leia antes de trocar a URL
+
+**Os dois servicos precisam apontar para o MESMO ambiente.** Producao e
+desenvolvimento tem bancos diferentes: a mesma OS volta com outro
+contribuinte, outra situacao e outros fiscais em cada um. Misturar
+produz um registro incoerente na tela e — pior — faria a checagem de
+hierarquia ser decidida por dados de desenvolvimento.
+
+Hoje so **desenvolvimento** (`https://<host-homologacao>`)
+responde aos dois. Em producao (`https://<host-producao>`) a
+listagem funciona, mas o detalhe levanta
+`erro de operacao ausente no ambiente` — nao foi implantado (verificado em
+21/08/2026). Por isso `ATF_BASE_URL` aponta para desenvolvimento.
+
+Para voltar a producao quando o detalhe subir:
+
+1. Trocar `ATF_BASE_URL` para `https://<host-producao>`.
+2. **Conferir o `?wsdl` de producao antes**: o nome da operacao difere
+   entre os ambientes (ver a armadilha abaixo).
+3. Refazer o mapeamento de qualquer codigo do ATF guardado no banco
+   local — codigos coletados em desenvolvimento podem nao valer em
+   producao.
+
+`ATF_DETALHE_BASE_URL` existe para o caso de ser mesmo necessario separar
+os dois servicos em ambientes distintos. Vazia (o normal) = usa a mesma
+URL da listagem. Preenchida, a permissao de acesso a OS passa
+automaticamente a ser decidida pela **listagem**, nunca pelos fiscais do
+outro banco — ver `_buscar_detalhe_os_atf`, em `main.py`.
+
+### Armadilhas da doc do detalhe
+
+- **Nome da operacao.** O elemento da requisicao e
+  `detalharOrdemServicoRequest` em desenvolvimento (como a doc descreve),
+  mas `detalharOrdemServicoRequest` em producao. Errar devolve HTTP
+  500 com o SOAP Fault `Message part [...] was not recognized`.
+- **SOAP Fault vem com HTTP 500.** Um `raise_for_status()` seco descarta
+  justamente a mensagem que explica o erro; por isso `_erro_soap()` le o
+  `<faultstring>` antes de tratar como falha de transporte.
+- **A lista de retorno esta incompleta.** Comparando tag a tag a arvore
+  da doc com uma resposta real, quatro tags aparecem so na resposta:
+  `equipeFiscalizacao` / `noEquipe` (o nome da equipe fiscal) e
+  `tpBdFiscal` / `dsTpBdFiscal`. Todas sao lidas. O resto da doc confere.
+- **"Nenhum registro satisfaz a pesquisa"** e como o ATF diz que a OS nao
+  existe. Numa busca por numero isso vira 404, nao erro de negocio.
+- Ficam de fora do parser, de proposito (estes SAO documentados): os
+  codigos redundantes do endereco `cdcorreios`, `cdcorreiosUf` e
+  `cdibgeUf`, que repetem municipio e UF ja exibidos, e `listaDenuncia`,
+  que vem sempre vazia e sem estrutura documentada.
 
 ### Configuracao ATF
 
 ```bash
-ATF_BASE_URL=https://<host-do-atf>
+# Os dois servicos saem desta URL. Trocar so com o passo a passo acima.
+ATF_BASE_URL=https://<host-homologacao>
+
+# Vazia = detalhe usa a URL acima. So preencher para separar ambientes.
+ATF_DETALHE_BASE_URL=
+
+# Segundos de cache das respostas do ATF. 0 desliga.
+ATF_CACHE_TTL=60
 ```
 
 ### Situacoes e Modelos (ATF)
@@ -667,7 +771,9 @@ Todas as variaveis ficam no arquivo `.env` (copiado de `.env.example`):
 | `LOG_LEVEL`          | Nivel de log (DEBUG/INFO/WARNING)      | `INFO`                     |
 | `DEFAULT_PASSWORD`   | Senha temporaria para novos usuarios   | `temp1234`                 |
 | `CORS_ORIGINS`       | Origens permitidas (separadas por `,`) | `http://localhost:5173`    |
-| `ATF_BASE_URL`       | URL base da API ATF (vazio = usa MOCK) | `""` (vazio)               |
+| `ATF_BASE_URL`       | URL base da API ATF (vazio = usa MOCK). Ver [Ambientes](#ambientes--leia-antes-de-trocar-a-url) antes de trocar | `""` (vazio)               |
+| `ATF_DETALHE_BASE_URL` | URL so do servico de detalhe. Vazia = usa `ATF_BASE_URL` | `""` (vazio)             |
+| `ATF_CACHE_TTL`      | Segundos de cache das respostas do ATF (0 desliga) | `60`             |
 | `INFORMIX_SERVER`    | Servidor Informix (legado)             | (vazio = nao usa Informix) |
 | `INFORMIX_DATABASE`  | Nome do banco Informix                 | —                          |
 | `INFORMIX_HOST`      | Host do servidor Informix              | —                          |
@@ -680,6 +786,66 @@ Todas as variaveis ficam no arquivo `.env` (copiado de `.env.example`):
 
 A URL da API e configurada automaticamente pelo Vite via `import.meta.env.VITE_API_BASE_URL`.
 Se nao definida, o padrao e `http://localhost:8000`.
+
+## Decisoes e Pendencias
+
+Registro do que foi decidido e do que esta parado esperando terceiros.
+Serve para nao "corrigir" de novo algo que ja foi decidido assim de
+proposito. Ultima revisao: 21/08/2026.
+
+### Esperando a SEFAZ
+
+| O que falta | O que fica travado |
+| ----------- | ------------------ |
+| **Tabela de equipes fiscais** (codigo -> nome) | O filtro "Equipe Fiscal" do painel continua sendo um campo onde o usuario digita o `cdEquipeFisc` (ex: 427). E a unica excecao a regra de nao mostrar codigos, e e consciente: nao ha fonte para montar um select por nome. **Nao trocar por um select sem ter a tabela.** |
+| **Grupo do ATF** com o supervisor e as matriculas dos seus fiscais | Seria a fonte da verdade para a visibilidade dos supervisores, no lugar do vinculo mantido a mao em `gerencias` / `supervisoes`. Enquanto nao vier, vale o cadastro local, que ja funciona. |
+| Tabelas de codigo de `stPrazoOS`, `tpNatureza` e `tpDocumento` | Esses campos chegam so como codigo (`"0"`, `"I"`, `"1"`), sem descricao em lugar nenhum. Continuam na resposta da API, mas saem da tela — um numero solto nao informa ninguem. Ha comentario no `OrdensPanel.jsx` marcando onde recoloca-los. |
+
+### Em aberto — decisao de politica, nao tecnica
+
+Restringir a visibilidade por **equipe fiscal** em vez de por
+**matricula** e possivel hoje: o `cdEquipeFisc` vem em toda OS da
+listagem e ja e aceito como filtro pelo ATF. Falta uma definicao de
+negocio antes de implementar:
+
+> Um fiscal da equipe A, designado numa OS da equipe B, deve ver essa OS?
+> Pelo criterio de matricula ele ve; pelo de equipe, nao.
+
+Medicao em dados reais (246 OS abertas em 07/2026) para embasar:
+
+- 21 equipes distintas;
+- 9% das OS nao tem equipe fiscal — e sao **exatamente as mesmas** que
+  nao tem fiscal designado, entao os dois criterios cobrem o mesmo
+  universo;
+- essas mesmas OS (abertas e ainda nao distribuidas) hoje sao
+  **invisiveis para supervisor e gerente** — so o admin as ve, porque o
+  filtro exige alguem da equipe designado na OS. Se a intencao e o
+  supervisor acompanhar o que ainda nao foi distribuido, isso e uma
+  lacuna do modelo atual, independente de equipe fiscal.
+
+Para implementar por equipe seria preciso guardar o `cdEquipeFisc` na
+tabela `supervisoes` (que hoje so tem `id`, `gerencia_id` e `name`) — o
+**codigo**, nunca o nome: nome de equipe e editavel, codigo nao.
+
+### Convencao de interface: codigo e coisa interna
+
+O usuario final le **nomes**; os codigos do ATF (`cdModeloOS`,
+`cdMotivoAberturaOS`, `cdElementoOrg`, situacao...) continuam indo e
+voltando nas consultas e nos `value` dos `<select>`, mas nao aparecem na
+tela. O helper `nomeOuCodigo()` no `OrdensPanel.jsx` centraliza a regra:
+mostra o nome e so cai no codigo quando o ATF manda o codigo sem
+descricao.
+
+Um efeito colateral disso ja mordeu uma vez: o detalhe manda o *codigo*
+do status do fiscal (`stFiscalOS` = `"0"`) e a listagem manda o *texto*
+(`"DESIGNADO"`). Mapear os dois para a mesma chave fazia o codigo apagar
+a descricao na mesclagem — por isso o detalhe usa `status_codigo`.
+
+### Divida tecnica conhecida
+
+- `listaDenuncia` nao e parseada — vem vazia na doc e nas respostas
+  reais, e sem uma resposta com denuncia preenchida nao da para saber o
+  formato dos filhos.
 
 ## Troubleshooting
 

@@ -39,11 +39,14 @@ from .db import (
     UserRepository,
 )
 from .external_api import (
+    detalhar_ordem_atf,
+    detalhe_em_outro_ambiente,
     filtrar_atf_por_matriculas,
     gerar_alertas,
     gerar_dashboard,
     listar_ordens_atf,
     listar_ordens_servico,
+    mesclar_detalhe_os,
 )
 from .schemas import (
     AlertaResponse,
@@ -53,6 +56,7 @@ from .schemas import (
     LoginRequest,
     LoginResponse,
     OrdensATFResponse,
+    OSDetalheCompletoResponse,
     OSDetalheResponse,
     PasswordChangeRequest,
     PasswordResetResponse,
@@ -692,21 +696,122 @@ def _buscar_os_atf(numero: str, user: dict[str, Any]) -> dict[str, Any]:
 
 # NOTA: o numero da OS contem barra (ex: 93300008.12.00000001/2026-99) e o
 # servidor ASGI decodifica %2F antes do roteamento, entao as rotas abaixo
-# precisam do conversor ":path". A rota do PDF vem primeiro de proposito:
-# rotas sao avaliadas na ordem de declaracao e "{numero:path}" tambem casaria
-# com ".../pdf".
+# precisam do conversor ":path". As rotas de detalhe e de PDF vem primeiro
+# de proposito: rotas sao avaliadas na ordem de declaracao e "{numero:path}"
+# tambem casaria com ".../detalhe" e ".../pdf".
+
+def _buscar_detalhe_os_atf(numero: str, user: dict[str, Any]) -> dict[str, Any]:
+    """
+    Busca o detalhe completo de uma OS (doc do detalhe) com a hierarquia do usuario.
+
+    Normalmente a permissao sai da propria resposta do detalhe, que traz
+    listaFiscal — nao ha segunda ida ao ATF so para conferir acesso. Como
+    em _buscar_os_atf, a consulta vai sem restricao e o filtro vem depois,
+    para separar "nao existe" (404) de "existe mas nao e sua" (403).
+
+    EXCECAO: quando o detalhe aponta para outro ambiente que a listagem
+    (ATF_DETALHE_BASE_URL), quem autoriza e a listagem. Os dois bancos
+    tem dados diferentes — a mesma OS volta com outros fiscais — e
+    decidir acesso pelos fiscais de um ambiente de desenvolvimento
+    liberaria OS que na base real nao sao do usuario.
+    """
+    autoriza_pela_listagem = detalhe_em_outro_ambiente()
+    if autoriza_pela_listagem:
+        # Levanta 404/403 por conta propria; o retorno nao interessa aqui.
+        _buscar_os_atf(numero, user)
+
+    try:
+        detalhe = detalhar_ordem_atf(numero)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    if detalhe is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OS nao encontrada")
+
+    if not autoriza_pela_listagem and not filtrar_atf_por_matriculas(
+        [detalhe], _matriculas_visiveis(user),
+    ):
+        logger.warning(
+            "Acesso negado ao detalhe da OS %s para '%s' (role=%s): fora da sua equipe.",
+            numero, user["username"], user["role"],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Esta OS nao esta designada a voce nem a sua equipe.",
+        )
+    return detalhe
+
+
+@app.get("/ordens/{numero:path}/detalhe", response_model=OSDetalheCompletoResponse)
+def get_os_detalhe(
+    numero: str, user: dict[str, Any] = Depends(get_active_user)
+) -> OSDetalheCompletoResponse:
+    """
+    Detalhe completo de UMA OS pelo detalharOrdemServicoWebService (doc do detalhe).
+
+    E o que o painel chama ao abrir uma linha da listagem: uma OS por
+    clique. Traz o que a listagem nao tem — contribuinte com endereco,
+    eventos de acompanhamento, prorrogacoes, notificacoes, processos,
+    justificativas e recolhimentos.
+    """
+    detalhe = _buscar_detalhe_os_atf(numero, user)
+    return OSDetalheCompletoResponse(
+        **detalhe, detalhe_de_outro_ambiente=detalhe_em_outro_ambiente(),
+    )
+
+
+def _os_completa_para_pdf(numero: str, user: dict[str, Any]) -> dict[str, Any]:
+    """
+    Monta a OS que vai para o PDF: a linha da listagem mais o detalhe.
+
+    O PDF precisa sair com o mesmo conteudo do modal, e o modal mostra a
+    juncao dos dois servicos. Aqui o servidor nao tem a linha em maos
+    como o painel tem, entao busca as duas coisas — e por isso o PDF e
+    mais lento que abrir o modal.
+
+    _buscar_os_atf ja resolve 404 e 403; a autorizacao continua saindo da
+    listagem, que e a fonte autoritativa.
+
+    Se o detalhe falhar, o PDF sai so com a listagem em vez de nao sair:
+    o servico de detalhe pode nao estar publicado no ambiente em uso (e o
+    caso de producao hoje), e um relatorio menor e melhor que um erro.
+    """
+    ordem = _buscar_os_atf(numero, user)
+    try:
+        detalhe = detalhar_ordem_atf(numero)
+    except Exception:
+        logger.warning(
+            "PDF da OS %s sai sem o detalhe (doc do detalhe): o servico falhou.",
+            numero, exc_info=True,
+        )
+        return ordem
+
+    if detalhe is None:
+        logger.warning("PDF da OS %s sai sem o detalhe: OS nao encontrada no servico.", numero)
+        return ordem
+    return mesclar_detalhe_os(ordem, detalhe)
+
 
 @app.get("/ordens/{numero:path}/pdf")
 def get_os_pdf(
     numero: str, user: dict[str, Any] = Depends(get_active_user)
 ) -> Response:
-    """Gera PDF de uma OS individual com os dados retornados pelo ATF."""
-    ordem = _buscar_os_atf(numero, user)
+    """
+    Gera o PDF de uma OS com todo o conteudo do detalhamento.
+
+    Mesmas secoes do modal, na mesma ordem, e sob a mesma regra: o
+    usuario le nomes, nao codigos do ATF. Secoes sem dado sao omitidas em
+    vez de sairem vazias.
+    """
+    ordem = _os_completa_para_pdf(numero, user)
     numero_os = ordem.get("numero_os", numero)
 
     pdf = _PDF(f"Ordem de Servico - {numero_os}")
     pdf.alias_nb_pages()
     pdf.add_page(orientation="P")
+
+    # Largura util da pagina retrato com as margens padrao do FPDF.
+    largura = pdf.w - pdf.l_margin - pdf.r_margin
 
     # --- Cabecalho da OS ---
     pdf.set_font("Helvetica", "B", 14)
@@ -716,6 +821,10 @@ def get_os_pdf(
     pdf.ln(4)
 
     def _secao(titulo: str) -> None:
+        # Sem espaco para o titulo mais uma linha de conteudo, comeca outra
+        # pagina: titulo de secao sozinho no pe da folha nao ajuda ninguem.
+        if pdf.get_y() > pdf.h - pdf.b_margin - 22:
+            pdf.add_page()
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_fill_color(240, 240, 245)
         pdf.cell(0, 7, f"  {titulo}", new_x="LMARGIN", new_y="NEXT", fill=True)
@@ -726,55 +835,215 @@ def get_os_pdf(
         pdf.cell(45, 5, label + ":")
         pdf.set_font("Helvetica", "", 8)
         texto = "-" if value in (None, "") else str(value)
-        pdf.cell(0, 5, _safe(texto), new_x="LMARGIN", new_y="NEXT")
+        # multi_cell e nao cell: nome de orgao passa de 130 caracteres e
+        # com cell() o texto vazaria a margem direita da pagina.
+        pdf.multi_cell(largura - 45, 5, _safe(texto), new_x="LMARGIN", new_y="NEXT")
+
+    def _texto_longo(value: Any) -> None:
+        """Paragrafo que quebra em varias linhas (observacoes, justificativas)."""
+        pdf.set_font("Helvetica", "", 8)
+        pdf.multi_cell(largura, 4.2, _safe(value), new_x="LMARGIN", new_y="NEXT")
+
+    def _tabela(headers: list[str], larguras: list[float], linhas: list[list[Any]]) -> None:
+        """Tabela simples com cabecalho; cada celula e truncada a sua largura."""
+        pdf.set_font("Helvetica", "B", 7)
+        for i, h in enumerate(headers):
+            pdf.cell(larguras[i], 6, _safe(h), border=1, align="C")
+        pdf.ln()
+        pdf.set_font("Helvetica", "", 7)
+        for linha in linhas:
+            for i, celula in enumerate(linha):
+                texto = _safe("-" if celula in (None, "") else celula)
+                # ~1.9 chars por mm na Helvetica 7 — corta o que nao couber
+                limite = max(1, int(larguras[i] * 1.9))
+                pdf.cell(larguras[i], 5, texto[:limite], border=1)
+            pdf.ln()
+
+    def _valor_br(valor: Any) -> str:
+        """Formata valor monetario no padrao brasileiro."""
+        if valor is None:
+            return ""
+        return f"R$ {valor:,.2f}".replace(",", "@").replace(".", ",").replace("@", ".")
+
+    def _periodo(inicio: Any, fim: Any, formatar=lambda v: v) -> str:
+        ini = formatar(inicio) if inicio else ""
+        f = formatar(fim) if fim else ""
+        return f"{ini} a {f}" if ini and f else (ini or f)
+
+    contribuinte = ordem.get("contribuinte") or {}
+    endereco = contribuinte.get("endereco") or {}
 
     # --- Informacoes Gerais ---
     _secao("Informacoes Gerais")
     _field("Situacao", _fmt_situacao(ordem))
     _field("Modelo", ordem.get("modelo"))
     _field("Motivo de Abertura", ordem.get("motivo_abertura"))
+    _field("Procedimento", ordem.get("procedimento"))
+    periodo_fisc = ordem.get("periodo_fiscalizar") or {}
+    _field("Periodo a Fiscalizar", _periodo(periodo_fisc.get("inicio"), periodo_fisc.get("fim")))
+    _field("Orgao Executor", " - ".join(
+        p for p in (ordem.get("orgao_executor_sigla"), ordem.get("orgao_executor")) if p))
+    _field("Orgao de Origem", ordem.get("orgao_origem"))
+    _field("Equipe Fiscal", ordem.get("equipe_fiscal"))
+    _field("Tipo de Funcionario", ordem.get("tipo_funcionario"))
+    _field("Termo da OS", ordem.get("termo_os_descricao") or ordem.get("termo_os"))
+    _field("BD Fiscal", ordem.get("bd_fiscal"))
+    pdf.ln(2)
+
+    # --- Contribuinte ---
+    _secao("Contribuinte")
+    _field("Razao Social", ordem.get("razao_social"))
     _field("IE", ordem.get("ie"))
     _field("CNPJ/CPF", ordem.get("cnpj"))
-    _field("Orgao Executor", ordem.get("orgao_executor"))
-    _field("Equipe Fiscal", ordem.get("equipe_fiscal"))
+    if endereco:
+        rua = ", ".join(p for p in (endereco.get("logradouro"), endereco.get("numero")) if p)
+        linha_end = " - ".join(p for p in (rua, endereco.get("complemento")) if p)
+        _field("Endereco", endereco.get("nao_decodificado") or linha_end)
+        _field("Bairro", endereco.get("bairro"))
+        cidade = " / ".join(p for p in (endereco.get("municipio"), endereco.get("uf")) if p)
+        _field("Municipio/UF", " - ".join(p for p in (cidade, endereco.get("cep")) if p))
+        _field("Reparticao", endereco.get("reparticao"))
     pdf.ln(2)
 
     # --- Datas e execucao ---
     _secao("Datas e Execucao")
     _field("Abertura", _fmt_data_br(ordem.get("data_abertura")))
+    _field("Emissao", _fmt_data_br(ordem.get("data_emissao")))
     _field("Inicio da Fiscalizacao", _fmt_data_br(ordem.get("data_inicio_fiscalizacao")))
+    _field("Prazo Final", _fmt_data_br(ordem.get("data_prazo_final")))
     _field("Encerramento", _fmt_data_br(ordem.get("data_encerramento")))
     _field("Ultimo Evento", _fmt_data_br(ordem.get("data_ultimo_evento")))
     _field("Dias de Execucao", ordem.get("dias_execucao"))
     tempo_medio = ordem.get("tempo_medio_execucao_modelo_motivo")
     _field("Tempo Medio (Modelo/Motivo)", f"{tempo_medio} dias" if tempo_medio is not None else None)
     _field("Media de Eventos (Modelo/Motivo)", ordem.get("qtd_media_eventos_modelo_motivo"))
+    _field("Exercicio", _periodo(
+        ordem.get("data_inicio_exercicio"), ordem.get("data_final_exercicio"), _fmt_data_br,
+    ))
+    _field("Total Recolhido", _valor_br(ordem.get("valor_total_recolhido")))
     pdf.ln(2)
+
+    # --- Cargas e autorizacao ---
+    periodo_nf = ordem.get("periodo_nf") or {}
+    periodo_efd = ordem.get("periodo_efd") or {}
+    autorizacao = ordem.get("autorizacao") or {}
+    if periodo_nf or periodo_efd or autorizacao:
+        _secao("Cargas e Autorizacao")
+        _field("Periodo de NF (emissao)", _periodo(
+            periodo_nf.get("inicio"), periodo_nf.get("fim"), _fmt_data_br))
+        _field("Periodo de EFD (referencia)", _periodo(
+            periodo_efd.get("inicio"), periodo_efd.get("fim"), _fmt_data_br))
+        _field("Autorizada em", _fmt_data_br(autorizacao.get("data")))
+        _field("Autorizada por", " - ".join(
+            p for p in (autorizacao.get("usuario"), autorizacao.get("matricula")) if p))
+        pdf.ln(2)
 
     # --- Fiscais ---
     fiscais = ordem.get("fiscais", [])
     _secao(f"Fiscais ({len(fiscais)})")
-
     if fiscais:
-        f_headers = ["Matricula", "Nome", "Status", "Designacao", "Ciencia", "Cancelamento"]
-        f_widths = [22, 55, 25, 26, 26, 28]
-        pdf.set_font("Helvetica", "B", 7)
-        for i, h in enumerate(f_headers):
-            pdf.cell(f_widths[i], 6, h, border=1, align="C")
-        pdf.ln()
-
-        pdf.set_font("Helvetica", "", 7)
-        for f in fiscais:
-            pdf.cell(f_widths[0], 5, _safe(f.get("matricula", "")), border=1, align="C")
-            pdf.cell(f_widths[1], 5, _safe(f.get("nome", ""))[:38], border=1)
-            pdf.cell(f_widths[2], 5, _safe(f.get("status") or "-"), border=1, align="C")
-            pdf.cell(f_widths[3], 5, _fmt_data_br(f.get("data_designacao")), border=1, align="C")
-            pdf.cell(f_widths[4], 5, _fmt_data_br(f.get("data_ciencia")), border=1, align="C")
-            pdf.cell(f_widths[5], 5, _fmt_data_br(f.get("data_cancelamento")), border=1, align="C")
-            pdf.ln()
+        _tabela(
+            ["Matricula", "Nome", "Resp.", "Status", "Designacao", "Ciencia", "Cancelamento"],
+            [20, 48, 14, 24, 24, 24, 26],
+            [[f.get("matricula"), f.get("nome"), f.get("responsavel"),
+              f.get("status") or f.get("status_codigo"),
+              _fmt_data_br(f.get("data_designacao")), _fmt_data_br(f.get("data_ciencia")),
+              _fmt_data_br(f.get("data_cancelamento"))] for f in fiscais],
+        )
     else:
         pdf.set_font("Helvetica", "I", 8)
         pdf.cell(0, 5, "Nenhum fiscal designado.", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
+    # --- Eventos de acompanhamento ---
+    eventos = ordem.get("eventos") or []
+    if eventos:
+        _secao(f"Eventos de Acompanhamento ({len(eventos)})")
+        for ev in eventos:
+            pdf.set_font("Helvetica", "B", 8)
+            titulo = ev.get("tipo") or ev.get("tipo_codigo") or "-"
+            datas = _periodo(ev.get("data_inicial"), ev.get("data_final"), _fmt_data_br)
+            pdf.cell(0, 5, _safe(f"{titulo}   {datas}"), new_x="LMARGIN", new_y="NEXT")
+            if ev.get("procedimento"):
+                _texto_longo(ev["procedimento"])
+            if ev.get("observacao"):
+                _texto_longo(ev["observacao"])
+            rodape = "   ".join(p for p in (
+                _periodo(ev.get("referencia_inicial"), ev.get("referencia_final")),
+                f"Levantado: {_valor_br(ev['valor_levantado'])}" if ev.get("valor_levantado") is not None else "",
+                ev.get("arquivo") or "",
+            ) if p)
+            if rodape:
+                pdf.set_font("Helvetica", "I", 7)
+                pdf.cell(0, 4, _safe(rodape), new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(1)
+        pdf.ln(1)
+
+    # --- Prorrogacoes ---
+    prorrogacoes = ordem.get("prorrogacoes") or []
+    if prorrogacoes:
+        _secao(f"Prorrogacoes ({len(prorrogacoes)})")
+        _tabela(
+            ["Dias", "Prazo Anterior", "Prazo Atual", "Situacao", "Status", "Solicitante", "Homologacao"],
+            [14, 26, 26, 26, 22, 40, 26],
+            [[p.get("dias"), _fmt_data_br(p.get("prazo_anterior")), _fmt_data_br(p.get("prazo_atual")),
+              p.get("situacao_prazo"), p.get("status"), p.get("usuario"),
+              _fmt_data_br(p.get("data_homologacao"))] for p in prorrogacoes],
+        )
+        for p in prorrogacoes:
+            if p.get("justificativa"):
+                pdf.ln(1)
+                _texto_longo(f"Justificativa: {p['justificativa']}")
+        pdf.ln(2)
+
+    # --- Notificacoes ---
+    notificacoes = [("ATF", n) for n in (ordem.get("notificacoes") or [])]
+    notificacoes += [("SCAMF", n) for n in (ordem.get("notificacoes_scamf") or [])]
+    if notificacoes:
+        _secao(f"Notificacoes ({len(notificacoes)})")
+        _tabela(
+            ["Origem", "Codigo", "Notificacao"], [24, 30, 126],
+            [[origem, n.get("codigo"), n.get("nome")] for origem, n in notificacoes],
+        )
+        pdf.ln(2)
+
+    # --- Processos ---
+    processos = ordem.get("processos") or []
+    if processos:
+        _secao(f"Processos ({len(processos)})")
+        _tabela(
+            ["Numero", "Tipo"], [50, 130],
+            [[p.get("numero"), p.get("tipo")] for p in processos],
+        )
+        pdf.ln(2)
+
+    # --- Justificativas de atraso ---
+    justificativas = ordem.get("justificativas") or []
+    if justificativas:
+        _secao(f"Justificativas de Atraso ({len(justificativas)})")
+        for j in justificativas:
+            pdf.set_font("Helvetica", "B", 8)
+            cabecalho = "   ".join(p for p in (
+                j.get("tipo") or "-", _fmt_data_br(j.get("data_inclusao")), j.get("usuario") or "",
+            ) if p)
+            pdf.cell(0, 5, _safe(cabecalho), new_x="LMARGIN", new_y="NEXT")
+            if j.get("descricao"):
+                _texto_longo(j["descricao"])
+            pdf.ln(1)
+        pdf.ln(1)
+
+    # --- Descricoes complementares ---
+    descricoes = ordem.get("descricoes_complementares") or []
+    if descricoes:
+        _secao("Descricoes Complementares")
+        for d in descricoes:
+            pdf.set_font("Helvetica", "B", 8)
+            cabecalho = "   ".join(p for p in (
+                d.get("usuario") or "-", _fmt_data_br(d.get("data_inclusao")),
+            ) if p)
+            pdf.cell(0, 5, _safe(cabecalho), new_x="LMARGIN", new_y="NEXT")
+            _texto_longo(d.get("descricao"))
+            pdf.ln(1)
 
     pdf_bytes = bytes(pdf.output())
     filename = f"{numero_os.replace('/', '_')}.pdf"
@@ -859,10 +1128,20 @@ _STATUS_MAP = {
 
 
 def _fmt_situacao(o: dict) -> str:
-    """Retorna label de status/situacao da OS, priorizando campo 'situacao' do ATF."""
+    """
+    Descricao da situacao da OS, sem o codigo do ATF.
+
+    Mesma regra da tela: o usuario le o nome; o codigo e chave de
+    integracao e fica interno. So aparece quando o ATF manda o codigo sem
+    a descricao — melhor que uma celula vazia.
+    """
     sit = o.get("situacao")
     if sit and isinstance(sit, dict):
-        return f"{sit.get('codigo')} — {sit.get('descricao', '')}"
+        descricao = (sit.get("descricao") or "").strip()
+        if descricao:
+            return descricao
+        codigo = sit.get("codigo")
+        return "" if codigo is None else str(codigo)
     return _STATUS_MAP.get(o.get("status", ""), o.get("status", ""))
 
 

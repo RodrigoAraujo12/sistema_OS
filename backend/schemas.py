@@ -240,11 +240,207 @@ class OrdensATFResponse(BaseModel):
 
 class OSDetalheResponse(OSListagemATF):
     """
-    Detalhe de uma OS.
+    Uma OS buscada pelo numero no servico de LISTAGEM (doc da listagem).
 
-    O ATF expoe um unico servico (listarOrdensServicoWebService), que ja
-    retorna todos os dados disponiveis. Por isso o detalhe tem exatamente
-    os mesmos campos da listagem — nao existe informacao adicional a
-    buscar (nao ha endereco, telefone, valor estimado, objeto,
-    observacoes nem movimentacoes no ATF).
+    Tem exatamente os campos da listagem, porque e a mesma consulta com
+    filtro de numero. O detalhe que o painel abre ao clicar na linha vem
+    do outro servico — ver OSDetalheCompletoResponse, abaixo.
     """
+
+
+# ─── Detalhe completo da OS (doc do detalhe) ───────────────────────
+#
+# Segundo servico do ATF, chamado ao abrir uma OS na listagem — uma por
+# vez. Traz blocos que a listagem nao tem: endereco do contribuinte,
+# eventos de acompanhamento, prorrogacoes, notificacoes, processos,
+# justificativas e recolhimentos.
+#
+# Todos os campos tem default: o servico omite bloco inteiro quando nao
+# ha dado (uma OS sem prorrogacao nao devolve <listaProrrogacao>), e uma
+# ausencia dessas nao pode virar erro de validacao no meio do caminho.
+
+class PeriodoATF(BaseModel):
+    """Par de datas/referencias (periodo a fiscalizar, cargas de NF/EFD)."""
+    inicio: str = ""
+    fim: str = ""
+
+
+class EnderecoATF(BaseModel):
+    """Endereco do contribuinte."""
+    logradouro: str = ""
+    numero: str | None = None
+    complemento: str | None = None
+    bairro: str = ""
+    municipio: str = ""
+    municipio_codigo: str | None = None
+    municipio_ibge: str | None = None
+    uf: str = ""
+    cep: str | None = None
+    latitude: str | None = None
+    longitude: str | None = None
+    # dsEndNaoDecodifica: endereco que o cadastro nao conseguiu separar em
+    # campos. Quando vem preenchido, e o unico texto util do bloco.
+    nao_decodificado: str | None = None
+    reparticao: str | None = None
+    atualizado_em: str | None = None
+
+
+class ContribuinteATF(BaseModel):
+    """Contribuinte fiscalizado, com endereco."""
+    nome: str = ""
+    natureza: str | None = None
+    ie: str = ""
+    documento: str = ""
+    tipo_documento: str | None = None
+    endereco: EnderecoATF | None = None
+
+
+class FiscalDetalheATF(FiscalATF):
+    """
+    Fiscal no detalhe: os mesmos campos da listagem, mais o indicador de
+    responsavel pela OS e o codigo do status.
+
+    Dois campos herdados ficam sempre vazios aqui: data_cancelamento,
+    que a doc do detalhe nao devolve, e status — este servico manda o
+    codigo (stFiscalOS), nao a descricao, entao ele vai em
+    status_codigo para nao sobrepor o texto que vem da listagem.
+    """
+    responsavel: str | None = None
+    status_codigo: str | None = None
+
+
+class EventoOSATF(BaseModel):
+    """Evento de acompanhamento da OS (listaEventos)."""
+    tipo_codigo: str | None = None
+    tipo: str = ""
+    data_inicial: str | None = None
+    data_final: str | None = None
+    referencia_inicial: str | None = None
+    referencia_final: str | None = None
+    procedimento: str = ""
+    valor_levantado: float | None = None
+    observacao: str | None = None
+    arquivo: str | None = None
+
+
+class ProrrogacaoATF(BaseModel):
+    """Pedido de prorrogacao de prazo da OS."""
+    dias: int | None = None
+    prazo_atual: str | None = None
+    prazo_anterior: str | None = None
+    situacao_prazo: str | None = None
+    justificativa: str | None = None
+    usuario: str | None = None
+    data_homologacao: str | None = None
+    usuario_homologacao: str | None = None
+    status: str | None = None
+
+
+class NotificacaoATF(BaseModel):
+    """Notificacao vinculada a OS (lista normal ou SCAMF)."""
+    codigo: str = ""
+    nome: str = ""
+
+
+class ProcessoATF(BaseModel):
+    """Processo administrativo vinculado a OS."""
+    numero: str = ""
+    tipo: str | None = None
+
+
+class JustificativaATF(BaseModel):
+    """Justificativa de atraso registrada na OS."""
+    tipo: str = ""
+    descricao: str = ""
+    usuario: str | None = None
+    data_inclusao: str | None = None
+
+
+class DescricaoComplementarATF(BaseModel):
+    """Texto complementar incluido na OS."""
+    data_inclusao: str | None = None
+    usuario: str | None = None
+    descricao: str = ""
+    descricao_formatada: str | None = None
+
+
+class AutorizacaoATF(BaseModel):
+    """Quem autorizou a OS e quando."""
+    data: str | None = None
+    usuario: str | None = None
+    matricula: str | None = None
+
+
+class OSDetalheCompletoResponse(BaseModel):
+    """
+    Resposta do detalharOrdemServicoWebService (doc do detalhe).
+
+    Os campos que existem nos dois servicos usam os mesmos nomes da
+    listagem (numero_os, modelo, situacao, data_abertura, fiscais...)
+    para o painel sobrepor o detalhe a linha do grid campo a campo.
+
+    O que a listagem tem e este servico nao — equipe fiscal, dias de
+    execucao e as medias por Modelo/Motivo — nao aparece aqui de
+    proposito: o front preserva esses valores da linha ao mesclar.
+    """
+    numero_os: str
+    modelo: str = ""
+    modelo_codigo: int | None = None
+    motivo_abertura: str = ""
+    motivo_abertura_codigo: int | None = None
+    situacao: SituacaoATF | None = None
+    termo_os: str | None = None
+    termo_os_descricao: str | None = None
+    tipo_funcionario: str | None = None
+    periodo_fiscalizar: PeriodoATF | None = None
+
+    # equipeFiscalizacao/noEquipe, tpBdFiscal e dsTpBdFiscal vem na
+    # resposta mas nao constam da doc do detalhe.
+    equipe_fiscal: str = ""
+    bd_fiscal: str | None = None
+    bd_fiscal_codigo: str | None = None
+
+    orgao_origem: str | None = None
+    orgao_origem_codigo: int | None = None
+    orgao_executor: str = ""
+    orgao_executor_sigla: str = ""
+    orgao_executor_codigo: int | None = None
+
+    data_abertura: str = ""
+    data_emissao: str | None = None
+    data_inicio_fiscalizacao: str | None = None
+    data_prazo_final: str | None = None
+    data_encerramento: str | None = None
+    data_inicio_exercicio: str | None = None
+    data_final_exercicio: str | None = None
+    data_ultimo_evento: str | None = None
+    situacao_prazo: str | None = None
+
+    ie: str = ""
+    cnpj: str | None = None
+    razao_social: str = ""
+    contribuinte: ContribuinteATF | None = None
+
+    periodo_nf: PeriodoATF | None = None
+    periodo_efd: PeriodoATF | None = None
+    autorizacao: AutorizacaoATF | None = None
+
+    fiscais: list[FiscalDetalheATF] = []
+    eventos: list[EventoOSATF] = []
+    qtd_eventos: int | None = None
+    prorrogacoes: list[ProrrogacaoATF] = []
+    notificacoes: list[NotificacaoATF] = []
+    notificacoes_scamf: list[NotificacaoATF] = []
+    processos: list[ProcessoATF] = []
+    justificativas: list[JustificativaATF] = []
+    descricoes_complementares: list[DescricaoComplementarATF] = []
+
+    valor_total_recolhido: float | None = None
+    id_os_gerou_banco: str | None = None
+
+    # Verdadeiro quando o detalhe veio de um ambiente diferente do da
+    # listagem (ATF_DETALHE_BASE_URL). Os bancos nao sao os mesmos: a
+    # mesma OS volta com outro contribuinte e outros fiscais, e a tela
+    # precisa avisar quem esta olhando em vez de exibir a mistura como
+    # se fosse um registro so.
+    detalhe_de_outro_ambiente: bool = False

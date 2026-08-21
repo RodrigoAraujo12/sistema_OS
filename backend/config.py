@@ -45,6 +45,19 @@ LOGIN_BLOQUEIO_MINUTOS: int = int(os.getenv("LOGIN_BLOQUEIO_MINUTOS", "15"))
 # Exemplo: https://<host-do-atf>
 ATF_BASE_URL: str = os.getenv("ATF_BASE_URL", "")
 
+# URL do servico de DETALHE da OS (doc do detalhe). Vazia = usa a mesma do
+# ATF_BASE_URL, que e o estado final desejado.
+#
+# Ela existe porque hoje os dois servicos moram em ambientes diferentes:
+# a listagem esta em producao e o detalhe so responde no ambiente de
+# desenvolvimento (em producao o WSDL declara detalharOrdemServico,
+# mas a implantacao levanta erro de operacao ausente no ambiente — verificado em
+# 21/08/2026). Os dois ambientes tem BANCOS DIFERENTES: a mesma OS volta
+# com contribuinte, situacao e fiscais distintos em cada um. Enquanto
+# estiverem separados, o detalhe serve para conferir a integracao, e nao
+# para decidir acesso — ver _buscar_detalhe_os_atf, em main.py.
+ATF_DETALHE_BASE_URL: str = os.getenv("ATF_DETALHE_BASE_URL", "")
+
 # Por quantos segundos a resposta do ATF fica em cache. O servico devolve
 # a lista inteira e nao pagina, entao sem cache cada troca de pagina ou de
 # ordenacao refaz a consulta completa. 0 desliga o cache.
