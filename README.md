@@ -717,16 +717,27 @@ outro banco — ver `_buscar_detalhe_os_atf`, em `main.py`.
 - **SOAP Fault vem com HTTP 500.** Um `raise_for_status()` seco descarta
   justamente a mensagem que explica o erro; por isso `_erro_soap()` le o
   `<faultstring>` antes de tratar como falha de transporte.
-- **A lista de retorno esta incompleta.** Comparando tag a tag a arvore
-  da doc com uma resposta real, quatro tags aparecem so na resposta:
-  `equipeFiscalizacao` / `noEquipe` (o nome da equipe fiscal) e
-  `tpBdFiscal` / `dsTpBdFiscal`. Todas sao lidas. O resto da doc confere.
+- **A lista de retorno ja esteve incompleta.** A revisao de 21/08/2026
+  fechou a lacuna: `equipeFiscalizacao` / `noEquipe` (o nome da equipe
+  fiscal) e `tpBdFiscal` / `dsTpBdFiscal` passaram a constar, e as
+  estruturas de `recolhimentoOS` e `denuncia` — antes so citadas pelo
+  nome da lista — foram detalhadas. Todas sao lidas. Vale reconferir a
+  cada revisao da doc: comparar as tags de uma resposta real com a
+  arvore documentada leva minutos e ja achou campo util escondido.
+- **`cdEquipe` foi anunciado mas nao existe.** O time do ATF chegou a
+  informar que o codigo da equipe entraria no bloco `equipeFiscalizacao`;
+  ele nao esta na doc revisada nem em nenhuma das 17 OS conferidas. O
+  parser ja o le por antecipacao; ate la o codigo da equipe vem da
+  listagem, pela mesclagem.
 - **"Nenhum registro satisfaz a pesquisa"** e como o ATF diz que a OS nao
   existe. Numa busca por numero isso vira 404, nao erro de negocio.
 - Ficam de fora do parser, de proposito (estes SAO documentados): os
   codigos redundantes do endereco `cdcorreios`, `cdcorreiosUf` e
-  `cdibgeUf`, que repetem municipio e UF ja exibidos, e `listaDenuncia`,
-  que vem sempre vazia e sem estrutura documentada.
+  `cdibgeUf`, que repetem municipio e UF ja exibidos.
+- **Recolhimentos e denuncias sao lidos pelo contrato, sem validacao
+  contra dado real:** nenhuma das 40 OS varridas no ambiente de teste
+  trouxe esses blocos preenchidos. Se aparecer divergencia quando houver
+  dado de verdade, e ali que se olha primeiro.
 
 ### Configuracao ATF
 
@@ -843,9 +854,10 @@ a descricao na mesclagem — por isso o detalhe usa `status_codigo`.
 
 ### Divida tecnica conhecida
 
-- `listaDenuncia` nao e parseada — vem vazia na doc e nas respostas
-  reais, e sem uma resposta com denuncia preenchida nao da para saber o
-  formato dos filhos.
+- `listaDenuncia` e `recolhimentoOS` sao parseados pelo contrato da doc
+  revisada, mas nunca chegaram preenchidos no ambiente de teste (40 OS
+  varridas). A leitura desses dois blocos e a unica parte do detalhe que
+  nunca foi confrontada com dado real.
 
 ## Troubleshooting
 

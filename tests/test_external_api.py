@@ -292,6 +292,68 @@ class TestParseDetalheATF(unittest.TestCase):
         self.assertEqual(filtrar_atf_por_matriculas([self.detalhe], {"111"}), [self.detalhe])
         self.assertEqual(filtrar_atf_por_matriculas([self.detalhe], {"222"}), [])
 
+    def test_recolhimentos_e_denuncias_detalhados(self):
+        """
+        Blocos descritos na revisao da doc de 21/08/2026. Sinteticos de
+        proposito: nenhuma das 40 OS varridas no ambiente de teste trouxe
+        recolhimento ou denuncia preenchidos, entao a unica fonte do
+        formato e o contrato.
+        """
+        xml = (
+            "<resultado><ordServ><nrOrdemServico>OS-1</nrOrdemServico>"
+            "<listaRecolhimentosOS><recolhimentoOS>"
+            "<chaveRecolhimentoOS>2026000123</chaveRecolhimentoOS>"
+            "<dsRecolhimentoOS>ICMS APURADO</dsRecolhimentoOS>"
+            "<dtInclusao>15/03/2026</dtInclusao>"
+            "<nrNossoNumero>00012345678</nrNossoNumero>"
+            "<ref>A</ref><dpReferencia>02/2026</dpReferencia>"
+            "<vlPrincipal>18450,75</vlPrincipal>"
+            "<cdReceitaSefin>1105</cdReceitaSefin>"
+            "<noReceitaSefin>ICMS NORMAL</noReceitaSefin>"
+            "<noSituacaoDebito>PAGO</noSituacaoDebito>"
+            "<noSituacaoARR>QUITADO</noSituacaoARR>"
+            "</recolhimentoOS>"
+            "<vlTotalRecolheOS>18450,75</vlTotalRecolheOS></listaRecolhimentosOS>"
+            "<listaDenuncia><denuncia><dtDenuncia>02/01/2026</dtDenuncia>"
+            "<dsDenuncia>Notas sem lastro.</dsDenuncia></denuncia></listaDenuncia>"
+            "</ordServ></resultado>"
+        )
+        d = _parse_detalhe_soap(xml)
+
+        rec = d["recolhimentos"][0]
+        self.assertEqual(rec["chave"], "2026000123")
+        self.assertEqual(rec["data_inclusao"], "2026-03-15")
+        self.assertEqual(rec["referencia"], "02/2026")
+        self.assertEqual(rec["valor_principal"], 18450.75)
+        self.assertEqual(rec["receita_nome"], "ICMS NORMAL")
+        self.assertEqual(rec["situacao_arr"], "QUITADO")
+        # o total continua saindo do irmao vlTotalRecolheOS, nao da soma
+        self.assertEqual(d["valor_total_recolhido"], 18450.75)
+
+        self.assertEqual(d["denuncias"], [
+            {"data": "2026-01-02", "descricao": "Notas sem lastro."},
+        ])
+
+    def test_dtInclusao_do_recolhimento_nao_vaza_para_a_descricao(self):
+        """
+        dtInclusao existe em recolhimentoOS e em descricaoComplementarOS.
+        Cada leitura e feita a partir do seu proprio elemento; uma busca
+        global pegaria a data errada.
+        """
+        xml = (
+            "<resultado><ordServ><nrOrdemServico>OS-1</nrOrdemServico>"
+            "<outrasInfo><descricoesComplementaresOS><descricaoComplementarOS>"
+            "<dtInclusao>01/01/2026</dtInclusao><dsComplementarOS>Texto</dsComplementarOS>"
+            "</descricaoComplementarOS></descricoesComplementaresOS></outrasInfo>"
+            "<listaRecolhimentosOS><recolhimentoOS>"
+            "<dtInclusao>15/03/2026</dtInclusao><dsRecolhimentoOS>ICMS</dsRecolhimentoOS>"
+            "</recolhimentoOS></listaRecolhimentosOS>"
+            "</ordServ></resultado>"
+        )
+        d = _parse_detalhe_soap(xml)
+        self.assertEqual(d["descricoes_complementares"][0]["data_inclusao"], "2026-01-01")
+        self.assertEqual(d["recolhimentos"][0]["data_inclusao"], "2026-03-15")
+
     def test_notificacoes_aceitam_as_duas_grafias_da_doc(self):
         xml = (
             "<resultado><ordServ><nrOrdemServico>OS-1</nrOrdemServico>"

@@ -945,6 +945,60 @@ export default function OrdensPanel() {
                 </Secao>
               )}
 
+              {selectedOS.recolhimentos?.length > 0 && (
+                <Secao titulo={`Recolhimentos (${selectedOS.recolhimentos.length})`}>
+                  <div className="table-container">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Inclus&atilde;o</th>
+                          <th>Refer&ecirc;ncia</th>
+                          <th>Receita</th>
+                          <th>Descri&ccedil;&atilde;o</th>
+                          <th>Nosso N&uacute;mero</th>
+                          <th>D&eacute;bito</th>
+                          <th>ARR</th>
+                          <th style={{ textAlign: "right" }}>Principal</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedOS.recolhimentos.map((rec, i) => (
+                          <tr key={i}>
+                            <td>{formatarData(rec.data_inclusao)}</td>
+                            <td>{rec.referencia || "-"}</td>
+                            <td>{nomeOuCodigo(rec.receita_codigo, rec.receita_nome)}</td>
+                            <td>{rec.descricao || "-"}</td>
+                            <td>{rec.nosso_numero || "-"}</td>
+                            <td>{rec.situacao_debito || "-"}</td>
+                            <td>{rec.situacao_arr || "-"}</td>
+                            <td style={{ textAlign: "right" }}>{formatarValor(rec.valor_principal) || "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </Secao>
+              )}
+
+              {selectedOS.denuncias?.length > 0 && (
+                <Secao titulo={`Den&uacute;ncias (${selectedOS.denuncias.length})`}>
+                  <div className="os-movimentacoes-timeline">
+                    {selectedOS.denuncias.map((den, i) => (
+                      <div className="os-mov-item" key={i}>
+                        <span className="os-mov-dot" />
+                        <div className="os-mov-content">
+                          <div className="os-mov-header">
+                            <strong style={{ fontSize: 13 }}>Den&uacute;ncia</strong>
+                            <span className="os-mov-date">{formatarData(den.data)}</span>
+                          </div>
+                          <p className="os-mov-desc" style={{ whiteSpace: "pre-wrap" }}>{den.descricao}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Secao>
+              )}
+
               {selectedOS.justificativas?.length > 0 && (
                 <Secao titulo={`Justificativas de Atraso (${selectedOS.justificativas.length})`}>
                   <div className="table-container">

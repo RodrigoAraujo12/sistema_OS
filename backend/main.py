@@ -1017,6 +1017,33 @@ def get_os_pdf(
         )
         pdf.ln(2)
 
+    # --- Recolhimentos ---
+    recolhimentos = ordem.get("recolhimentos") or []
+    if recolhimentos:
+        _secao(f"Recolhimentos ({len(recolhimentos)})")
+        _tabela(
+            ["Inclusao", "Referencia", "Receita", "Nosso Numero", "Debito", "ARR", "Principal"],
+            [22, 22, 40, 28, 24, 22, 22],
+            [[_fmt_data_br(r.get("data_inclusao")), r.get("referencia"),
+              r.get("receita_nome") or r.get("receita_codigo"), r.get("nosso_numero"),
+              r.get("situacao_debito"), r.get("situacao_arr"),
+              _valor_br(r.get("valor_principal"))] for r in recolhimentos],
+        )
+        pdf.ln(2)
+
+    # --- Denuncias ---
+    denuncias = ordem.get("denuncias") or []
+    if denuncias:
+        _secao(f"Denuncias ({len(denuncias)})")
+        for den in denuncias:
+            pdf.set_font("Helvetica", "B", 8)
+            pdf.cell(0, 5, _safe(_fmt_data_br(den.get("data")) or "-"),
+                     new_x="LMARGIN", new_y="NEXT")
+            if den.get("descricao"):
+                _texto_longo(den["descricao"])
+            pdf.ln(1)
+        pdf.ln(1)
+
     # --- Justificativas de atraso ---
     justificativas = ordem.get("justificativas") or []
     if justificativas:

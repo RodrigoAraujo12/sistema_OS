@@ -2095,6 +2095,35 @@ def _parse_detalhe_soap(xml_text: str) -> dict[str, Any] | None:
         for pr_el in os_el.findall(".//processo")
     ]
 
+    # recolhimentoOS e denuncia entraram na doc do detalhe em 21/08/2026;
+    # antes so o total recolhido era descrito. Lidos a partir do contrato:
+    # nenhuma das 40 OS varridas no ambiente atual trouxe esses blocos
+    # preenchidos, entao a leitura ainda nao foi confrontada com dado real.
+    recolhimentos = [
+        {
+            "chave": _txt_ou_none(rec_el, "chaveRecolhimentoOS"),
+            "descricao": _txt(rec_el, "dsRecolhimentoOS"),
+            "data_inclusao": _data_do_atf(_txt(rec_el, "dtInclusao")) or None,
+            "nosso_numero": _txt_ou_none(rec_el, "nrNossoNumero"),
+            "ref": _txt_ou_none(rec_el, "ref"),
+            "referencia": _txt_ou_none(rec_el, "dpReferencia"),
+            "valor_principal": _float_ou_none(_txt(rec_el, "vlPrincipal")),
+            "receita_codigo": _txt_ou_none(rec_el, "cdReceitaSefin"),
+            "receita_nome": _txt(rec_el, "noReceitaSefin"),
+            "situacao_debito": _txt_ou_none(rec_el, "noSituacaoDebito"),
+            "situacao_arr": _txt_ou_none(rec_el, "noSituacaoARR"),
+        }
+        for rec_el in os_el.findall(".//recolhimentoOS")
+    ]
+
+    denuncias = [
+        {
+            "data": _data_do_atf(_txt(den_el, "dtDenuncia")) or None,
+            "descricao": _txt(den_el, "dsDenuncia"),
+        }
+        for den_el in os_el.findall(".//denuncia")
+    ]
+
     descricoes = [
         {
             "data_inclusao": _data_do_atf(_txt(d_el, "dtInclusao")) or None,
@@ -2173,9 +2202,11 @@ def _parse_detalhe_soap(xml_text: str) -> dict[str, Any] | None:
         # da equipe sai com a mesma chave da listagem (equipe_fiscal),
         # que e onde o painel ja o espera.
         "equipe_fiscal": _txt(os_el, "equipeFiscalizacao/noEquipe"),
-        # cdEquipe entra na doc em 21/08/2026 mas o servico ainda nao o
-        # devolve (conferido em 5 OS com equipe): fica lido desde ja, e
-        # ate la o codigo continua vindo da listagem pela mesclagem.
+        # A revisao da doc de 21/08/2026 passou a descrever este bloco,
+        # mas so com <noEquipe>. O <cdEquipe> chegou a ser anunciado pelo
+        # time do ATF e nao entrou nem na doc nem na resposta (conferido
+        # em 17 OS): fica lido por antecipacao, sem custo, e ate la o
+        # codigo da equipe continua vindo da listagem pela mesclagem.
         "equipe_fiscal_codigo": _int_ou_none(_txt(os_el, "equipeFiscalizacao/cdEquipe")),
         "bd_fiscal": _txt_ou_none(os_el, "dsTpBdFiscal"),
         "bd_fiscal_codigo": _txt_ou_none(os_el, "tpBdFiscal"),
@@ -2215,6 +2246,8 @@ def _parse_detalhe_soap(xml_text: str) -> dict[str, Any] | None:
         "eventos": eventos,
         "qtd_eventos": len(eventos),
         "justificativas": justificativas,
+        "recolhimentos": recolhimentos,
+        "denuncias": denuncias,
         "valor_total_recolhido": _float_ou_none(
             _txt(os_el, "listaRecolhimentosOS/vlTotalRecolheOS"),
         ),

@@ -364,6 +364,32 @@ class DescricaoComplementarATF(BaseModel):
     descricao_formatada: str | None = None
 
 
+class RecolhimentoATF(BaseModel):
+    """
+    Recolhimento vinculado a OS (listaRecolhimentosOS/recolhimentoOS).
+
+    Estrutura descrita na revisao da doc do detalhe de 21/08/2026 — antes
+    dela so o total recolhido era documentado.
+    """
+    chave: str | None = None
+    descricao: str = ""
+    data_inclusao: str | None = None
+    nosso_numero: str | None = None
+    ref: str | None = None
+    referencia: str | None = None
+    valor_principal: float | None = None
+    receita_codigo: str | None = None
+    receita_nome: str = ""
+    situacao_debito: str | None = None
+    situacao_arr: str | None = None
+
+
+class DenunciaATF(BaseModel):
+    """Denuncia vinculada a OS (listaDenuncia/denuncia)."""
+    data: str | None = None
+    descricao: str = ""
+
+
 class AutorizacaoATF(BaseModel):
     """Quem autorizou a OS e quando."""
     data: str | None = None
@@ -433,6 +459,8 @@ class OSDetalheCompletoResponse(BaseModel):
     notificacoes_scamf: list[NotificacaoATF] = []
     processos: list[ProcessoATF] = []
     justificativas: list[JustificativaATF] = []
+    recolhimentos: list[RecolhimentoATF] = []
+    denuncias: list[DenunciaATF] = []
     descricoes_complementares: list[DescricaoComplementarATF] = []
 
     valor_total_recolhido: float | None = None
