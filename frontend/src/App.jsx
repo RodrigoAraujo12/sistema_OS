@@ -48,6 +48,7 @@ export default function App() {
   // ─── Data ───────────────────────────────────────────
   const [gerencias, setGerencias] = useState([]);
   const [supervisoes, setSupervisoes] = useState([]);
+  const [equipes, setEquipes] = useState([]);
   const [users, setUsers] = useState([]);
   const [alertas, setAlertas] = useState([]);
   const [dashboardData, setDashboardData] = useState(null);
@@ -106,16 +107,18 @@ export default function App() {
       setAlertas(alertasData);
 
       if (authData.role === "admin") {
-        const [gerenciasData, supervisoesData, usersData, dashData] = await Promise.all([
+        const [gerenciasData, supervisoesData, usersData, dashData, equipesData] = await Promise.all([
           apiClient.listGerencias(),
           apiClient.listSupervisoes(),
           apiClient.listUsers(),
-          apiClient.getDashboard()
+          apiClient.getDashboard(),
+          apiClient.listEquipesFiscais()
         ]);
         setGerencias(gerenciasData);
         setSupervisoes(supervisoesData);
         setUsers(usersData);
         setDashboardData(dashData);
+        setEquipes(equipesData);
       }
     } catch (err) {
       setError(err.message);
@@ -125,14 +128,16 @@ export default function App() {
   /** Recarrega apenas listas administrativas (apos CRUD). */
   async function refreshAdminLists() {
     try {
-      const [gerenciasData, supervisoesData, usersData] = await Promise.all([
+      const [gerenciasData, supervisoesData, usersData, equipesData] = await Promise.all([
         apiClient.listGerencias(),
         apiClient.listSupervisoes(),
-        apiClient.listUsers()
+        apiClient.listUsers(),
+        apiClient.listEquipesFiscais()
       ]);
       setGerencias(gerenciasData);
       setSupervisoes(supervisoesData);
       setUsers(usersData);
+      setEquipes(equipesData);
     } catch (err) {
       setError(err.message);
     }
@@ -233,6 +238,7 @@ export default function App() {
             users={users}
             gerencias={gerencias}
             supervisoes={supervisoes}
+            equipes={equipes}
             onRefresh={refreshAdminLists}
             onMessage={setMessage}
             onError={setError}

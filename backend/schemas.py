@@ -31,6 +31,8 @@ class LoginResponse(BaseModel):
     gerencia_name: str | None = None
     supervisao_id: int | None = None
     supervisao_name: str | None = None
+    equipe_codigo: int | None = None
+    equipe_nome: str | None = None
 
 
 # ─── Gerencias ──────────────────────────────────────────────────
@@ -73,6 +75,39 @@ class SupervisaoResponse(BaseModel):
     gerencia_name: str | None = None
 
 
+# ─── Equipes fiscais (ATF) ──────────────────────────────────────
+
+class EquipeFiscalResponse(BaseModel):
+    """
+    Equipe fiscal do ATF, com a contagem de membros importados.
+
+    Somente leitura: a origem e a planilha da SEFAZ, carregada por
+    `backend.importar_equipes`. O `codigo` e o `cdEquipeFisc` que a OS
+    traz e que o filtro de OS aceita.
+    """
+    codigo: int
+    nome: str
+    total_membros: int = 0
+
+
+class EquipeMembroResponse(BaseModel):
+    """Auditor vinculado a uma equipe fiscal."""
+    matricula: str
+    nome: str
+
+
+class EquipeVinculoResponse(BaseModel):
+    """
+    Equipe a que um usuario pertence, como aparece no cadastro dele.
+
+    Vem da planilha da SEFAZ (`equipe_membros`), e nao do cadastro local:
+    e informativo, o admin nao edita. Nao confundir com `equipe_codigo`
+    do usuario, que e a equipe que um supervisor CHEFIA.
+    """
+    codigo: int
+    nome: str
+
+
 # ─── Usuarios ───────────────────────────────────────────────────
 
 class UserCreateRequest(BaseModel):
@@ -82,6 +117,7 @@ class UserCreateRequest(BaseModel):
     gerencia_id: int
     supervisao_id: int
     matricula: str = Field(min_length=3)
+    equipe_codigo: int | None = None
 
 
 class UserUpdateRequest(BaseModel):
@@ -91,6 +127,7 @@ class UserUpdateRequest(BaseModel):
     gerencia_id: int
     supervisao_id: int
     matricula: str = Field(min_length=3)
+    equipe_codigo: int | None = None
 
 
 class UserResponse(BaseModel):
@@ -103,6 +140,9 @@ class UserResponse(BaseModel):
     gerencia_name: str | None = None
     supervisao_id: int | None = None
     supervisao_name: str | None = None
+    equipe_codigo: int | None = None
+    equipe_nome: str | None = None
+    equipes_membro: list[EquipeVinculoResponse] = []
 
 
 class UserCreatedResponse(UserResponse):

@@ -6,6 +6,7 @@ Contem:
 - UserRepository: CRUD de usuarios
 - GerenciaRepository: CRUD de gerencias
 - SupervisaoRepository: CRUD de supervisoes
+- EquipeFiscalRepository: equipes fiscais do ATF e seus membros
 
 O banco fica em backend/app.db. A estrutura e criada automaticamente
 no primeiro uso via Database.init_schema().
@@ -83,6 +84,29 @@ class Database:
                 )
                 """
             )
+            # Equipes fiscais do ATF (cdEquipeFisc) e sua composicao.
+            # Diferente de gerencias/supervisoes, que sao cadastro local
+            # editavel, estas duas sao um espelho do que a SEFAZ informa:
+            # o importador as recria por completo a cada carga.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS equipes_fiscais (
+                    codigo INTEGER PRIMARY KEY,
+                    nome TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS equipe_membros (
+                    codigo_equipe INTEGER NOT NULL,
+                    matricula TEXT NOT NULL,
+                    nome TEXT NOT NULL,
+                    PRIMARY KEY (codigo_equipe, matricula),
+                    FOREIGN KEY (codigo_equipe) REFERENCES equipes_fiscais (codigo)
+                )
+                """
+            )
             # Colunas adicionadas apos a versao inicial (migracao simples).
             # Na mesma conexao das tabelas: sao operacoes de startup, nao ha
             # motivo para abrir uma conexao por coluna.
@@ -91,6 +115,7 @@ class Database:
                 ("supervisao_id", "INTEGER"),
                 ("must_change_password", "INTEGER DEFAULT 0"),
                 ("matricula", "TEXT"),
+                ("equipe_codigo", "INTEGER"),
             ):
                 self._ensure_column(conn, "users", coluna, definicao)
         logger.info("Schema do banco inicializado com sucesso.")
@@ -116,10 +141,12 @@ class UserRepository:
         SELECT u.id, u.username, u.password_hash, u.salt, u.role, u.matricula,
             u.gerencia_id, g.name AS gerencia_name,
             u.supervisao_id, s.name AS supervisao_name,
+            u.equipe_codigo, e.nome AS equipe_nome,
             u.must_change_password
         FROM users u
         LEFT JOIN gerencias g ON g.id = u.gerencia_id
         LEFT JOIN supervisoes s ON s.id = u.supervisao_id
+        LEFT JOIN equipes_fiscais e ON e.codigo = u.equipe_codigo
     """
 
     def __init__(self, db: Database) -> None:
@@ -141,15 +168,17 @@ class UserRepository:
         supervisao_id: int | None,
         must_change_password: bool,
         matricula: str | None = None,
+        equipe_codigo: int | None = None,
     ) -> int:
         """Insere um novo usuario e retorna o id gerado."""
         with self._db.connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO users (
-                    username, password_hash, salt, role, gerencia_id, supervisao_id, must_change_password, matricula
+                    username, password_hash, salt, role, gerencia_id, supervisao_id,
+                    must_change_password, matricula, equipe_codigo
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username,
@@ -160,6 +189,7 @@ class UserRepository:
                     supervisao_id,
                     int(must_change_password),
                     matricula,
+                    equipe_codigo,
                 ),
             )
             return int(cur.lastrowid)
@@ -169,10 +199,12 @@ class UserRepository:
         query = """
             SELECT u.id, u.username, u.role, u.matricula,
                    u.gerencia_id, g.name AS gerencia_name,
-                   u.supervisao_id, s.name AS supervisao_name
+                   u.supervisao_id, s.name AS supervisao_name,
+                   u.equipe_codigo, e.nome AS equipe_nome
             FROM users u
             LEFT JOIN gerencias g ON g.id = u.gerencia_id
             LEFT JOIN supervisoes s ON s.id = u.supervisao_id
+            LEFT JOIN equipes_fiscais e ON e.codigo = u.equipe_codigo
         """
         with self._db.connect() as conn:
             if role:
@@ -200,6 +232,34 @@ class UserRepository:
     def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
         """Busca usuario pelo id (inclui hash e salt)."""
         return self._get_user_by("u.id = ?", (user_id,))
+
+    def get_matriculas_cadastradas(self) -> set[str]:
+        """
+        Matriculas que ja tem usuario, para a importacao em lote saber o
+        que pular. Um set porque a checagem e feita por linha da planilha.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT matricula FROM users WHERE matricula IS NOT NULL"
+            ).fetchall()
+        return {str(row["matricula"]) for row in rows}
+
+    def delete_users_by_matricula(self, matriculas: set[str]) -> int:
+        """
+        Remove usuarios pelas matriculas. Retorna quantos sairam.
+
+        Usado para tirar os usuarios de exemplo quando o banco passa a ter
+        gente de verdade. Nunca alcanca o admin, que nao tem matricula.
+        """
+        if not matriculas:
+            return 0
+        marcadores = ",".join("?" * len(matriculas))
+        with self._db.connect() as conn:
+            cur = conn.execute(
+                f"DELETE FROM users WHERE matricula IN ({marcadores}) AND role != 'admin'",
+                tuple(matriculas),
+            )
+            return int(cur.rowcount)
 
     def update_password(self, user_id: int, password_hash: str, salt: str) -> None:
         """Atualiza hash e salt da senha de um usuario."""
@@ -240,6 +300,25 @@ class UserRepository:
             ).fetchall()
         return [row["matricula"] for row in rows if row["matricula"]]
 
+    def get_equipe_codigos_by_gerencia(self, gerencia_id: int) -> list[int]:
+        """
+        Codigos das equipes fiscais amarradas aos supervisores da gerencia.
+
+        Existe para o gerente enxergar o mesmo que a soma dos seus
+        supervisores: sem isso, um supervisor com equipe amarrada veria
+        OS que o proprio gerente nao ve.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT equipe_codigo FROM users
+                WHERE role = 'supervisor' AND gerencia_id = ?
+                  AND equipe_codigo IS NOT NULL
+                """,
+                (gerencia_id,),
+            ).fetchall()
+        return [int(row["equipe_codigo"]) for row in rows]
+
     def get_matriculas_by_gerencia(self, gerencia_id: int) -> list[str]:
         """Matriculas de todos os usuarios lotados na gerencia (todos os cargos)."""
         with self._db.connect() as conn:
@@ -266,16 +345,18 @@ class UserRepository:
         gerencia_id: int | None,
         supervisao_id: int | None,
         matricula: str | None = None,
+        equipe_codigo: int | None = None,
     ) -> None:
         """Atualiza dados cadastrais do usuario (sem alterar senha)."""
         with self._db.connect() as conn:
             conn.execute(
                 """
                 UPDATE users
-                SET username = ?, role = ?, gerencia_id = ?, supervisao_id = ?, matricula = ?
+                SET username = ?, role = ?, gerencia_id = ?, supervisao_id = ?,
+                    matricula = ?, equipe_codigo = ?
                 WHERE id = ?
                 """,
-                (username, role, gerencia_id, supervisao_id, matricula, user_id),
+                (username, role, gerencia_id, supervisao_id, matricula, equipe_codigo, user_id),
             )
 
     def delete_user(self, user_id: int) -> bool:
@@ -379,3 +460,151 @@ class SupervisaoRepository:
                 (name, gerencia_id, supervisao_id),
             )
 
+
+
+class EquipeFiscalRepository:
+    """
+    Equipes fiscais do ATF (cdEquipeFisc) e sua composicao.
+
+    Espelho de dado externo, nao cadastro local: a origem e a planilha
+    que a SEFAZ envia, e `substituir_tudo` recarrega a tabela inteira a
+    cada importacao. Nada aqui e editavel pela aplicacao — o que o admin
+    edita e o vinculo `users.equipe_codigo`, que mora em UserRepository.
+    """
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    def substituir_tudo(
+        self, equipes: list[tuple[int, str]], membros: list[tuple[int, str, str]],
+    ) -> tuple[int, int]:
+        """
+        Recarrega equipes e membros numa transacao unica.
+
+        Substituicao total, e nao merge, de proposito: quem sai de uma
+        equipe some da planilha seguinte sem deixar rastro, e um merge
+        manteria o vinculo antigo vivo — dando a um supervisor acesso a
+        OS de quem nao e mais dele. Retorna (equipes, membros) gravados.
+
+        Nao mexe em `users.equipe_codigo`: um codigo que aponte para uma
+        equipe extinta e tratado na leitura, onde vira conjunto vazio.
+        """
+        with self._db.connect() as conn:
+            conn.execute("DELETE FROM equipe_membros")
+            conn.execute("DELETE FROM equipes_fiscais")
+            conn.executemany(
+                "INSERT INTO equipes_fiscais (codigo, nome) VALUES (?, ?)",
+                equipes,
+            )
+            conn.executemany(
+                """
+                INSERT INTO equipe_membros (codigo_equipe, matricula, nome)
+                VALUES (?, ?, ?)
+                """,
+                membros,
+            )
+        logger.info(
+            "Equipes fiscais importadas: %d equipes, %d vinculos.",
+            len(equipes), len(membros),
+        )
+        return len(equipes), len(membros)
+
+    def list_equipes(self) -> list[dict[str, Any]]:
+        """Lista as equipes com a contagem de membros, em ordem alfabetica."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT e.codigo, e.nome, COUNT(m.matricula) AS total_membros
+                FROM equipes_fiscais e
+                LEFT JOIN equipe_membros m ON m.codigo_equipe = e.codigo
+                GROUP BY e.codigo, e.nome
+                ORDER BY e.nome
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_matriculas_by_equipe(self, codigo_equipe: int) -> list[str]:
+        """Matriculas dos membros de uma equipe. Vazio se a equipe nao existe."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT matricula FROM equipe_membros WHERE codigo_equipe = ?",
+                (codigo_equipe,),
+            ).fetchall()
+        return [row["matricula"] for row in rows]
+
+    def get_matriculas_by_equipes(self, codigos: list[int]) -> list[str]:
+        """
+        Matriculas de varias equipes de uma vez, sem repetir.
+
+        Uma consulta so em vez de uma por equipe: o gerente pode ter
+        muitos supervisores, e isso roda a cada listagem de OS.
+        """
+        if not codigos:
+            return []
+        marcadores = ",".join("?" * len(codigos))
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT matricula FROM equipe_membros
+                WHERE codigo_equipe IN ({marcadores})
+                """,
+                tuple(codigos),
+            ).fetchall()
+        return [row["matricula"] for row in rows]
+
+    def get_equipes_por_matricula(self) -> dict[str, list[dict[str, Any]]]:
+        """
+        Mapa matricula -> equipes a que ela pertence, com codigo e nome.
+
+        E o inverso de get_membros, e responde a pergunta da tela de
+        usuarios: "de que equipe essa pessoa e?". Nao confundir com
+        `users.equipe_codigo`, que e a equipe que um supervisor CHEFIA.
+
+        Traz tudo de uma vez em vez de uma consulta por usuario: a lista
+        inteira sao poucas centenas de linhas, e a tela pede todas juntas.
+        Quem esta em duas equipes aparece com as duas.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.matricula, e.codigo, e.nome
+                FROM equipe_membros m
+                JOIN equipes_fiscais e ON e.codigo = m.codigo_equipe
+                ORDER BY e.nome
+                """
+            ).fetchall()
+        mapa: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            mapa.setdefault(str(row["matricula"]), []).append(
+                {"codigo": int(row["codigo"]), "nome": row["nome"]}
+            )
+        return mapa
+
+    def get_membros(self, codigo_equipe: int) -> list[dict[str, Any]]:
+        """Membros de uma equipe (matricula e nome), em ordem alfabetica."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT matricula, nome FROM equipe_membros
+                WHERE codigo_equipe = ? ORDER BY nome
+                """,
+                (codigo_equipe,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_equipe(self, codigo_equipe: int) -> dict[str, Any] | None:
+        """Busca uma equipe pelo codigo do ATF."""
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT codigo, nome FROM equipes_fiscais WHERE codigo = ?",
+                (codigo_equipe,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def count_equipes(self) -> int:
+        """Total de equipes importadas. Zero significa 'nunca importado'."""
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(1) AS total FROM equipes_fiscais"
+            ).fetchone()
+            return int(row["total"]) if row else 0

@@ -35,12 +35,19 @@ def _create_app(db_path: str) -> TestClient:
     # A abordagem mais limpa e recriar os objetos com o db temporario.
 
     from backend.auth import AuthService, PasswordHasher, TokenStore
-    from backend.db import Database, GerenciaRepository, SupervisaoRepository, UserRepository
+    from backend.db import (
+        Database,
+        EquipeFiscalRepository,
+        GerenciaRepository,
+        SupervisaoRepository,
+        UserRepository,
+    )
 
     database = Database(db_path)
     user_repo = UserRepository(database)
     gerencia_repo = GerenciaRepository(database)
     supervisao_repo = SupervisaoRepository(database)
+    equipe_repo = EquipeFiscalRepository(database)
     auth_service = AuthService(user_repo, PasswordHasher(), TokenStore())
 
     # Patcheia os objetos do modulo main com nossas instancias isoladas
@@ -50,6 +57,7 @@ def _create_app(db_path: str) -> TestClient:
     main_module.user_repo = user_repo
     main_module.gerencia_repo = gerencia_repo
     main_module.supervisao_repo = supervisao_repo
+    main_module.equipe_repo = equipe_repo
     main_module.auth_service = auth_service
     # Sem isso o seed gera uma senha aleatoria para o admin e o teste nao
     # teria como entrar (e o proposito de nao existir senha fixa).
@@ -1192,6 +1200,392 @@ class TestEndToEndFlows(IntegrationTestBase):
         supervisoes = self.client.get("/admin/supervisoes", headers=headers).json()
         s = supervisoes[0]
         return s["gerencia_id"], s["id"]
+
+
+# ═══════════════════════════════════════════════════════════════
+# 8. Visibilidade por equipe fiscal do ATF
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestVisibilidadePorEquipeFiscal(IntegrationTestBase):
+    """
+    Quando o admin amarra um supervisor a uma equipe fiscal do ATF, e ela
+    que passa a definir o que ele enxerga — no lugar da supervisao do
+    cadastro local.
+
+    O mock do ATF usa as matriculas 34567-34571; as equipes montadas aqui
+    reagrupam essas mesmas pessoas de um jeito diferente do seed, que e
+    justamente o que prova qual das duas fontes esta valendo.
+    """
+
+    def _importar(self, equipes, membros):
+        import backend.main as main_module
+
+        main_module.equipe_repo.substituir_tudo(equipes, membros)
+
+    def _amarrar(self, username: str, codigo_equipe: int | None):
+        """Amarra o supervisor a uma equipe pelo endpoint de admin."""
+        h = self._admin_header()
+        alvo = next(
+            u for u in self.client.get("/admin/users", headers=h).json()
+            if u["username"] == username
+        )
+        r = self.client.put(
+            f"/admin/users/{alvo['id']}",
+            headers=h,
+            json={
+                "username": alvo["username"],
+                "role": alvo["role"],
+                "gerencia_id": alvo["gerencia_id"],
+                "supervisao_id": alvo["supervisao_id"],
+                "matricula": alvo["matricula"],
+                "equipe_codigo": codigo_equipe,
+            },
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        return alvo
+
+    def _numeros_vistos(self, username: str) -> set[str]:
+        token = self._login_como(username)
+        r = self.client.get(
+            "/ordens", headers=self._auth_header(token), params={"limite": 50}
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        return {o["numero_os"] for o in r.json()["ordens"]}
+
+    def test_equipe_amarrada_substitui_a_supervisao_local(self):
+        """
+        Patricia supervisiona 34567-34569 pelo cadastro local. Amarrada a
+        uma equipe que so tem 34571, ela passa a ver as OS de 34571 — e
+        deixa de ver as que so tinham gente da supervisao antiga.
+        """
+        self._importar(
+            [(900, "EQUIPE SO DA FERNANDA")], [(900, "34571", "FERNANDA COSTA")]
+        )
+
+        antes = self._numeros_vistos("Patricia Oliveira")
+        self._amarrar("Patricia Oliveira", 900)
+        depois = self._numeros_vistos("Patricia Oliveira")
+
+        self.assertNotEqual(antes, depois, "a equipe deveria ter mudado o que ela ve")
+        # OS-2026-009 e exclusiva de 34571: invisivel antes, visivel agora.
+        self.assertNotIn("OS-2026-009", antes)
+        self.assertIn("OS-2026-009", depois)
+
+    def test_toda_os_vista_tem_alguem_da_equipe(self):
+        """A regra nao afrouxa: nada aparece sem um membro da equipe designado."""
+        self._importar([(901, "EQUIPE DE TESTE")], [(901, "34570", "JOSE ALMEIDA")])
+        self._amarrar("Patricia Oliveira", 901)
+
+        token = self._login_como("Patricia Oliveira")
+        r = self.client.get(
+            "/ordens", headers=self._auth_header(token), params={"limite": 50}
+        )
+        # A propria matricula do supervisor continua valendo, junto com a equipe
+        permitidas = {"34570", "23456"}
+        for o in r.json()["ordens"]:
+            matriculas = {f["matricula"] for f in o["fiscais"]}
+            self.assertTrue(
+                matriculas & permitidas,
+                f"OS {o['numero_os']} nao tem ninguem visivel designado",
+            )
+
+    def test_sem_equipe_amarrada_vale_a_supervisao_local(self):
+        """
+        O comportamento antigo tem que sobreviver: enquanto o admin nao
+        amarrar ninguem, a visibilidade sai de gerencias/supervisoes.
+        """
+        self._importar([(902, "EQUIPE NAO USADA")], [(902, "34571", "FERNANDA")])
+        vistas = self._numeros_vistos("Patricia Oliveira")
+        self.assertIn("OS-2026-005", vistas)
+        self.assertNotIn("OS-2026-009", vistas)
+
+    def test_desamarrar_volta_para_a_supervisao(self):
+        self._importar([(903, "EQUIPE X")], [(903, "34571", "FERNANDA")])
+        original = self._numeros_vistos("Patricia Oliveira")
+        self._amarrar("Patricia Oliveira", 903)
+        self._amarrar("Patricia Oliveira", None)
+        self.assertEqual(self._numeros_vistos("Patricia Oliveira"), original)
+
+    def test_equipe_vazia_deixa_so_a_propria_matricula(self):
+        """
+        Falha fechado: equipe sem membros nao vira acesso amplo. O
+        supervisor fica so com o que estiver designado a ele.
+        """
+        self._importar([(904, "EQUIPE VAZIA")], [])
+        self._amarrar("Patricia Oliveira", 904)
+
+        token = self._login_como("Patricia Oliveira")
+        r = self.client.get(
+            "/ordens", headers=self._auth_header(token), params={"limite": 50}
+        )
+        for o in r.json()["ordens"]:
+            matriculas = {f["matricula"] for f in o["fiscais"]}
+            self.assertIn("23456", matriculas)
+
+    def test_equipe_extinta_nao_amplia_acesso(self):
+        """
+        Se uma reimportacao apaga a equipe, o codigo orfao em users nao
+        pode virar "ve tudo" — vira conjunto vazio.
+        """
+        self._importar([(905, "SOME DEPOIS")], [(905, "34571", "FERNANDA")])
+        self._amarrar("Patricia Oliveira", 905)
+        self.assertIn("OS-2026-009", self._numeros_vistos("Patricia Oliveira"))
+
+        self._importar([(906, "OUTRA")], [(906, "34567", "CARLOS")])
+        depois = self._numeros_vistos("Patricia Oliveira")
+        self.assertNotIn("OS-2026-009", depois)
+        token = self._login_como("Patricia Oliveira")
+        r = self.client.get(
+            "/ordens", headers=self._auth_header(token), params={"limite": 50}
+        )
+        for o in r.json()["ordens"]:
+            self.assertIn("23456", {f["matricula"] for f in o["fiscais"]})
+
+    def test_fiscal_ignora_a_equipe(self):
+        """Equipe so vale para supervisor; fiscal continua vendo so as suas."""
+        self._importar([(907, "EQUIPE GRANDE")], [(907, "34571", "FERNANDA")])
+        h = self._admin_header()
+        alvo = next(
+            u for u in self.client.get("/admin/users", headers=h).json()
+            if u["username"] == "Carlos Mendes"
+        )
+        self.client.put(
+            f"/admin/users/{alvo['id']}",
+            headers=h,
+            json={
+                "username": alvo["username"],
+                "role": alvo["role"],
+                "gerencia_id": alvo["gerencia_id"],
+                "supervisao_id": alvo["supervisao_id"],
+                "matricula": alvo["matricula"],
+                "equipe_codigo": 907,
+            },
+        )
+        token = self._login_como("Carlos Mendes")
+        r = self.client.get(
+            "/ordens", headers=self._auth_header(token), params={"limite": 50}
+        )
+        for o in r.json()["ordens"]:
+            self.assertIn("34567", {f["matricula"] for f in o["fiscais"]})
+
+    def test_amarrar_equipe_inexistente_da_400(self):
+        self._importar([(908, "UNICA")], [])
+        h = self._admin_header()
+        alvo = next(
+            u for u in self.client.get("/admin/users", headers=h).json()
+            if u["username"] == "Patricia Oliveira"
+        )
+        r = self.client.put(
+            f"/admin/users/{alvo['id']}",
+            headers=h,
+            json={
+                "username": alvo["username"],
+                "role": alvo["role"],
+                "gerencia_id": alvo["gerencia_id"],
+                "supervisao_id": alvo["supervisao_id"],
+                "matricula": alvo["matricula"],
+                "equipe_codigo": 99999,
+            },
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_gerente_ve_tudo_que_seus_supervisores_veem(self):
+        """
+        A hierarquia nao pode inverter: se o supervisor enxerga por uma
+        equipe do ATF, o gerente dele tem que enxergar pelo menos o mesmo.
+
+        O cenario usa Maria Santos, da Gerencia de Arrecadacao, amarrada a
+        uma equipe cujo unico membro (34571, Fernanda Costa) e lotado na
+        Gerencia de Fiscalizacao. Pelo cadastro local o gerente da
+        Arrecadacao nunca alcanca 34571 — so somando as equipes dos seus
+        supervisores. E o caso real: a equipe do ATF alcanca fiscais de
+        outra lotacao, e ate quem nao tem login no sistema.
+        """
+        self._importar([(910, "EQUIPE DA MARIA")], [(910, "34571", "FERNANDA COSTA")])
+        self._amarrar("Maria Santos", 910)
+
+        h = self._admin_header()
+        usuarios = self.client.get("/admin/users", headers=h).json()
+        maria = next(u for u in usuarios if u["username"] == "Maria Santos")
+        gerente = next(
+            u for u in usuarios
+            if u["role"] == "gerente" and u["gerencia_id"] == maria["gerencia_id"]
+        )
+
+        vistas_supervisor = self._numeros_vistos("Maria Santos")
+        vistas_gerente = self._numeros_vistos(gerente["username"])
+
+        # OS-2026-009 e exclusiva de 34571, de fora da gerencia da Maria
+        self.assertIn("OS-2026-009", vistas_supervisor)
+        self.assertTrue(
+            vistas_supervisor <= vistas_gerente,
+            "o gerente deveria ver tudo que a supervisora dele ve; "
+            f"faltou: {sorted(vistas_supervisor - vistas_gerente)}",
+        )
+
+    def test_detalhe_de_os_fora_da_equipe_da_403(self):
+        """A checagem de acesso ao detalhe usa o mesmo conjunto."""
+        self._importar([(909, "SO FERNANDA")], [(909, "34571", "FERNANDA")])
+        self._amarrar("Patricia Oliveira", 909)
+        token = self._login_como("Patricia Oliveira")
+        # OS-2026-004 e do Jose Almeida (34570), fora da equipe
+        r = self.client.get("/ordens/OS-2026-004", headers=self._auth_header(token))
+        self.assertEqual(r.status_code, 403)
+
+
+class TestEquipeDeQuemPertence(IntegrationTestBase):
+    """
+    As equipes que o usuario PERTENCE, expostas no cadastro.
+
+    Sao um dado diferente de `equipe_codigo`, que e a equipe que um
+    supervisor CHEFIA. A tela usa o primeiro para sugerir o segundo, e
+    confundir os dois daria visibilidade a quem nao deve ter.
+    """
+
+    def _importar(self, equipes, membros):
+        import backend.main as main_module
+
+        main_module.equipe_repo.substituir_tudo(equipes, membros)
+
+    def _usuario(self, username: str) -> dict:
+        h = self._admin_header()
+        return next(
+            u for u in self.client.get("/admin/users", headers=h).json()
+            if u["username"] == username
+        )
+
+    def test_traz_a_equipe_de_cada_um(self):
+        self._importar(
+            [(427, "GOFE - VAREJO")], [(427, "34567", "CARLOS MENDES")]
+        )
+        carlos = self._usuario("Carlos Mendes")
+        self.assertEqual(
+            carlos["equipes_membro"], [{"codigo": 427, "nome": "GOFE - VAREJO"}]
+        )
+
+    def test_quem_nao_esta_em_equipe_vem_vazio(self):
+        self._importar([(427, "GOFE - VAREJO")], [])
+        self.assertEqual(self._usuario("Carlos Mendes")["equipes_membro"], [])
+
+    def test_quem_esta_em_duas_traz_as_duas(self):
+        self._importar(
+            [(614, "GEST_ITCD"), (554, "GOFITCD/IPVA")],
+            [(614, "34567", "CARLOS"), (554, "34567", "CARLOS")],
+        )
+        nomes = {e["nome"] for e in self._usuario("Carlos Mendes")["equipes_membro"]}
+        self.assertEqual(nomes, {"GEST_ITCD", "GOFITCD/IPVA"})
+
+    def test_pertencer_a_equipe_nao_da_visibilidade(self):
+        """
+        O ponto critico: estar numa equipe nao faz ninguem enxergar a
+        equipe toda. Isso so vem de `equipe_codigo`, preenchido pelo
+        admin. Sem essa separacao, importar a planilha teria promovido
+        334 auditores a supervisores de si mesmos.
+        """
+        self._importar(
+            [(427, "GOFE - VAREJO")],
+            [(427, "34567", "CARLOS"), (427, "34568", "ANA")],
+        )
+        carlos = self._usuario("Carlos Mendes")
+        self.assertEqual(len(carlos["equipes_membro"]), 1)
+        self.assertIsNone(carlos["equipe_codigo"])
+
+        token = self._login_como("Carlos Mendes")
+        r = self.client.get(
+            "/ordens", headers=self._auth_header(token), params={"limite": 50}
+        )
+        for o in r.json()["ordens"]:
+            matriculas = {f["matricula"] for f in o["fiscais"]}
+            self.assertIn(
+                "34567", matriculas,
+                f"OS {o['numero_os']} apareceu para quem so PERTENCE a equipe",
+            )
+
+    def test_chefia_e_pertencimento_convivem(self):
+        """Um supervisor pode chefiar uma equipe e pertencer a outra."""
+        self._importar(
+            [(427, "GOFE - VAREJO"), (429, "GOAC - MALHAS")],
+            [(429, "23456", "PATRICIA")],
+        )
+        h = self._admin_header()
+        patricia = self._usuario("Patricia Oliveira")
+        self.client.put(
+            f"/admin/users/{patricia['id']}",
+            headers=h,
+            json={
+                "username": patricia["username"], "role": patricia["role"],
+                "gerencia_id": patricia["gerencia_id"],
+                "supervisao_id": patricia["supervisao_id"],
+                "matricula": patricia["matricula"], "equipe_codigo": 427,
+            },
+        )
+        atualizada = self._usuario("Patricia Oliveira")
+        self.assertEqual(atualizada["equipe_codigo"], 427)
+        self.assertEqual(atualizada["equipe_nome"], "GOFE - VAREJO")
+        self.assertEqual(
+            [e["nome"] for e in atualizada["equipes_membro"]], ["GOAC - MALHAS"]
+        )
+
+    def test_sem_importacao_ninguem_tem_equipe(self):
+        for u in self.client.get("/admin/users", headers=self._admin_header()).json():
+            self.assertEqual(u["equipes_membro"], [])
+
+
+class TestEquipesFiscaisEndpoints(IntegrationTestBase):
+    """Endpoints de consulta das equipes importadas."""
+
+    def _importar(self, equipes, membros):
+        import backend.main as main_module
+
+        main_module.equipe_repo.substituir_tudo(equipes, membros)
+
+    def test_lista_vazia_antes_de_importar(self):
+        r = self.client.get("/equipes-fiscais", headers=self._admin_header())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), [])
+
+    def test_lista_com_contagem(self):
+        self._importar(
+            [(427, "GOFE - VAREJO")], [(427, "34567", "A"), (427, "34568", "B")]
+        )
+        r = self.client.get("/equipes-fiscais", headers=self._admin_header())
+        self.assertEqual(
+            r.json(), [{"codigo": 427, "nome": "GOFE - VAREJO", "total_membros": 2}]
+        )
+
+    def test_lista_e_aberta_a_nao_admin(self):
+        """O filtro do painel precisa da lista; sao so nomes de equipe."""
+        self._importar([(427, "GOFE - VAREJO")], [])
+        token = self._login_como("Carlos Mendes")
+        r = self.client.get("/equipes-fiscais", headers=self._auth_header(token))
+        self.assertEqual(r.status_code, 200)
+
+    def test_lista_exige_autenticacao(self):
+        self.assertEqual(self.client.get("/equipes-fiscais").status_code, 401)
+
+    def test_membros_so_para_admin(self):
+        """Nome e matricula de servidor nao saem para usuario comum."""
+        self._importar([(427, "GOFE - VAREJO")], [(427, "34567", "CARLOS")])
+        token = self._login_como("Carlos Mendes")
+        r = self.client.get(
+            "/admin/equipes-fiscais/427/membros", headers=self._auth_header(token)
+        )
+        self.assertEqual(r.status_code, 403)
+
+    def test_membros_para_admin(self):
+        self._importar([(427, "GOFE - VAREJO")], [(427, "34567", "CARLOS MENDES")])
+        r = self.client.get(
+            "/admin/equipes-fiscais/427/membros", headers=self._admin_header()
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), [{"matricula": "34567", "nome": "CARLOS MENDES"}])
+
+    def test_membros_de_equipe_inexistente_da_404(self):
+        r = self.client.get(
+            "/admin/equipes-fiscais/99999/membros", headers=self._admin_header()
+        )
+        self.assertEqual(r.status_code, 404)
 
 
 if __name__ == "__main__":

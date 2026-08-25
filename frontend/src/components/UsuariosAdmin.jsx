@@ -2,7 +2,8 @@
  * UsuariosAdmin.jsx – Painel CRUD de Usuarios (admin).
  *
  * Gerencia criacao, edicao e reset de senha de usuarios.
- * Inclui selects em cascata (gerencia -> supervisao).
+ * Inclui selects em cascata (gerencia -> supervisao) e, para
+ * supervisores, o vinculo com a equipe fiscal do ATF.
  */
 
 import React, { useMemo, useState } from "react";
@@ -12,18 +13,39 @@ import ConfirmModal from "./ConfirmModal.jsx";
 
 const PAGE_SIZE = 10;
 
+/** Nomes das equipes a que o usuario pertence, como vieram da planilha. */
+function nomesDasEquipes(item) {
+  const equipes = item.equipes_membro || [];
+  if (equipes.length === 0) return "-";
+  return equipes.map((e) => e.nome).join(", ");
+}
+
+/**
+ * Equipe a sugerir como chefia ao promover alguem a supervisor.
+ *
+ * So sugere quando nao ha duvida: quem pertence a duas equipes (cinco
+ * pessoas, na planilha de 25/08/2026) fica sem sugestao, para o admin
+ * escolher qual delas ele chefia.
+ */
+function equipeSugerida(item) {
+  const equipes = item.equipes_membro || [];
+  return equipes.length === 1 ? String(equipes[0].codigo) : "";
+}
+
 const emptyUserForm = {
   username: "",
   role: "supervisor",
   gerencia_id: "",
   supervisao_id: "",
   matricula: "",
+  equipe_codigo: "",
 };
 
 export default function UsuariosAdmin({
   users,
   gerencias,
   supervisoes,
+  equipes = [],
   onRefresh,
   onMessage,
   onError,
@@ -63,6 +85,7 @@ export default function UsuariosAdmin({
         gerencia_id: Number(createForm.gerencia_id),
         supervisao_id: Number(createForm.supervisao_id),
         matricula: createForm.matricula,
+        equipe_codigo: createForm.equipe_codigo ? Number(createForm.equipe_codigo) : null,
       });
       setCreateForm({ ...emptyUserForm });
       // Vai no aviso persistente (10s), nao na mensagem de 5s: e a unica
@@ -86,6 +109,7 @@ export default function UsuariosAdmin({
         gerencia_id: Number(editForm.gerencia_id),
         supervisao_id: Number(editForm.supervisao_id),
         matricula: editForm.matricula,
+        equipe_codigo: editForm.equipe_codigo ? Number(editForm.equipe_codigo) : null,
       });
       setEditId(null);
       setEditForm({ ...emptyUserForm });
@@ -205,6 +229,26 @@ export default function UsuariosAdmin({
             </select>
           </label>
         </div>
+        {/* So supervisor usa a equipe: e ela que define o que ele enxerga.
+            Fiscal ve apenas as proprias OS e gerente ve pela gerencia. */}
+        {createForm.role === "supervisor" && equipes.length > 0 && (
+          <div className="form-row">
+            <label style={{ flex: 1 }}>
+              Equipe Fiscal (ATF)
+              <select
+                value={createForm.equipe_codigo}
+                onChange={(e) => setCreateForm({ ...createForm, equipe_codigo: e.target.value })}
+              >
+                <option value="">Sem equipe — usa a supervisao local</option>
+                {equipes.map((eq) => (
+                  <option key={eq.codigo} value={eq.codigo}>
+                    {eq.nome} ({eq.total_membros})
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
         <p className="muted">
           Uma senha tempor&aacute;ria ser&aacute; gerada e exibida ap&oacute;s a cria&ccedil;&atilde;o.
           O usu&aacute;rio ter&aacute; que troc&aacute;-la no primeiro acesso.
@@ -235,6 +279,8 @@ export default function UsuariosAdmin({
                 <th>Cargo</th>
                 <th>Gerencia</th>
                 <th>Supervisao</th>
+                <th>Equipe (ATF)</th>
+                <th>Chefia</th>
                 <th>Acoes</th>
               </tr>
             </thead>
@@ -265,9 +311,20 @@ export default function UsuariosAdmin({
                         <td>
                           <select
                             value={editForm.role}
-                            onChange={(e) =>
-                              setEditForm({ ...editForm, role: e.target.value })
-                            }
+                            onChange={(e) => {
+                              // Promover a supervisor: a equipe que ele
+                              // chefia quase sempre e a que ele pertence,
+                              // entao ja vem preenchida. Continua editavel.
+                              const role = e.target.value;
+                              setEditForm((prev) => ({
+                                ...prev,
+                                role,
+                                equipe_codigo:
+                                  role === "supervisor" && !prev.equipe_codigo
+                                    ? equipeSugerida(item)
+                                    : prev.equipe_codigo,
+                              }));
+                            }}
                           >
                             {roleOptions.map((r) => (
                               <option key={r.value} value={r.value}>{r.label}</option>
@@ -304,6 +361,26 @@ export default function UsuariosAdmin({
                             ))}
                           </select>
                         </td>
+                        <td className="muted">{nomesDasEquipes(item)}</td>
+                        <td>
+                          {editForm.role === "supervisor" && equipes.length > 0 ? (
+                            <select
+                              value={editForm.equipe_codigo}
+                              onChange={(e) =>
+                                setEditForm({ ...editForm, equipe_codigo: e.target.value })
+                              }
+                            >
+                              <option value="">--</option>
+                              {equipes.map((eq) => (
+                                <option key={eq.codigo} value={eq.codigo}>
+                                  {eq.nome} ({eq.total_membros})
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
                         <td>
                           <div className="row-actions">
                             <button className="small success" onClick={() => handleUpdate(item.id)}>
@@ -327,7 +404,8 @@ export default function UsuariosAdmin({
                         <td>{item.matricula || "-"}</td>
                         <td><span className="badge normal">{item.role}</span></td>
                         <td>{item.gerencia_name || "-"}</td>
-                        <td>{item.supervisao_name || "-"}</td>
+                        <td>{nomesDasEquipes(item)}</td>
+                        <td>{item.equipe_nome || "-"}</td>
                         <td>
                           <div className="row-actions">
                             <button
@@ -340,6 +418,9 @@ export default function UsuariosAdmin({
                                   gerencia_id: item.gerencia_id || "",
                                   supervisao_id: item.supervisao_id || "",
                                   matricula: item.matricula || "",
+                                  equipe_codigo:
+                                    item.equipe_codigo ||
+                                    (item.role === "supervisor" ? equipeSugerida(item) : ""),
                                 });
                               }}
                             >

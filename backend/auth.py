@@ -251,6 +251,7 @@ class AuthService:
         supervisao_id: int | None,
         must_change_password: bool,
         matricula: str | None = None,
+        equipe_codigo: int | None = None,
     ) -> int:
         """Registra um usuario com todas as opcoes (cargo, lotacao, flag de troca)."""
         password_hash, salt = self._hasher.hash_password(password)
@@ -263,6 +264,7 @@ class AuthService:
             supervisao_id,
             must_change_password,
             matricula,
+            equipe_codigo,
         )
         logger.debug("Usuario registrado: id=%d, username='%s'.", user_id, username)
         return user_id

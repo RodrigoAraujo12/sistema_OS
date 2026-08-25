@@ -117,6 +117,15 @@ class ApiClient {
     });
   }
 
+  // Equipes fiscais (ATF)
+  listEquipesFiscais() {
+    return this.request("/equipes-fiscais");
+  }
+
+  listMembrosEquipe(codigo) {
+    return this.request(`/admin/equipes-fiscais/${codigo}/membros`);
+  }
+
   // Users
   listUsers() {
     return this.request("/admin/users");

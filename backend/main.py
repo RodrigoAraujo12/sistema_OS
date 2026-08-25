@@ -23,6 +23,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from . import seed
 from .auth import (
     AuthService,
     LimitadorLogin,
@@ -34,6 +35,7 @@ from .config import ADMIN_PASSWORD, APP_TITLE, CORS_ORIGINS, setup_logging
 from .db import (
     DB_PATH,
     Database,
+    EquipeFiscalRepository,
     GerenciaRepository,
     SupervisaoRepository,
     UserRepository,
@@ -50,6 +52,8 @@ from .external_api import (
 )
 from .schemas import (
     AlertaResponse,
+    EquipeFiscalResponse,
+    EquipeMembroResponse,
     GerenciaCreateRequest,
     GerenciaResponse,
     GerenciaUpdateRequest,
@@ -100,6 +104,7 @@ database = Database(DB_PATH)
 user_repo = UserRepository(database)
 gerencia_repo = GerenciaRepository(database)
 supervisao_repo = SupervisaoRepository(database)
+equipe_repo = EquipeFiscalRepository(database)
 auth_service = AuthService(user_repo, PasswordHasher(), TokenStore())
 limitador_login = LimitadorLogin()
 
@@ -108,9 +113,14 @@ ALLOWED_ROLES = {"gerente", "supervisor", "fiscal"}
 
 
 def _validate_user_payload(
-    role: str, gerencia_id: int, supervisao_id: int,
+    role: str, gerencia_id: int, supervisao_id: int, equipe_codigo: int | None = None,
 ) -> None:
     """Valida campos de cargo e lotacao para criacao/edicao de usuario."""
+    if equipe_codigo is not None and not equipe_repo.get_equipe(equipe_codigo):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Equipe fiscal invalida ou nao importada",
+        )
     if role not in ALLOWED_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cargo invalido")
     if not gerencia_repo.get_gerencia(gerencia_id):
@@ -127,9 +137,10 @@ def _seed_database() -> None:
     logger.info("Iniciando aplicacao – criando schema do banco...")
     database.init_schema()
 
-    if user_repo.count_users() == 0:
-        logger.info("Banco vazio – criando dados iniciais (admin + seed)...")
-
+    # O admin e verificado por si, e nao por "o banco esta vazio": os
+    # importadores em lote criam usuarios sem passar por aqui, e um banco
+    # so com auditores importados ficaria sem ninguem capaz de administra-lo.
+    if user_repo.get_user_by_username("admin") is None:
         # A senha do admin vem do .env; sem ela, gera uma aleatoria e
         # registra no log. Em nenhum caso ha credencial fixa no codigo.
         admin_password = ADMIN_PASSWORD or gerar_senha_temporaria()
@@ -141,108 +152,63 @@ def _seed_database() -> None:
                 admin_password,
             )
 
-        # Gerencias de exemplo
-        gerencias = [
-            gerencia_repo.create_gerencia("Gerencia de Fiscalizacao"),
-            gerencia_repo.create_gerencia("Gerencia de Arrecadacao"),
-            gerencia_repo.create_gerencia("Gerencia de Tributacao"),
-        ]
+    # Alem do admin ja existe gente: banco em uso, nada a semear.
+    if user_repo.count_users() > 1:
+        logger.info("Banco ja possui usuarios – seed de exemplo ignorado.")
+        return
 
-        # Supervisoes vinculadas as gerencias (2 por gerencia)
-        supervisoes = [
-            supervisao_repo.create_supervisao("Supervisao Fiscal A", gerencias[0]),
-            supervisao_repo.create_supervisao("Supervisao Fiscal B", gerencias[0]),
-            supervisao_repo.create_supervisao("Supervisao Arrecadacao A", gerencias[1]),
-            supervisao_repo.create_supervisao("Supervisao Arrecadacao B", gerencias[1]),
-            supervisao_repo.create_supervisao("Supervisao Tributaria A", gerencias[2]),
-            supervisao_repo.create_supervisao("Supervisao Tributaria B", gerencias[2]),
-        ]
+    # Banco sem usuarios mas com equipes importadas e um banco que ja foi
+    # preparado com dados reais da SEFAZ. Encher de gente ficticia ali so
+    # atrapalharia: as matriculas de exemplo nao existem em equipe alguma
+    # e nunca casariam com uma OS do ATF.
+    if equipe_repo.count_equipes() > 0:
+        logger.info(
+            "Equipes fiscais ja importadas – criado so o admin, sem dados de exemplo. "
+            "Use 'python -m backend.importar_usuarios' para cadastrar os auditores."
+        )
+        return
 
-        # Mapa supervisao -> gerencia
-        sup_ger = {
-            0: gerencias[0], 1: gerencias[0],  # Fiscalizacao
-            2: gerencias[1], 3: gerencias[1],  # Arrecadacao
-            4: gerencias[2], 5: gerencias[2],  # Tributacao
-        }
+    logger.info("Banco vazio – criando dados iniciais (admin + seed)...")
 
-        # Os usuarios do seed nascem com senha aleatoria individual, que e
-        # descartada: ninguem precisa dela. O acesso se da pelo admin, que
-        # usa "Resetar Senha" e recebe uma senha nova na hora.
+    gerencias = [gerencia_repo.create_gerencia(nome) for nome in seed.GERENCIAS]
+    supervisoes = [
+        supervisao_repo.create_supervisao(nome, gerencias[idx_ger])
+        for nome, idx_ger in seed.SUPERVISOES
+    ]
+    # Mapa supervisao -> gerencia, para lotar cada usuario nas duas
+    sup_ger = {i: gerencias[idx_ger] for i, (_, idx_ger) in enumerate(seed.SUPERVISOES)}
 
-        # ── Gerentes (1 por gerencia, matriculas 12345-12347) ─────
-        gerentes = [
-            ("Roberto Santos", "12345", gerencias[0]),
-            ("Helena Rodrigues", "12346", gerencias[1]),
-            ("Sergio Barbosa", "12347", gerencias[2]),
-        ]
-        for nome, mat, gid in gerentes:
+    # Os usuarios do seed nascem com senha aleatoria individual, que e
+    # descartada: ninguem precisa dela. O acesso se da pelo admin, que
+    # usa "Resetar Senha" e recebe uma senha nova na hora.
+
+    for nome, mat, idx_ger in seed.GERENTES:
+        auth_service.register_user_with_options(
+            username=nome,
+            password=gerar_senha_temporaria(),
+            role="gerente",
+            gerencia_id=gerencias[idx_ger],
+            supervisao_id=None,
+            must_change_password=True,
+            matricula=mat,
+        )
+
+    for cargo, pessoas in (("supervisor", seed.SUPERVISORES), ("fiscal", seed.FISCAIS)):
+        for nome, mat, idx_sup in pessoas:
             auth_service.register_user_with_options(
                 username=nome,
                 password=gerar_senha_temporaria(),
-                role="gerente",
-                gerencia_id=gid,
-                supervisao_id=None,
+                role=cargo,
+                gerencia_id=sup_ger[idx_sup],
+                supervisao_id=supervisoes[idx_sup],
                 must_change_password=True,
                 matricula=mat,
             )
 
-        # ── Supervisores (1 por supervisao, matriculas 23456-23461) ─
-        supervisores = [
-            ("Patricia Oliveira", "23456"),
-            ("Joao Silva", "23457"),
-            ("Maria Santos", "23458"),
-            ("Ricardo Pereira", "23459"),
-            ("Lucia Costa", "23460"),
-            ("Antonio Ferreira", "23461"),
-        ]
-        for index, (nome, mat) in enumerate(supervisores):
-            auth_service.register_user_with_options(
-                username=nome,
-                password=gerar_senha_temporaria(),
-                role="supervisor",
-                gerencia_id=sup_ger[index],
-                supervisao_id=supervisoes[index],
-                must_change_password=True,
-                matricula=mat,
-            )
-
-        # ── Fiscais (2-3 por supervisao, matriculas 34567+) ────────
-        fiscais = [
-            # Supervisao Fiscal A (sup 0)
-            ("Carlos Mendes", "34567", 0),
-            ("Ana Ribeiro", "34568", 0),
-            ("Pedro Nascimento", "34569", 0),
-            # Supervisao Fiscal B (sup 1)
-            ("Jose Almeida", "34570", 1),
-            ("Fernanda Costa", "34571", 1),
-            # Supervisao Arrecadacao A (sup 2)
-            ("Marcos Silva", "34572", 2),
-            ("Claudia Souza", "34573", 2),
-            ("Rafael Lima", "34574", 2),
-            # Supervisao Arrecadacao B (sup 3)
-            ("Juliana Martins", "34575", 3),
-            ("Bruno Araujo", "34576", 3),
-            # Supervisao Tributaria A (sup 4)
-            ("Tatiana Gomes", "34577", 4),
-            ("Diego Cardoso", "34578", 4),
-            ("Vanessa Rocha", "34579", 4),
-            # Supervisao Tributaria B (sup 5)
-            ("Leandro Pinto", "34580", 5),
-            ("Camila Teixeira", "34581", 5),
-        ]
-        for nome, mat, sup_idx in fiscais:
-            auth_service.register_user_with_options(
-                username=nome,
-                password=gerar_senha_temporaria(),
-                role="fiscal",
-                gerencia_id=sup_ger[sup_idx],
-                supervisao_id=supervisoes[sup_idx],
-                must_change_password=True,
-                matricula=mat,
-            )
-        logger.info("Dados iniciais criados com sucesso (3 gerentes, 6 supervisores, 15 fiscais).")
-    else:
-        logger.info("Banco ja possui dados – seed ignorado.")
+    logger.info(
+        "Dados iniciais criados com sucesso (%d gerentes, %d supervisores, %d fiscais).",
+        len(seed.GERENTES), len(seed.SUPERVISORES), len(seed.FISCAIS),
+    )
 
 
 # ─── Auth helpers ───────────────────────────────────────────────
@@ -340,6 +306,8 @@ def login(payload: LoginRequest, request: Request) -> LoginResponse:
         gerencia_name=user.get("gerencia_name"),
         supervisao_id=user.get("supervisao_id"),
         supervisao_name=user.get("supervisao_name"),
+        equipe_codigo=user.get("equipe_codigo"),
+        equipe_nome=user.get("equipe_nome"),
     )
 
 
@@ -437,6 +405,42 @@ def list_supervisoes(user: dict[str, Any] = Depends(get_active_user)) -> list[Su
     return [SupervisaoResponse(**row) for row in supervisao_repo.list_supervisoes()]
 
 
+@app.get("/equipes-fiscais", response_model=list[EquipeFiscalResponse])
+def list_equipes_fiscais(
+    user: dict[str, Any] = Depends(get_active_user),
+) -> list[EquipeFiscalResponse]:
+    """
+    Equipes fiscais do ATF, para o filtro de OS e para a tela de admin.
+
+    Aberto a qualquer usuario autenticado, e nao so ao admin: o filtro
+    "Equipe Fiscal" do painel monta o select com esta lista. Sao nomes de
+    equipe, sem nenhum dado de pessoa.
+
+    Volta vazio enquanto a planilha nao for importada — o painel entao
+    cai no campo de codigo, que e o comportamento antigo.
+    """
+    return [EquipeFiscalResponse(**row) for row in equipe_repo.list_equipes()]
+
+
+@app.get("/admin/equipes-fiscais/{codigo}/membros", response_model=list[EquipeMembroResponse])
+def list_membros_equipe(
+    codigo: int, user: dict[str, Any] = Depends(get_active_user)
+) -> list[EquipeMembroResponse]:
+    """
+    Auditores de uma equipe fiscal. Apenas admin.
+
+    Restrito porque aqui aparecem nome e matricula de servidor, ao
+    contrario da lista de equipes. Serve para o admin conferir a quem
+    esta dando visibilidade ao amarrar um supervisor a equipe.
+    """
+    require_admin(user)
+    if not equipe_repo.get_equipe(codigo):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Equipe nao encontrada"
+        )
+    return [EquipeMembroResponse(**row) for row in equipe_repo.get_membros(codigo)]
+
+
 @app.put("/admin/supervisoes/{supervisao_id}")
 def update_supervisao(
     supervisao_id: int,
@@ -468,7 +472,9 @@ def create_user(
     primeiro acesso.
     """
     require_admin(user)
-    _validate_user_payload(payload.role, payload.gerencia_id, payload.supervisao_id)
+    _validate_user_payload(
+        payload.role, payload.gerencia_id, payload.supervisao_id, payload.equipe_codigo
+    )
     senha_temporaria = gerar_senha_temporaria()
     try:
         user_id = auth_service.register_user_with_options(
@@ -479,6 +485,7 @@ def create_user(
             supervisao_id=payload.supervisao_id,
             must_change_password=True,
             matricula=payload.matricula,
+            equipe_codigo=payload.equipe_codigo,
         )
     except IntegrityError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Usuario ja existe") from exc
@@ -498,7 +505,9 @@ def update_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario nao encontrado")
     if target["role"] == "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Edicao de admin nao permitida")
-    _validate_user_payload(payload.role, payload.gerencia_id, payload.supervisao_id)
+    _validate_user_payload(
+        payload.role, payload.gerencia_id, payload.supervisao_id, payload.equipe_codigo
+    )
     try:
         user_repo.update_user(
             user_id=user_id,
@@ -507,6 +516,7 @@ def update_user(
             gerencia_id=payload.gerencia_id,
             supervisao_id=payload.supervisao_id,
             matricula=payload.matricula,
+            equipe_codigo=payload.equipe_codigo,
         )
     except IntegrityError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Usuario ja existe") from exc
@@ -516,9 +526,23 @@ def update_user(
 
 @app.get("/admin/users", response_model=list[UserResponse])
 def list_users(user: dict[str, Any] = Depends(get_active_user)) -> list[UserResponse]:
-    """Lista todos os usuarios com suas gerencias e supervisoes. Apenas admin."""
+    """
+    Lista os usuarios com gerencia, supervisao e equipes. Apenas admin.
+
+    Cada usuario leva duas informacoes de equipe, que sao coisas
+    diferentes: `equipes_membro` sao as equipes a que ele PERTENCE, vindas
+    da planilha da SEFAZ; `equipe_codigo` e a que ele CHEFIA, preenchida a
+    mao aqui. A tela usa a primeira para sugerir a segunda.
+    """
     require_admin(user)
-    return [UserResponse(**row) for row in user_repo.list_users()]
+    por_matricula = equipe_repo.get_equipes_por_matricula()
+    return [
+        UserResponse(
+            **row,
+            equipes_membro=por_matricula.get(str(row.get("matricula")), []),
+        )
+        for row in user_repo.list_users()
+    ]
 
 
 @app.post("/admin/users/{user_id}/reset-password", response_model=PasswordResetResponse)
@@ -594,8 +618,17 @@ def _matriculas_visiveis(user: dict[str, Any]) -> set[str] | None:
     a hierarquia vira um conjunto de matriculas resolvido no banco local:
 
     - fiscal:     apenas a propria
-    - supervisor: a propria + todos os lotados na sua supervisao
-    - gerente:    a propria + todos os lotados na sua gerencia
+    - supervisor: a propria + a equipe fiscal do ATF que ele chefia,
+                  se houver uma amarrada; senao, os lotados na sua
+                  supervisao (cadastro local)
+    - gerente:    a propria + os lotados na sua gerencia + as equipes
+                  dos seus supervisores
+
+    A equipe fiscal tem precedencia sobre a supervisao local por ser a
+    fonte da verdade da SEFAZ, e cobre tambem os fiscais que ainda nao
+    tem login aqui — com a supervisao local, um fiscal sem cadastro era
+    invisivel para o proprio supervisor. O `equipe_codigo` e amarrado a
+    mao pelo admin, entao ate ele existir vale o comportamento antigo.
 
     Quem nao tem matricula nem lotacao recebe um conjunto vazio e nao ve
     nenhuma OS. E o comportamento correto: um cadastro incompleto nao pode
@@ -609,10 +642,23 @@ def _matriculas_visiveis(user: dict[str, Any]) -> set[str] | None:
     if user.get("matricula"):
         matriculas.add(str(user["matricula"]))
 
-    if role == "supervisor" and user.get("supervisao_id"):
-        matriculas.update(user_repo.get_matriculas_by_supervisao(int(user["supervisao_id"])))
+    if role == "supervisor":
+        if user.get("equipe_codigo"):
+            matriculas.update(equipe_repo.get_matriculas_by_equipe(int(user["equipe_codigo"])))
+        elif user.get("supervisao_id"):
+            matriculas.update(user_repo.get_matriculas_by_supervisao(int(user["supervisao_id"])))
     elif role == "gerente" and user.get("gerencia_id"):
-        matriculas.update(user_repo.get_matriculas_by_gerencia(int(user["gerencia_id"])))
+        gerencia_id = int(user["gerencia_id"])
+        matriculas.update(user_repo.get_matriculas_by_gerencia(gerencia_id))
+        # Somar as equipes dos supervisores mantem a hierarquia de pe: sem
+        # isso um supervisor com equipe amarrada veria OS que o gerente
+        # dele nao ve, porque a equipe do ATF alcanca fiscais que nem tem
+        # login no sistema.
+        matriculas.update(
+            equipe_repo.get_matriculas_by_equipes(
+                user_repo.get_equipe_codigos_by_gerencia(gerencia_id)
+            )
+        )
 
     return matriculas
 

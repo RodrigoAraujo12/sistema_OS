@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import apiClient from "../api.js";
 import { situacaoLabels, modeloLabels, motivoLabels, orgaoExecutorOptions, formatarData } from "../constants.js";
 import { EMPTY_OS_FILTERS, validarFiltrosOS, filtrosParaPayload } from "../atfFilters.js";
@@ -137,9 +137,26 @@ export default function OrdensPanel() {
   const [ordenacao, setOrdenacao] = useState({ campo: null, dir: "asc" });
   const [copiedOS, setCopiedOS] = useState(null);
 
+  // Equipes fiscais do ATF, para o select do filtro. Lista vazia = a
+  // planilha da SEFAZ ainda nao foi importada; o filtro entao volta a
+  // ser o campo de codigo, que e como funcionava antes de existir a
+  // tabela. Ver backend/importar_equipes.py.
+  const [equipes, setEquipes] = useState([]);
+
   const [selectedOS, setSelectedOS] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState("");
+
+  // Carrega as equipes uma vez. Falha silenciosa de proposito: sem a
+  // lista o filtro degrada para o campo de codigo, e um erro aqui nao
+  // deve atrapalhar quem so quer pesquisar OS.
+  useEffect(() => {
+    let ativo = true;
+    apiClient.listEquipesFiscais()
+      .then(lista => { if (ativo) setEquipes(lista || []); })
+      .catch(() => { /* sem lista: cai no campo de codigo */ });
+    return () => { ativo = false; };
+  }, []);
 
   function handleFilterChange(e) {
     const { name, value } = e.target;
@@ -409,15 +426,26 @@ export default function OrdensPanel() {
               </select>
             </div>
             <div className="filter-group">
-              <label className="filter-label">Equipe Fiscal (c&oacute;digo)</label>
-              <input
-                type="text"
-                name="equipe_fiscal"
-                value={filters.equipe_fiscal}
-                onChange={handleFilterChange}
-                placeholder="Ex: 427"
-                className="filter-select"
-              />
+              <label className="filter-label">
+                Equipe Fiscal{equipes.length === 0 && " (código)"}
+              </label>
+              {equipes.length > 0 ? (
+                <select name="equipe_fiscal" value={filters.equipe_fiscal} onChange={handleFilterChange} className="filter-select">
+                  <option value="">Todas</option>
+                  {equipes.map(({ codigo, nome }) => (
+                    <option key={codigo} value={codigo}>{nome}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  name="equipe_fiscal"
+                  value={filters.equipe_fiscal}
+                  onChange={handleFilterChange}
+                  placeholder="Ex: 427"
+                  className="filter-select"
+                />
+              )}
             </div>
             <div className="filter-group">
               <label className="filter-label">&Oacute;rg&atilde;o Executor</label>
