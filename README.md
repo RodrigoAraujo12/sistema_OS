@@ -734,6 +734,12 @@ outro banco — ver `_buscar_detalhe_os_atf`, em `main.py`.
 - Ficam de fora do parser, de proposito (estes SAO documentados): os
   codigos redundantes do endereco `cdcorreios`, `cdcorreiosUf` e
   `cdibgeUf`, que repetem municipio e UF ja exibidos.
+- **O bloco de Cancelamento nao existe no retorno.** A tela do ATF
+  mostra Data, Motivo, Usuario e Descricao do cancelamento; o contrato
+  do detalhe nao tem nenhum desses campos — so `<autorizacao>`. Numa OS
+  cancelada, portanto, nao ha como exibir o motivo. Nao e lacuna do
+  parser: e o servico que nao expoe. Se a area fiscal precisar, tem que
+  ser pedido a SEFAZ como campo novo.
 - **Recolhimentos e denuncias sao lidos pelo contrato, sem validacao
   contra dado real:** nenhuma das 40 OS varridas no ambiente de teste
   trouxe esses blocos preenchidos. Se aparecer divergencia quando houver
@@ -772,6 +778,33 @@ ATF_CACHE_TTL=60
 | 7      | Especial      |
 | 8      | Especifica    |
 
+### Bloqueio por atraso na cientificacao (situacao 5)
+
+Regra do ATF, informada pela SEFAZ em 25/08/2026 junto com os casos de
+teste do detalhe. Explica de onde vem a situacao **Bloqueada** e por que
+ela e a unica que depende de uma acao do supervisor:
+
+1. o auditor e designado para a OS;
+2. se ele nao registra a **ciencia** em tres dias (prazo parametrizavel
+   no ATF), uma rotina automatica **bloqueia** a OS;
+3. para desbloquear, o auditor insere na OS uma justificativa do tipo
+   **ATRASO NA CIENTIFICACAO**, dirigida ao seu supervisor;
+4. de posse da justificativa, **o supervisor procede com o desbloqueio**.
+
+O que isso significa para este sistema: uma OS bloqueada e uma
+**pendencia do supervisor**, nao um estado passivo. Os dados para
+detectar isso ja chegam — situacao 5 na listagem, e a justificativa com
+`dsTipoJustifAtraso` no detalhe.
+
+Hoje o painel apenas exibe a situacao; nao ha alerta nem filtro que trate
+o bloqueio como fila de trabalho do supervisor. **Nao foi implementado
+porque nao foi pedido** — mas e o candidato mais obvio a virar alerta,
+agora que o supervisor enxerga a propria equipe.
+
+Cuidado ao desenhar isso: o desbloqueio acontece **no ATF**, nao aqui.
+Este sistema e somente leitura sobre a OS, entao o maximo que cabe e
+apontar a pendencia, nunca sugerir que ela foi resolvida.
+
 ## Configuracao
 
 Todas as variaveis ficam no arquivo `.env` (copiado de `.env.example`):
@@ -802,22 +835,160 @@ Se nao definida, o padrao e `http://localhost:8000`.
 
 Registro do que foi decidido e do que esta parado esperando terceiros.
 Serve para nao "corrigir" de novo algo que ja foi decidido assim de
-proposito. Ultima revisao: 21/08/2026.
+proposito. Ultima revisao: 25/08/2026.
 
 ### Esperando a SEFAZ
 
 | O que falta | O que fica travado |
 | ----------- | ------------------ |
-| **Tabela de equipes fiscais** (codigo -> nome) | O filtro "Equipe Fiscal" do painel continua sendo um campo onde o usuario digita o `cdEquipeFisc` (ex: 427). E a unica excecao a regra de nao mostrar codigos, e e consciente: nao ha fonte para montar um select por nome. **Nao trocar por um select sem ter a tabela.** |
-| **Grupo do ATF** com o supervisor e as matriculas dos seus fiscais | Seria a fonte da verdade para a visibilidade dos supervisores, no lugar do vinculo mantido a mao em `gerencias` / `supervisoes`. Enquanto nao vier, vale o cadastro local, que ja funciona. |
+| **Quem chefia cada equipe fiscal** | A planilha da SEFAZ traz a composicao das equipes, mas nao diz quem e o supervisor de cada uma. Ate vir, o vinculo e feito a mao pelo admin no cadastro de usuarios (campo "Equipe Fiscal"). |
 | Tabelas de codigo de `stPrazoOS`, `tpNatureza` e `tpDocumento` | Esses campos chegam so como codigo (`"0"`, `"I"`, `"1"`), sem descricao em lugar nenhum. Continuam na resposta da API, mas saem da tela — um numero solto nao informa ninguem. Ha comentario no `OrdensPanel.jsx` marcando onde recoloca-los. |
+
+### Equipes fiscais (resolvido em 25/08/2026)
+
+A SEFAZ entregou a planilha `DADOS_ORDEM_SERVICO.xlsx`, com cinco abas
+de tabelas de dominio. Modelo de OS, motivo de abertura e status ja
+estavam corretos no sistema; as duas que mudaram alguma coisa foram:
+
+**Aba "Grupos de Auditores"** — e a tabela de equipes fiscais que
+faltava: 46 equipes com codigo (`cdEquipeFisc`) e nome, e a composicao
+de cada uma (339 vinculos, 334 auditores). Importada por
+`python -m backend.importar_equipes CAMINHO/DADOS_ORDEM_SERVICO.xlsx`,
+que grava em `equipes_fiscais` e `equipe_membros`. Com ela:
+
+- o filtro "Equipe Fiscal" do painel virou um `<select>` por nome. Se a
+  importacao nunca rodou, a lista volta vazia e o campo degrada para o
+  antigo, onde se digita o codigo;
+- um supervisor pode ser amarrado a uma equipe (`users.equipe_codigo`),
+  e entao e ela que define o que ele enxerga.
+
+**Aba "Elementos Organizacionais"** — confere com os 18 orgaos
+executores fixos em `constants.js`, codigo e sigla, sem divergencia. A
+planilha tem 595 elementos (344 ativos e com sigla), mas nem todo
+elemento organizacional executa OS: os 18 sao uma curadoria da area
+fiscal, e foram **mantidos como estao** por decisao de 25/08/2026.
+Expandir a lista enche o filtro de opcoes que nunca retornam OS. A
+planilha serve aqui como fonte para conferir, nao para substituir.
+
+#### A importacao substitui, nao mescla
+
+`substituir_tudo` apaga as duas tabelas antes de gravar. E de proposito:
+quem sai de uma equipe some da planilha seguinte sem deixar rastro, e um
+merge manteria o vinculo antigo vivo — dando a um supervisor acesso a OS
+de quem nao e mais dele.
+
+O `users.equipe_codigo` nao e tocado pela importacao. Um codigo que
+aponte para equipe extinta vira conjunto vazio na leitura, nunca "ve
+tudo".
+
+#### A planilha nao entra no repositorio
+
+Ela tem nome e matricula de 334 servidores. O importador e versionado, o
+arquivo nao — guarde-o fora do repo (ver `NOTAS-INTERNAS.md`). O
+endpoint `/equipes-fiscais` devolve so codigo e nome das equipes, e por
+isso e aberto a qualquer usuario autenticado; a lista de membros, com
+nome e matricula, fica em `/admin/equipes-fiscais/{codigo}/membros` e
+exige admin.
+
+### Passando dos usuarios de exemplo para os reais
+
+O banco nasce com 25 usuarios de exemplo (matriculas `12345`, `23456`,
+`34567`...) que existem para a demo abrir com algo na tela e para casar
+com o MOCK de OS. Eles **nao tem correlacao com os dados do ATF**: as
+matriculas sao ficticias e nunca aparecem numa OS real.
+
+Para trabalhar com matricula real, a partir da mesma planilha:
+
+```bash
+# 1. as equipes (46 equipes, 339 vinculos)
+python -m backend.importar_equipes CAMINHO/DADOS_ORDEM_SERVICO.xlsx
+
+# 2. os auditores como usuarios (334 pessoas)
+python -m backend.importar_usuarios CAMINHO/DADOS_ORDEM_SERVICO.xlsx --remover-seed
+```
+
+Os dois aceitam `--dry-run`. O segundo:
+
+- cria todos como **fiscal, sem gerencia nem supervisao** — e o unico
+  cargo que o modelo resolve so pela matricula. Quem for supervisor e
+  promovido depois na tela de admin, onde tambem se amarra a equipe;
+- e **idempotente**: quem ja tem a matricula cadastrada e pulado;
+- com `--remover-seed`, apaga antes os usuarios de exemplo. O admin nunca
+  e tocado — ele nao tem matricula, e o `DELETE` ainda filtra por
+  `role != 'admin'`;
+- grava as senhas temporarias em `backend/senhas-iniciais.csv` para o
+  admin repassar. **Apague o arquivo depois**; o `.gitignore` ja barra
+  `*.csv`, mas ele nao deveria sobreviver ao repasse. Em ambiente de
+  teste, `--senha "Algo@123"` usa a mesma para todos e nao gera o arquivo
+  (a troca no primeiro acesso continua exigida).
+
+As gerencias e supervisoes de exemplo **nao** sao removidas: o cadastro
+de usuario ainda exige lotacao, entao elas seguem servindo ate voce criar
+as reais. Renomeie ou substitua pela tela de admin.
+
+#### O seed nao volta sozinho
+
+`_seed_database` roda a cada start e agora decide em tres passos:
+
+| Situacao do banco | O que acontece |
+| ----------------- | -------------- |
+| vazio | admin + 25 usuarios de exemplo (comportamento historico) |
+| vazio, mas com equipes ja importadas | so o admin |
+| com usuarios importados e sem admin | cria o admin, e nada mais |
+| em uso | nada |
+
+O admin e verificado **por si**, e nao por "o banco esta vazio". Sem
+isso, importar usuarios num banco novo antes do primeiro start deixava o
+sistema sem ninguem capaz de administra-lo — o seed via o banco povoado e
+nunca criava um admin.
+
+### Pertencer a uma equipe nao e chefiar uma equipe
+
+Sao dois dados diferentes, e a distincao e o que impede a importacao de
+virar uma falha de acesso:
+
+| | Onde mora | De onde vem | Efeito |
+| --- | --- | --- | --- |
+| **Pertence** | `equipe_membros` | planilha da SEFAZ | nenhum sobre visibilidade; e informativo |
+| **Chefia** | `users.equipe_codigo` | preenchido pelo admin | o supervisor passa a ver as OS de toda a equipe |
+
+Depois de importar, os 334 auditores tem equipe (pertencimento) e nenhum
+tem chefia — e o correto. Se a importacao preenchesse `equipe_codigo`,
+cada auditor viraria supervisor da propria equipe e enxergaria as OS de
+todos os colegas.
+
+Na tela de Usuarios as duas aparecem em colunas separadas: **Equipe
+(ATF)**, so leitura, e **Chefia**, editavel. Ao promover alguem a
+supervisor, a chefia ja vem preenchida com a equipe a que a pessoa
+pertence — quem esta em duas fica sem sugestao, para o admin escolher.
+
+### Como a visibilidade e resolvida hoje
+
+`_matriculas_visiveis` (em `main.py`) monta o conjunto de matriculas que
+o usuario pode enxergar:
+
+| Cargo | Ve as OS de |
+| ----- | ----------- |
+| admin | todas (sem restricao) |
+| gerente | a propria matricula + todos os lotados na sua gerencia |
+| supervisor | a propria + a **equipe fiscal do ATF**, se houver uma amarrada; senao, os lotados na sua supervisao |
+| fiscal | apenas a propria |
+
+A equipe fiscal tem precedencia sobre a supervisao local por ser a fonte
+da verdade da SEFAZ, e cobre tambem os fiscais que ainda nao tem login
+no sistema — com o cadastro local, um fiscal sem usuario era invisivel
+para o proprio supervisor.
+
+Quem nao tem matricula nem lotacao recebe conjunto vazio e nao ve nada.
+O filtro falha fechado: cadastro incompleto nunca vira acesso irrestrito.
 
 ### Em aberto — decisao de politica, nao tecnica
 
-Restringir a visibilidade por **equipe fiscal** em vez de por
-**matricula** e possivel hoje: o `cdEquipeFisc` vem em toda OS da
-listagem e ja e aceito como filtro pelo ATF. Falta uma definicao de
-negocio antes de implementar:
+Restringir a visibilidade por **equipe fiscal da OS** (`cdEquipeFisc` no
+registro) em vez de por **matricula designada** continua em aberto. Nao
+e a mesma coisa que o vinculo supervisor-equipe descrito acima: aquele
+usa a equipe para montar o conjunto de matriculas, e o criterio final
+continua sendo "alguem desse conjunto esta designado na OS".
 
 > Um fiscal da equipe A, designado numa OS da equipe B, deve ver essa OS?
 > Pelo criterio de matricula ele ve; pelo de equipe, nao.
@@ -834,9 +1005,9 @@ Medicao em dados reais (246 OS abertas em 07/2026) para embasar:
   supervisor acompanhar o que ainda nao foi distribuido, isso e uma
   lacuna do modelo atual, independente de equipe fiscal.
 
-Para implementar por equipe seria preciso guardar o `cdEquipeFisc` na
-tabela `supervisoes` (que hoje so tem `id`, `gerencia_id` e `name`) — o
-**codigo**, nunca o nome: nome de equipe e editavel, codigo nao.
+Para implementar por equipe da OS seria preciso comparar o
+`equipe_fiscal_codigo` do registro com a equipe do usuario, e nao a
+lista de fiscais designados.
 
 ### Convencao de interface: codigo e coisa interna
 

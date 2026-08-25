@@ -3,7 +3,7 @@
 ## Visão Geral
 
 O sistema utiliza **três fontes de dados**:
-- **SQLite** (`backend/app.db`) — usuários, gerências, supervisões (persistência local)
+- **SQLite** (`backend/app.db`) — usuários, gerências, supervisões e equipes fiscais (persistência local)
 - **API ATF** — ordens de serviço (fonte principal, via HTTPS + XML)
 - **IBM Informix** (`sefaz_test`) — ordens de serviço (legado, via ODBC; substituído pela ATF)
 
@@ -31,7 +31,19 @@ erDiagram
         TEXT matricula "UNIQUE"
         INTEGER gerencia_id FK
         INTEGER supervisao_id FK
+        INTEGER equipe_codigo FK "equipe do ATF que o supervisor chefia"
         INTEGER must_change_password
+    }
+
+    equipes_fiscais {
+        INTEGER codigo PK "cdEquipeFisc do ATF"
+        TEXT nome "NOT NULL"
+    }
+
+    equipe_membros {
+        INTEGER codigo_equipe PK_FK
+        TEXT matricula PK "auditor da equipe"
+        TEXT nome "NOT NULL"
     }
 
     ordens_servico {
@@ -51,6 +63,8 @@ erDiagram
     gerencias ||--o{ supervisoes : "possui"
     gerencias ||--o{ users : "pertence a"
     supervisoes ||--o{ users : "pertence a"
+    equipes_fiscais ||--o{ equipe_membros : "compoe"
+    equipes_fiscais ||--o{ users : "supervisionada por"
     users ||--o{ ordens_servico : "supervisiona (matricula)"
     users }o--o{ ordens_servico : "fiscal (nome em fiscais)"
 ```
@@ -65,6 +79,8 @@ erDiagram
 | `gerencias` | `supervisoes` | 1:N | Uma gerência possui várias supervisões |
 | `gerencias` | `users` | 1:N | Gerentes pertencem a uma gerência |
 | `supervisoes` | `users` | 1:N | Supervisores e fiscais pertencem a uma supervisão |
+| `equipes_fiscais` | `equipe_membros` | 1:N | Uma equipe tem vários auditores (um auditor pode estar em mais de uma) |
+| `equipes_fiscais` | `users` | 1:N | Um supervisor pode ser amarrado a uma equipe do ATF |
 | `users` | `ordens_servico` | 1:N | Supervisor supervisiona OS (via `matricula` ↔ `matricula_supervisor`) |
 | `users` | `ordens_servico` | N:N | Fiscal aparece em OS (via nome no campo `fiscais`) |
 
@@ -80,3 +96,4 @@ erDiagram
 | `GET/POST /admin/users`     | SQLite                              |
 | `GET/POST /admin/gerencias` | SQLite                              |
 | `GET/POST /admin/supervisoes` | SQLite                            |
+| `GET /equipes-fiscais`      | SQLite                              |
