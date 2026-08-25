@@ -21,3 +21,12 @@ frontend/public/assets/app.js
 
 # ─── Notas internas (nao versionar) ─────────────────────
 NOTAS-INTERNAS.md
+
+# ─── Dados da SEFAZ (nome e matricula de servidor) ──────
+# A planilha de equipes fiscais nao pode entrar no repo, que e
+# publico. O importador (backend/importar_equipes.py) e versionado;
+# o arquivo, nao. Ver NOTAS-INTERNAS.md.
+*.xlsx
+*.xls
+*.csv
+tests/dados/
