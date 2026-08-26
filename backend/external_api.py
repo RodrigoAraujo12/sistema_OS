@@ -1344,6 +1344,15 @@ def _atf_ws_path() -> str:
     return config.ATF_WS_PATH
 
 
+# Com a verificacao desligada, o urllib3 repete um InsecureRequestWarning
+# a cada chamada e afoga o log. O aviso que importa e dado uma vez no
+# boot, por setup_logging() — ver ATF_SSL_VERIFY em config.py.
+if config.ATF_BASE_URL and not config.ATF_SSL_VERIFY:
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
 # ─── Cache das respostas do ATF ──────────────────────────────────
 #
 # O servico devolve a lista completa e nao pagina — a paginacao e feita
@@ -1456,10 +1465,34 @@ def _int_ou_none(valor: str | None) -> int | None:
         return None
 
 
+# Numero inteiro agrupado em milhar, sem parte decimal: "12.345".
+_NUMERO_COM_MILHAR = re.compile(r"^-?\d{1,3}(?:\.\d{3})+$")
+
+
 def _float_ou_none(valor: str | None) -> float | None:
+    """
+    Le numero no formato pt-BR do ATF: "." separa milhar, "," decimal.
+
+    Ate 26/08/2026 esta funcao fazia um replace(",", ".") seco, que
+    transforma "1.234,56" em "1.234.56" — float() rejeita e o valor virava
+    None. Como o front so exibe quando != None (ver valor_levantado em
+    OrdensPanel), o efeito era perverso: valores ABAIXO de mil apareciam
+    e os de mil para cima sumiam da tela, justamente os que importam.
+    Passou despercebido porque o XML de teste usava "18450,75", sem o
+    ponto de milhar que o servico realmente manda.
+    """
+    texto = str(valor).strip() if valor is not None else ""
+    if "," in texto:
+        # Havendo virgula decimal, todo "." no numero e separador de milhar.
+        texto = texto.replace(".", "").replace(",", ".")
+    elif _NUMERO_COM_MILHAR.match(texto):
+        # Sem decimais, "12.345" e doze mil — nao 12 inteiros e 345 milesimos.
+        texto = texto.replace(".", "")
+    # Um "." solitario fora desses casos ("1.5") fica como esta: se algum
+    # dia o servico mudar para o formato ingles, o valor ainda e lido certo.
     try:
-        return float(str(valor).strip().replace(",", "."))
-    except (ValueError, TypeError, AttributeError):
+        return float(texto)
+    except (ValueError, TypeError):
         return None
 
 
@@ -1865,6 +1898,7 @@ def _chamar_atf_https(
             data=envelope.encode("utf-8"),
             headers={"Content-Type": "text/xml; charset=utf-8"},
             timeout=60,
+            verify=config.ATF_SSL_VERIFY,
         )
         falha = _erro_soap(resp)
         if falha:
@@ -2338,6 +2372,7 @@ def _chamar_detalhe_atf_https(base_url: str, numero_os: str) -> dict[str, Any] |
             data=envelope.encode("utf-8"),
             headers={"Content-Type": "text/xml; charset=utf-8"},
             timeout=60,
+            verify=config.ATF_SSL_VERIFY,
         )
         # O SOAP Fault chega com HTTP 500: le a mensagem antes de tratar
         # como erro de transporte, senao ela se perde.

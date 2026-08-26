@@ -62,6 +62,26 @@ ATF_DETALHE_BASE_URL: str = os.getenv("ATF_DETALHE_BASE_URL", "")
 # endereco real do servico.
 ATF_WS_PATH: str = os.getenv("ATF_WS_PATH", "")
 
+# Verificacao do certificado TLS do servico externo. Ligada por padrao —
+# desligar so em ambiente controlado e por tempo determinado.
+#
+# Existe para um caso especifico: servidor que apresenta certificado
+# valido mas envia so o certificado folha, sem a CA intermediaria. O
+# navegador disfarca, porque busca a intermediaria pela AIA do proprio
+# certificado; o requests nao faz isso e derruba toda chamada com
+# "unable to get local issuer certificate".
+#
+# Nessa situacao, a correcao certa e no servidor (instalar a cadeia
+# completa); a segunda melhor e apontar verify= para um bundle que
+# contenha a intermediaria. Desligar a verificacao, que e o que esta
+# variavel faz, deixa a conexao exposta a interceptacao — e o trafego
+# carrega dado fiscal e de contribuinte. Por isso o padrao aqui e
+# "ligada" e qualquer desligamento vive apenas no .env, fora do
+# repositorio, onde tambem se registra ate quando ele vale.
+ATF_SSL_VERIFY: bool = os.getenv("ATF_SSL_VERIFY", "true").strip().lower() not in (
+    "false", "0", "nao", "n", "no", "off",
+)
+
 # Por quantos segundos a resposta do ATF fica em cache. O servico devolve
 # a lista inteira e nao pagina, entao sem cache cada troca de pagina ou de
 # ordenacao refaz a consulta completa. 0 desliga o cache.
@@ -83,4 +103,11 @@ def setup_logging() -> logging.Logger:
     logging.basicConfig(level=LOG_LEVEL, format=log_format)
     logger = logging.getLogger("sefaz")
     logger.setLevel(LOG_LEVEL)
+    # Um estado inseguro nao pode ser silencioso: sem este aviso no boot,
+    # ninguem lembra que a verificacao ficou desligada.
+    if ATF_BASE_URL and not ATF_SSL_VERIFY:
+        logger.warning(
+            "ATF_SSL_VERIFY=false — certificado do ATF NAO sera verificado. "
+            "Conexao sujeita a interceptacao; use apenas em ambiente controlado."
+        )
     return logger

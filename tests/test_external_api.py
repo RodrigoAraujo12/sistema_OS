@@ -17,6 +17,7 @@ from xml.sax.saxutils import escape
 from backend.external_api import (
     _chamar_atf_https,
     _chamar_detalhe_atf_https,
+    _float_ou_none,
     _filtrar_por_hierarquia,
     _montar_envelope_detalhe_soap,
     _montar_envelope_soap,
@@ -202,9 +203,9 @@ def _resposta_detalhe(numero: str = "OS-1", matricula: str = "111") -> str:
         "<dtInicialEvento>03/02/2025</dtInicialEvento>"
         "<dtFinalEvento>20/02/2025</dtFinalEvento>"
         "<noProcedimento>CONTA MERCADORIAS</noProcedimento>"
-        "<vlLevantado>18450,75</vlLevantado>"
+        "<vlLevantado>18.450,75</vlLevantado>"
         "</eventos></listaEventos>"
-        "<listaRecolhimentosOS><vlTotalRecolheOS>5230,75</vlTotalRecolheOS>"
+        "<listaRecolhimentosOS><vlTotalRecolheOS>5.230,75</vlTotalRecolheOS>"
         "</listaRecolhimentosOS>"
         "</ordServ></resultado>"
     )
@@ -241,6 +242,49 @@ class TestEnvelopeDetalheATF(unittest.TestCase):
         corpo = envelope.split("<![CDATA[")[1].split("]]>")[0]
         self.assertNotIn("<ns:outro>", corpo)
         self.assertIn("&gt;", corpo)
+
+
+class TestValorBrasileiro(unittest.TestCase):
+    """
+    Leitura dos numeros do servico, que vem em pt-BR ("1.234,56").
+
+    O parser fazia replace(",", ".") sem tirar o ponto de milhar, entao
+    TODO valor a partir de mil virava None e sumia da tela — os pequenos
+    apareciam e os grandes nao, que e o pior jeito de falhar. Os valores
+    abaixo sao sinteticos; o que importa e a FORMA (separador de milhar,
+    virgula decimal), nao a grandeza.
+    """
+
+    def test_valor_abaixo_de_mil(self):
+        self.assertEqual(_float_ou_none("12,34"), 12.34)
+        self.assertEqual(_float_ou_none("999,99"), 999.99)
+
+    def test_valor_a_partir_de_mil_nao_e_perdido(self):
+        self.assertEqual(_float_ou_none("1.000,00"), 1000.0)
+        self.assertEqual(_float_ou_none("1.234,56"), 1234.56)
+        self.assertEqual(_float_ou_none("99.999,99"), 99999.99)
+
+    def test_milhao_tem_dois_pontos(self):
+        self.assertEqual(_float_ou_none("1.234.567,89"), 1234567.89)
+
+    def test_negativo(self):
+        self.assertEqual(_float_ou_none("-1.500,25"), -1500.25)
+
+    def test_inteiro_agrupado_sem_decimais(self):
+        """"12.345" e doze mil, nao 12 inteiros e 345 milesimos."""
+        self.assertEqual(_float_ou_none("12.345"), 12345.0)
+
+    def test_ponto_decimal_solitario_continua_valendo(self):
+        """Se o servico um dia mandar formato ingles, nao inventar milhar."""
+        self.assertEqual(_float_ou_none("1.5"), 1.5)
+
+    def test_media_da_listagem(self):
+        """As medias da listagem vem no mesmo formato dos valores."""
+        self.assertEqual(_float_ou_none("12,50"), 12.5)
+
+    def test_ausente_ou_invalido_vira_none(self):
+        for entrada in (None, "", "   ", "-", "abc"):
+            self.assertIsNone(_float_ou_none(entrada), entrada)
 
 
 class TestParseDetalheATF(unittest.TestCase):
@@ -307,13 +351,13 @@ class TestParseDetalheATF(unittest.TestCase):
             "<dtInclusao>15/03/2026</dtInclusao>"
             "<nrNossoNumero>00012345678</nrNossoNumero>"
             "<ref>A</ref><dpReferencia>02/2026</dpReferencia>"
-            "<vlPrincipal>18450,75</vlPrincipal>"
+            "<vlPrincipal>18.450,75</vlPrincipal>"
             "<cdReceitaSefin>1105</cdReceitaSefin>"
             "<noReceitaSefin>ICMS NORMAL</noReceitaSefin>"
             "<noSituacaoDebito>PAGO</noSituacaoDebito>"
             "<noSituacaoARR>QUITADO</noSituacaoARR>"
             "</recolhimentoOS>"
-            "<vlTotalRecolheOS>18450,75</vlTotalRecolheOS></listaRecolhimentosOS>"
+            "<vlTotalRecolheOS>18.450,75</vlTotalRecolheOS></listaRecolhimentosOS>"
             "<listaDenuncia><denuncia><dtDenuncia>02/01/2026</dtDenuncia>"
             "<dsDenuncia>Notas sem lastro.</dsDenuncia></denuncia></listaDenuncia>"
             "</ordServ></resultado>"
