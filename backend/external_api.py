@@ -14,6 +14,7 @@ import logging
 import re
 import unicodedata
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import date, datetime, timezone
 from threading import Lock
 from time import monotonic
@@ -2670,3 +2671,278 @@ def _calcular_comparativo_mensal(
     comparativo["_labels"] = {"mes_atual": mes_atual, "mes_anterior": mes_anterior}
 
     return comparativo
+
+
+# ─── Dashboard de OS (dados reais do ATF) ───────────────────────
+#
+# Separado de gerar_dashboard(), que roda sobre o formato interno legado
+# (_MOCK_ORDENS) e mede status e ciencia. Aqui a fonte e a listagem do
+# ATF e o que se mede sao os cortes pedidos pela area fiscal em
+# 31/08/2026: quantidade de OS por gerencia, orgao executor, fiscal,
+# motivo, tipo (modelo) e mes de abertura — cada um com o tempo medio de
+# execucao.
+#
+# A contagem de EVENTOS, que a mesma demanda pede, NAO esta aqui. A
+# listagem nao traz evento nenhum: so mediaEventosModMot, uma media ja
+# pronta por modelo+motivo, e dataUltimoEventoOS. A lista de eventos so
+# existe no detalhe, uma chamada por OS (~1s cada, e sao milhares de OS
+# por ano), o que nao cabe num painel sob demanda. Fica para o servico
+# que a SEFAZ vai expor.
+
+# Limite usado quando o dashboard precisa do universo inteiro em vez de
+# uma pagina. Nao custa chamada extra ao ATF: o servico nao pagina do
+# lado dele — a listagem ja volta completa e quem recorta e _paginar_atf,
+# aqui dentro.
+_LIMITE_UNIVERSO = 1_000_000
+
+# Rotulos dos grupos "vazios". Aparecem no eixo do grafico, entao dizem o
+# que falta, e nao apenas que falta: quem le precisa saber se o buraco e
+# do ATF (orgao/motivo/modelo em branco) ou do nosso cadastro (gerencia).
+_SEM_ORGAO = "Sem orgao executor"
+_SEM_GERENCIA = "Sem gerencia cadastrada"
+_SEM_MOTIVO = "Sem motivo informado"
+_SEM_MODELO = "Sem modelo informado"
+_SEM_FISCAL = "Sem fiscal designado"
+_SEM_ABERTURA = "Sem data de abertura"
+
+# O grupo "vazio" e reconhecido pelo rotulo, e nao por id nulo: no ATF um
+# orgao pode vir com nome e sem cdOrgaoExec, e ai o id e None num grupo
+# que existe de verdade. Cada linha do corte carrega `vazio` para o front
+# nao ter que repetir estes textos do lado dele.
+_ROTULOS_VAZIOS = frozenset({
+    _SEM_ORGAO, _SEM_GERENCIA, _SEM_MOTIVO, _SEM_MODELO, _SEM_FISCAL, _SEM_ABERTURA,
+})
+
+
+def _resumo_grupo(os_list: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Quantidade e tempo medio de execucao de um grupo de OS.
+
+    O tempo medio sai SO das OS encerradas. Numa OS que ainda corre,
+    dias_execucao conta ate hoje e cresce sozinho todo dia — misturar as
+    duas daria uma media que se mexe sem nada ter acontecido. Por isso
+    `encerradas` vai junto na linha: e o denominador da media, e sem ele
+    ninguem sabe se "42 dias" saiu de 300 OS ou de 2.
+    """
+    encerradas = [o for o in os_list if o.get("data_encerramento")]
+    dias = [
+        o["dias_execucao"] for o in encerradas
+        if o.get("dias_execucao") is not None
+    ]
+    return {
+        "total": len(os_list),
+        "encerradas": len(encerradas),
+        "em_execucao": len(os_list) - len(encerradas),
+        "tempo_medio": round(sum(dias) / len(dias), 1) if dias else None,
+    }
+
+
+def _agrupar_os(
+    ordens: list[dict[str, Any]],
+    chaves_de: Callable[[dict[str, Any]], list[tuple[Any, str]]],
+) -> list[dict[str, Any]]:
+    """
+    Agrupa OS por uma dimensao e devolve as linhas do corte, da maior
+    para a menor.
+
+    `chaves_de` devolve uma LISTA de chaves (id, rotulo) porque uma OS
+    pode cair em mais de um grupo: ela tem varios fiscais e, por tabela,
+    pode alcancar mais de uma gerencia. Nos cortes de dimensao unica —
+    tipo, motivo, orgao, mes — a lista sempre tem um item so.
+
+    Onde a lista tem mais de um item a soma das linhas passa do total de
+    OS, de proposito: a mesma OS conta para cada fiscal designado. Quem
+    exibe o corte precisa dizer isso, senao o numero parece errado.
+    """
+    grupos: dict[tuple[Any, str], list[dict[str, Any]]] = defaultdict(list)
+    for o in ordens:
+        for chave in chaves_de(o):
+            grupos[chave].append(o)
+
+    linhas = [
+        {
+            "id": ident,
+            "rotulo": rotulo,
+            "vazio": rotulo in _ROTULOS_VAZIOS,
+            **_resumo_grupo(os_list),
+        }
+        for (ident, rotulo), os_list in grupos.items()
+    ]
+    # Maior primeiro; empate desfeito pelo rotulo para a ordem nao mudar
+    # entre duas chamadas com os mesmos dados.
+    linhas.sort(key=lambda linha: (-linha["total"], linha["rotulo"]))
+    return linhas
+
+
+def _chave_orgao_executor(o: dict[str, Any]) -> list[tuple[Any, str]]:
+    """
+    Orgao executor da OS — o que a area fiscal chama de equipe executora.
+
+    Rotula pela sigla (GR2, GOFE-GEFTE), que e como o orgao e conhecido;
+    o nome extenso so entra se a sigla nao vier. Nao confundir com
+    equipe_fiscal (noEquipeFisc), que e outra dimensao e vem em branco em
+    metade das OS.
+    """
+    rotulo = (
+        (o.get("orgao_executor_sigla") or "").strip()
+        or (o.get("orgao_executor") or "").strip()
+        or _SEM_ORGAO
+    )
+    return [(o.get("orgao_executor_codigo"), rotulo)]
+
+
+def _chave_modelo(o: dict[str, Any]) -> list[tuple[Any, str]]:
+    """Tipo da OS = modelo no ATF (NORMAL, SIMPLIFICADA, ESPECIAL...)."""
+    return [(o.get("modelo_codigo"), (o.get("modelo") or "").strip() or _SEM_MODELO)]
+
+
+def _chave_motivo(o: dict[str, Any]) -> list[tuple[Any, str]]:
+    """Motivo de abertura da OS."""
+    return [(
+        o.get("motivo_abertura_codigo"),
+        (o.get("motivo_abertura") or "").strip() or _SEM_MOTIVO,
+    )]
+
+
+def _chave_mes_abertura(o: dict[str, Any]) -> list[tuple[Any, str]]:
+    """Mes de abertura, com id ordenavel (YYYY-MM) e rotulo em MM/AAAA."""
+    mes = (o.get("data_abertura") or "")[:7]
+    if len(mes) != 7:
+        return [(None, _SEM_ABERTURA)]
+    ano, numero = mes.split("-")
+    return [(mes, f"{numero}/{ano}")]
+
+
+def _chaves_fiscal(o: dict[str, Any]) -> list[tuple[Any, str]]:
+    """
+    Um grupo por fiscal designado na OS.
+
+    Sem deduplicar por matricula, a mesma OS entraria duas vezes no grupo
+    de um fiscal que aparece repetido na lista — o que acontece no ATF
+    quando ele e designado, cancelado e designado de novo.
+    """
+    vistos: dict[Any, str] = {}
+    for f in o.get("fiscais") or []:
+        matricula = (f.get("matricula") or "").strip()
+        nome = (f.get("nome") or "").strip()
+        if not matricula and not nome:
+            continue
+        vistos.setdefault(matricula or nome, nome or matricula)
+    if not vistos:
+        return [(None, _SEM_FISCAL)]
+    return list(vistos.items())
+
+
+def _chaves_gerencia(
+    o: dict[str, Any], gerencia_por_matricula: dict[str, dict[str, Any]],
+) -> list[tuple[Any, str]]:
+    """
+    Gerencias alcancadas pela OS, pelas matriculas dos seus fiscais.
+
+    A gerencia NAO existe no ATF: e cadastro nosso, e a unica ponte ate
+    a OS sao as matriculas em fiscais[]. Uma OS com fiscais de gerencias
+    diferentes conta em cada uma — e entra uma vez so por gerencia, mesmo
+    com varios fiscais dela na mesma OS.
+    """
+    encontradas: dict[Any, str] = {}
+    for f in o.get("fiscais") or []:
+        matricula = (f.get("matricula") or "").strip()
+        gerencia = gerencia_por_matricula.get(matricula) if matricula else None
+        if gerencia:
+            encontradas.setdefault(gerencia["id"], gerencia["nome"])
+    if not encontradas:
+        return [(None, _SEM_GERENCIA)]
+    return list(encontradas.items())
+
+
+def gerar_dashboard_os(
+    ordens: list[dict[str, Any]],
+    gerencia_por_matricula: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """
+    Consolida os cortes de quantidade de OS sobre a listagem do ATF.
+
+    `ordens` e o universo JA filtrado pela hierarquia de quem pediu — a
+    agregacao nao filtra nada por conta propria, para nao haver dois
+    lugares decidindo quem ve o que.
+
+    `gerencia_por_matricula` mapeia matricula -> {id, nome} da gerencia,
+    montado no banco local (ver _gerencia_por_matricula, em main.py).
+    Vazio ou None, o corte por gerencia sai inteiro em "sem gerencia
+    cadastrada" — que e a leitura honesta enquanto ninguem amarrou os
+    fiscais a uma lotacao.
+    """
+    mapa_gerencia = gerencia_por_matricula or {}
+
+    geral = _resumo_grupo(ordens)
+
+    matriculas: set[str] = set()
+    for o in ordens:
+        for f in o.get("fiscais") or []:
+            if (f.get("matricula") or "").strip():
+                matriculas.add(f["matricula"].strip())
+
+    por_gerencia = _agrupar_os(ordens, lambda o: _chaves_gerencia(o, mapa_gerencia))
+    por_orgao = _agrupar_os(ordens, _chave_orgao_executor)
+    por_fiscal = _agrupar_os(ordens, _chaves_fiscal)
+    por_motivo = _agrupar_os(ordens, _chave_motivo)
+    por_tipo = _agrupar_os(ordens, _chave_modelo)
+
+    # O unico corte que nao se ordena por quantidade: mes e uma serie, e
+    # so faz sentido no tempo. O id (YYYY-MM) ja ordena como texto; as OS
+    # sem data de abertura nao tem lugar na linha e vao para o fim.
+    por_mes = sorted(
+        _agrupar_os(ordens, _chave_mes_abertura),
+        key=lambda linha: (linha["vazio"], linha["id"] or ""),
+    )
+
+    sem_gerencia = next(
+        (linha["total"] for linha in por_gerencia if linha["vazio"]), 0,
+    )
+    sem_fiscal = next(
+        (linha["total"] for linha in por_fiscal if linha["vazio"]), 0,
+    )
+
+    return {
+        "visao_geral": {
+            "total_os": geral["total"],
+            "encerradas": geral["encerradas"],
+            "em_execucao": geral["em_execucao"],
+            "tempo_medio": geral["tempo_medio"],
+            "total_fiscais": len(matriculas),
+            "total_orgaos": len([l for l in por_orgao if not l["vazio"]]),
+            "total_gerencias": len([l for l in por_gerencia if not l["vazio"]]),
+            # Os dois buracos que mudam como o painel deve ser lido: OS
+            # que nenhum corte por pessoa alcanca.
+            "os_sem_gerencia": sem_gerencia,
+            "os_sem_fiscal": sem_fiscal,
+        },
+        "por_gerencia": por_gerencia,
+        "por_orgao_executor": por_orgao,
+        "por_fiscal": por_fiscal,
+        "por_motivo": por_motivo,
+        "por_tipo": por_tipo,
+        "por_mes": por_mes,
+    }
+
+
+def universo_ordens_atf(
+    data_inicio: str | None = None,
+    data_fim: str | None = None,
+    matriculas_visiveis: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Todas as OS do periodo que o usuario pode ver, sem paginar.
+
+    O recorte de periodo vai pela data de ABERTURA e desce ate o proprio
+    ATF (dataAberturaIni/Fim) em vez de ser um filtro local depois: e o
+    unico jeito de a consulta do painel nao arrastar a base inteira.
+    """
+    resultado = listar_ordens_atf(
+        data_abertura_ini=data_inicio,
+        data_abertura_fim=data_fim,
+        pagina=1,
+        limite=_LIMITE_UNIVERSO,
+        matriculas_visiveis=matriculas_visiveis,
+    )
+    return resultado.get("ordens", [])

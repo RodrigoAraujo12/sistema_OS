@@ -2,11 +2,20 @@
  * DashboardPanel.jsx – Painel principal do Dashboard (admin).
  *
  * Gerencia filtros (gerencia, supervisao, periodo), KPIs computados
- * e roteia para as abas: Geral, Gerencias, Supervisoes, Fiscais.
+ * e roteia para as abas: OS, Geral, Gerencias, Supervisoes, Fiscais.
+ *
+ * Duas fontes convivem aqui, e a diferenca importa:
+ *
+ * - "Ordens de Servico" (DashboardOS) le os dados REAIS do ATF por um
+ *   endpoint proprio, com filtro de periodo proprio;
+ * - as outras quatro abas leem `dashboardData`, do formato interno
+ *   legado, que hoje e mock — e por isso a barra de filtros (gerencia,
+ *   supervisao, periodo) e os KPI cards so aparecem nelas.
  */
 
 import React, { useMemo, useState } from "react";
 import apiClient from "../api.js";
+import DashboardOS from "./DashboardOS.jsx";
 import DashboardGeral from "./DashboardGeral.jsx";
 import DashboardGerencias from "./DashboardGerencias.jsx";
 import DashboardSupervisoes from "./DashboardSupervisoes.jsx";
@@ -26,7 +35,10 @@ export default function DashboardPanel({ dashboardData, onDashboardDataChange, o
   // ─── Filtros ────────────────────────────────────────
   const [gerenciaFilter, setGerenciaFilter] = useState("");
   const [supervisaoFilter, setSupervisaoFilter] = useState("");
-  const [view, setView] = useState("geral");
+  // Abre na aba de dados reais do ATF, e nao na Visao Geral: entre um
+  // painel verdadeiro e um mock, o primeiro que se ve tem que ser o
+  // verdadeiro.
+  const [view, setView] = useState("os");
 
   // ─── Periodo ────────────────────────────────────────
   const [periodo, setPeriodo] = useState("todos");
@@ -166,6 +178,48 @@ export default function DashboardPanel({ dashboardData, onDashboardDataChange, o
   // ─── Render ─────────────────────────────────────────
   return (
     <>
+      {/* ===== ABAS DE VISUALIZACAO ===== */}
+      <div className="card dash-filter-bar">
+        <div className="dash-view-tabs">
+          <button
+            className={`dash-view-tab ${view === "os" ? "active" : ""}`}
+            onClick={() => setView("os")}
+          >
+            Ordens de Servico
+          </button>
+          <button
+            className={`dash-view-tab ${view === "geral" ? "active" : ""}`}
+            onClick={() => setView("geral")}
+          >
+            Visao Geral
+          </button>
+          <button
+            className={`dash-view-tab ${view === "gerencias" ? "active" : ""}`}
+            onClick={() => setView("gerencias")}
+          >
+            Gerencias
+          </button>
+          <button
+            className={`dash-view-tab ${view === "supervisoes" ? "active" : ""}`}
+            onClick={() => setView("supervisoes")}
+          >
+            Supervisoes
+          </button>
+          <button
+            className={`dash-view-tab ${view === "fiscais" ? "active" : ""}`}
+            onClick={() => setView("fiscais")}
+          >
+            Fiscais
+          </button>
+        </div>
+      </div>
+
+      {/* ===== ABA "ORDENS DE SERVICO": dados reais do ATF ===== */}
+      {view === "os" && <DashboardOS onError={onError} />}
+
+      {/* ===== DEMAIS ABAS: formato interno legado ===== */}
+      {view !== "os" && (
+      <>
       {/* ===== BARRA DE FILTROS ===== */}
       <div className="card dash-filter-bar">
         <div className="dash-filter-row">
@@ -268,33 +322,6 @@ export default function DashboardPanel({ dashboardData, onDashboardDataChange, o
           </div>
         )}
 
-        {/* Abas de visualizacao */}
-        <div className="dash-view-tabs">
-          <button
-            className={`dash-view-tab ${view === "geral" ? "active" : ""}`}
-            onClick={() => setView("geral")}
-          >
-            Visao Geral
-          </button>
-          <button
-            className={`dash-view-tab ${view === "gerencias" ? "active" : ""}`}
-            onClick={() => setView("gerencias")}
-          >
-            Gerencias
-          </button>
-          <button
-            className={`dash-view-tab ${view === "supervisoes" ? "active" : ""}`}
-            onClick={() => setView("supervisoes")}
-          >
-            Supervisoes
-          </button>
-          <button
-            className={`dash-view-tab ${view === "fiscais" ? "active" : ""}`}
-            onClick={() => setView("fiscais")}
-          >
-            Fiscais
-          </button>
-        </div>
       </div>
 
       {/* ===== KPI CARDS ===== */}
@@ -370,6 +397,8 @@ export default function DashboardPanel({ dashboardData, onDashboardDataChange, o
           gerenciaFilter={gerenciaFilter}
           supervisaoFilter={supervisaoFilter}
         />
+      )}
+      </>
       )}
     </>
   );

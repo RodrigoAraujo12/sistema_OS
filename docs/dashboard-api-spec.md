@@ -351,3 +351,191 @@ Authorization: Bearer <token>
   }
 }
 ```
+
+---
+
+# Especificação do Endpoint: GET /admin/dashboard/os
+
+## Visão Geral
+
+**URL:** `GET /admin/dashboard/os`
+**Autenticação:** Bearer Token (qualquer cargo)
+**Fonte:** listagem real do ATF (`listarOrdensServicoWebService`)
+
+Cortes de **quantidade de OS** pedidos pela área fiscal em 31/08/2026:
+por gerência, órgão executor, fiscal, motivo, tipo (modelo) e mês de
+abertura — cada um com o tempo médio de execução.
+
+Não confundir com `GET /admin/dashboard`, descrito acima: aquele é
+exclusivo do admin e roda sobre o formato interno legado (status,
+ciência, índice de saúde). Este roda sobre os dados do ATF e **respeita
+a hierarquia de quem chama** — cada cargo agrega exatamente as OS que já
+veria na tela de consulta. Não há `require_admin` porque não há nada
+aqui que a listagem de OS já não mostre; é o mesmo universo, somado.
+
+### O que este endpoint NÃO tem: eventos
+
+A demanda de 31/08/2026 pede também **quantidade de eventos** por tipo e
+por motivo de OS. Isso não está aqui, e não é esquecimento:
+
+- a listagem do ATF **não traz evento nenhum** — só `mediaEventosModMot`
+  (média já calculada pelo ATF por modelo+motivo) e `dataUltimoEventoOS`;
+- a lista de eventos só existe no **detalhe**, uma chamada por OS (~1s
+  cada, e são milhares de OS por ano), o que não cabe num painel sob demanda;
+- o bloco `<eventos>` **não tem matrícula**, então "evento por fiscal"
+  só poderia significar "eventos das OS em que ele está designado".
+
+Fica para o serviço que a SEFAZ vai expor.
+
+---
+
+## Query Parameters (opcionais)
+
+| Parâmetro     | Tipo   | Descrição                                | Exemplo      |
+|---------------|--------|------------------------------------------|--------------|
+| `data_inicio` | string | Abertura a partir de (YYYY-MM-DD)        | `2026-01-01` |
+| `data_fim`    | string | Abertura até (YYYY-MM-DD)                | `2026-08-31` |
+
+O recorte é pela **data de abertura** e desce até o próprio ATF
+(`dataAberturaIni`/`dataAberturaFim`) em vez de ser um filtro local
+depois — é o único jeito de a consulta não arrastar a base inteira.
+Sem os dois, a consulta traz tudo o que o ATF devolver: por isso o
+painel abre com o ano corrente já preenchido.
+
+---
+
+## Estrutura do Retorno (JSON)
+
+```json
+{
+  "visao_geral": { ... },
+  "por_gerencia": [ ... ],
+  "por_orgao_executor": [ ... ],
+  "por_fiscal": [ ... ],
+  "por_motivo": [ ... ],
+  "por_tipo": [ ... ],
+  "por_mes": [ ... ],
+  "periodo": { "inicio": "2026-01-01", "fim": "2026-08-31" }
+}
+```
+
+### `visao_geral`
+
+```json
+{
+  "total_os": 1240,
+  "encerradas": 380,
+  "em_execucao": 860,
+  "tempo_medio": 47.3,
+  "total_fiscais": 96,
+  "total_orgaos": 18,
+  "total_gerencias": 0,
+  "os_sem_gerencia": 1240,
+  "os_sem_fiscal": 4
+}
+```
+
+| Campo             | Tipo        | Descrição                                                        |
+|-------------------|-------------|------------------------------------------------------------------|
+| `total_os`        | int         | Total de OS no período                                           |
+| `encerradas`      | int         | OS com `dataEncerramentoFisc` preenchida                         |
+| `em_execucao`     | int         | `total_os - encerradas`                                          |
+| `tempo_medio`     | float\|null | Média de `dias_execucao` **só das encerradas**; `null` se nenhuma |
+| `total_fiscais`   | int         | Matrículas distintas designadas em alguma OS                     |
+| `total_orgaos`    | int         | Órgãos executores distintos (fora o grupo "sem órgão")           |
+| `total_gerencias` | int         | Gerências distintas alcançadas (fora o grupo "sem gerência")     |
+| `os_sem_gerencia` | int         | OS que nenhuma matrícula liga a uma gerência                     |
+| `os_sem_fiscal`   | int         | OS sem nenhum fiscal designado                                   |
+
+### Linha de um corte
+
+Os seis cortes têm a **mesma forma**:
+
+```json
+{
+  "id": 4,
+  "rotulo": "GR2",
+  "vazio": false,
+  "total": 812,
+  "encerradas": 190,
+  "em_execucao": 622,
+  "tempo_medio": 51.2
+}
+```
+
+| Campo         | Tipo        | Descrição                                                       |
+|---------------|-------------|-----------------------------------------------------------------|
+| `id`          | variável    | Código da dimensão (`cdOrgaoExec`, `cdModeloOS`, matrícula, `YYYY-MM`, id da gerência). Pode ser `null` num grupo real — ver `vazio` |
+| `rotulo`      | string      | Texto do eixo do gráfico                                        |
+| `vazio`       | bool        | `true` no grupo "Sem &lt;dimensão&gt;"                          |
+| `total`       | int         | OS no grupo                                                     |
+| `encerradas`  | int         | OS encerradas no grupo — é o denominador de `tempo_medio`       |
+| `em_execucao` | int         | OS ainda em execução no grupo                                   |
+| `tempo_medio` | float\|null | Média de dias das encerradas do grupo                           |
+
+---
+
+## Três decisões que mudam a leitura dos números
+
+### 1. O tempo médio sai só das OS encerradas
+
+Numa OS que ainda corre, `qtDiasExecucao` conta até hoje e cresce
+sozinho todo dia. Se entrasse na média, o indicador se moveria sem nada
+ter acontecido. Por isso `encerradas` viaja junto em cada linha: sem
+ele, ninguém sabe se "42 dias" saiu de 300 OS ou de 2.
+
+### 2. O corte por fiscal (e por gerência) soma mais que o total
+
+Uma OS designada a três fiscais conta para os três. É a leitura certa
+para "carga de trabalho", e a errada para "quantas OS existem" — quem
+exibe precisa dizer isso, senão o número parece defeito.
+
+Os cortes de dimensão única — tipo, motivo, órgão, mês — sempre fecham
+com `total_os`. Os testes de integração conferem isso.
+
+### 3. Nada some: campo em branco vira grupo próprio
+
+Órgão, motivo, modelo ou data de abertura em branco viram
+`"Sem órgão executor"`, `"Sem motivo informado"`, etc., com
+`vazio: true`. O grupo é reconhecido pelo **rótulo**, e não por `id`
+nulo: no ATF um órgão pode vir com nome e sem `cdOrgaoExec`, e aí o `id`
+é `null` num grupo que existe de verdade.
+
+---
+
+## De onde vem a gerência (e por que ela está vazia hoje)
+
+**A gerência não existe no ATF.** É cadastro nosso, e a única ponte até
+a OS são as matrículas em `fiscais[]`. O mapa matrícula → gerência é
+montado em `_gerencia_por_matricula()` (`main.py`) por duas vias, nesta
+ordem:
+
+1. **lotação direta** (`users.gerencia_id`) — o admin disse em que
+   gerência a pessoa está;
+2. **equipe fiscal do ATF**, pelos supervisores com `equipe_codigo`
+   amarrado: os membros da equipe herdam a gerência do supervisor dela.
+
+A via 2 existe pelo mesmo motivo de `_matriculas_visiveis`: a equipe do
+ATF alcança fiscais que ainda não têm login aqui. Ela entra por
+`setdefault`, então nunca sobrescreve uma lotação direta.
+
+**Estado da base em 01/09/2026:** os fiscais importados da planilha
+entraram sem lotação e nenhum supervisor tem equipe amarrada — o mapa
+sai vazio e todas as OS caem em "sem gerência cadastrada". O painel diz
+isso na tela, em vez de fingir um número. Assim que o admin amarrar
+supervisor → equipe (tela de Usuários), o corte se preenche sozinho.
+
+---
+
+## "Equipe de execução" = órgão executor
+
+O ATF tem duas coisas parecidas e diferentes:
+
+| Dimensão            | Campo do XML                | Cobertura                       |
+|---------------------|-----------------------------|---------------------------------|
+| **Órgão executor**  | `cdOrgaoExec` / `sgOrgaoExec` | vem sempre; 18 siglas fechadas |
+| Equipe fiscal       | `cdEquipeFisc` / `noEquipeFisc` | em branco em ~metade das OS |
+
+Este endpoint corta por **órgão executor**, que foi o pedido, e rotula
+pela sigla (GR2, GOFE-GEFTE) — que é como a área fiscal o conhece. A
+equipe fiscal continua disponível como filtro na listagem de OS.

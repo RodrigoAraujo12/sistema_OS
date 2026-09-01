@@ -241,6 +241,18 @@ class ApiClient {
     return this.request(`/admin/dashboard${qs ? `?${qs}` : ""}`);
   }
 
+  /** Cortes de quantidade de OS sobre os dados reais do ATF (aba
+   *  "Ordens de Servico" do Dashboard). O periodo e pela data de
+   *  ABERTURA e desce ate o proprio ATF — sem ele a consulta arrasta a
+   *  base inteira. */
+  getDashboardOS({ dataInicio, dataFim } = {}) {
+    const params = new URLSearchParams();
+    if (dataInicio) params.set("data_inicio", dataInicio);
+    if (dataFim) params.set("data_fim", dataFim);
+    const qs = params.toString();
+    return this.request(`/admin/dashboard/os${qs ? `?${qs}` : ""}`);
+  }
+
   /** Monta a query string do relatorio de OS (mesmos filtros do painel). */
   _paramsRelatorioOrdens(f = {}) {
     const params = new URLSearchParams();

@@ -28,6 +28,7 @@ from backend.external_api import (
     filtrar_atf_por_matriculas,
     gerar_alertas,
     gerar_dashboard,
+    gerar_dashboard_os,
     limpar_cache_atf,
     listar_ordens_servico,
     mesclar_detalhe_os,
@@ -886,6 +887,221 @@ class TestGerarDashboard(unittest.TestCase):
         result = gerar_dashboard(self.ordens, self.gerencias, self.supervisoes, self.users)
         self.assertEqual(result["visao_geral"]["total_fiscais"], 2)
         self.assertEqual(result["visao_geral"]["total_supervisores"], 2)
+
+
+class TestGerarDashboardOS(unittest.TestCase):
+    """
+    Cortes de quantidade de OS sobre a listagem do ATF (demanda de
+    31/08/2026). O que se testa aqui e o que o resto do painel nao
+    consegue conferir sozinho: quem conta em qual grupo, e sobre que
+    denominador sai o tempo medio.
+    """
+
+    def _os(self, numero, **campos):
+        base = {
+            "numero_os": numero,
+            "modelo": "NORMAL",
+            "modelo_codigo": 1,
+            "motivo_abertura": "MONITORAMENTO",
+            "motivo_abertura_codigo": 179,
+            "orgao_executor": "GERENCIA REGIONAL 2",
+            "orgao_executor_sigla": "GR2",
+            "orgao_executor_codigo": 4,
+            "data_abertura": "2026-01-10",
+            "data_encerramento": None,
+            "dias_execucao": None,
+            "fiscais": [],
+        }
+        base.update(campos)
+        return base
+
+    def test_tempo_medio_ignora_os_em_execucao(self):
+        """
+        Numa OS aberta dias_execucao conta ate hoje e cresce sozinho: se
+        entrasse na media, o numero mudaria de um dia para o outro sem
+        nada ter acontecido.
+        """
+        ordens = [
+            self._os("A", data_encerramento="2026-02-10", dias_execucao=30),
+            self._os("B", data_encerramento="2026-02-20", dias_execucao=40),
+            self._os("C", dias_execucao=900),  # em execucao: fora da media
+        ]
+        visao = gerar_dashboard_os(ordens)["visao_geral"]
+
+        self.assertEqual(visao["total_os"], 3)
+        self.assertEqual(visao["encerradas"], 2)
+        self.assertEqual(visao["em_execucao"], 1)
+        self.assertEqual(visao["tempo_medio"], 35.0)
+
+    def test_tempo_medio_none_quando_nada_encerrou(self):
+        """Sem encerrada no grupo nao ha media — e 0 seria mentira."""
+        linhas = gerar_dashboard_os([self._os("A", dias_execucao=10)])["por_tipo"]
+        self.assertIsNone(linhas[0]["tempo_medio"])
+        self.assertEqual(linhas[0]["total"], 1)
+
+    def test_os_conta_para_cada_fiscal_designado(self):
+        """
+        O corte por fiscal soma mais que o total de OS de proposito: a
+        mesma OS aparece para os dois fiscais designados.
+        """
+        ordens = [self._os("A", fiscais=[
+            {"matricula": "111", "nome": "ANA"},
+            {"matricula": "222", "nome": "BRUNO"},
+        ])]
+        resultado = gerar_dashboard_os(ordens)
+
+        self.assertEqual(resultado["visao_geral"]["total_os"], 1)
+        self.assertEqual(sum(l["total"] for l in resultado["por_fiscal"]), 2)
+        self.assertEqual(resultado["visao_geral"]["total_fiscais"], 2)
+
+    def test_fiscal_repetido_na_mesma_os_conta_uma_vez(self):
+        """
+        O ATF repete o fiscal na lista quando ele e designado, cancelado
+        e designado de novo — sem deduplicar, a OS contaria duas vezes
+        para a mesma pessoa.
+        """
+        ordens = [self._os("A", fiscais=[
+            {"matricula": "111", "nome": "ANA"},
+            {"matricula": "111", "nome": "ANA"},
+        ])]
+        por_fiscal = gerar_dashboard_os(ordens)["por_fiscal"]
+
+        self.assertEqual(len(por_fiscal), 1)
+        self.assertEqual(por_fiscal[0]["total"], 1)
+
+    def test_gerencia_sai_das_matriculas_dos_fiscais(self):
+        """
+        A gerencia nao existe no ATF: a unica ponte ate a OS sao as
+        matriculas. Uma OS com fiscais de gerencias diferentes conta nas
+        duas; a que nao alcanca nenhuma cai no grupo "sem gerencia".
+        """
+        mapa = {
+            "111": {"id": 1, "nome": "GEFIS"},
+            "222": {"id": 2, "nome": "GEAUD"},
+        }
+        ordens = [
+            self._os("A", fiscais=[
+                {"matricula": "111", "nome": "ANA"},
+                {"matricula": "222", "nome": "BRUNO"},
+            ]),
+            self._os("B", fiscais=[{"matricula": "999", "nome": "SEM LOTACAO"}]),
+        ]
+        resultado = gerar_dashboard_os(ordens, mapa)
+        por_gerencia = {l["rotulo"]: l["total"] for l in resultado["por_gerencia"]}
+
+        self.assertEqual(por_gerencia["GEFIS"], 1)
+        self.assertEqual(por_gerencia["GEAUD"], 1)
+        self.assertEqual(por_gerencia["Sem gerencia cadastrada"], 1)
+        self.assertEqual(resultado["visao_geral"]["os_sem_gerencia"], 1)
+        self.assertEqual(resultado["visao_geral"]["total_gerencias"], 2)
+
+    def test_dois_fiscais_da_mesma_gerencia_contam_uma_vez(self):
+        """A OS entra uma vez por gerencia, nao uma vez por fiscal dela."""
+        mapa = {
+            "111": {"id": 1, "nome": "GEFIS"},
+            "222": {"id": 1, "nome": "GEFIS"},
+        }
+        ordens = [self._os("A", fiscais=[
+            {"matricula": "111", "nome": "ANA"},
+            {"matricula": "222", "nome": "BRUNO"},
+        ])]
+        por_gerencia = gerar_dashboard_os(ordens, mapa)["por_gerencia"]
+
+        self.assertEqual(len(por_gerencia), 1)
+        self.assertEqual(por_gerencia[0]["total"], 1)
+
+    def test_sem_mapa_tudo_cai_em_sem_gerencia(self):
+        """
+        Estado de hoje: ninguem tem lotacao. O corte diz isso em vez de
+        sumir com as OS.
+        """
+        resultado = gerar_dashboard_os(
+            [self._os("A", fiscais=[{"matricula": "111", "nome": "ANA"}])],
+        )
+        self.assertEqual(resultado["por_gerencia"][0]["rotulo"], "Sem gerencia cadastrada")
+        self.assertEqual(resultado["visao_geral"]["os_sem_gerencia"], 1)
+        self.assertEqual(resultado["visao_geral"]["total_gerencias"], 0)
+
+    def test_orgao_executor_rotula_pela_sigla(self):
+        """A area fiscal conhece o orgao pela sigla, nao pelo nome extenso."""
+        por_orgao = gerar_dashboard_os([self._os("A")])["por_orgao_executor"]
+        self.assertEqual(por_orgao[0]["rotulo"], "GR2")
+        self.assertEqual(por_orgao[0]["id"], 4)
+
+    def test_campos_em_branco_viram_grupo_proprio(self):
+        """
+        Orgao, motivo e modelo em branco nao podem sumir da contagem: o
+        total do corte tem que fechar com o total de OS.
+        """
+        ordens = [self._os(
+            "A",
+            orgao_executor="", orgao_executor_sigla="", orgao_executor_codigo=None,
+            motivo_abertura="", motivo_abertura_codigo=None,
+            modelo="", modelo_codigo=None,
+        )]
+        resultado = gerar_dashboard_os(ordens)
+
+        self.assertEqual(resultado["por_orgao_executor"][0]["rotulo"], "Sem orgao executor")
+        self.assertEqual(resultado["por_motivo"][0]["rotulo"], "Sem motivo informado")
+        self.assertEqual(resultado["por_tipo"][0]["rotulo"], "Sem modelo informado")
+        self.assertEqual(resultado["visao_geral"]["total_orgaos"], 0)
+
+    def test_os_sem_fiscal_designado(self):
+        por_fiscal = gerar_dashboard_os([self._os("A")])["por_fiscal"]
+        self.assertEqual(por_fiscal[0]["rotulo"], "Sem fiscal designado")
+        self.assertTrue(por_fiscal[0]["vazio"])
+
+    def test_grupo_vazio_e_marcado_pelo_rotulo_e_nao_pelo_id(self):
+        """
+        Um orgao pode vir do ATF com nome e sem cdOrgaoExec — o id fica
+        None num grupo que existe de verdade. Contar "orgaos distintos"
+        por id nulo sumia com ele; a marca e o rotulo.
+        """
+        ordens = [self._os(
+            "A", orgao_executor="GEFIS - 1a REGIONAL",
+            orgao_executor_sigla="", orgao_executor_codigo=None,
+        )]
+        resultado = gerar_dashboard_os(ordens)
+        linha = resultado["por_orgao_executor"][0]
+
+        self.assertEqual(linha["rotulo"], "GEFIS - 1a REGIONAL")
+        self.assertIsNone(linha["id"])
+        self.assertFalse(linha["vazio"])
+        self.assertEqual(resultado["visao_geral"]["total_orgaos"], 1)
+
+    def test_serie_mensal_em_ordem_cronologica(self):
+        """
+        Mes e o unico corte que nao se ordena pela quantidade: uma serie
+        temporal fora de ordem nao e um grafico, e um borrao.
+        """
+        ordens = [
+            self._os("A", data_abertura="2026-03-01"),
+            self._os("B", data_abertura="2026-01-05"),
+            self._os("C", data_abertura="2026-01-20"),
+            self._os("D", data_abertura=""),
+        ]
+        por_mes = gerar_dashboard_os(ordens)["por_mes"]
+
+        self.assertEqual([l["id"] for l in por_mes], ["2026-01", "2026-03", None])
+        self.assertEqual([l["rotulo"] for l in por_mes[:2]], ["01/2026", "03/2026"])
+        self.assertEqual(por_mes[0]["total"], 2)
+        self.assertEqual(por_mes[-1]["rotulo"], "Sem data de abertura")
+
+    def test_cortes_ordenados_do_maior_para_o_menor(self):
+        ordens = [
+            self._os("A", motivo_abertura="MALHA FISCAL", motivo_abertura_codigo=195),
+            self._os("B", motivo_abertura="MONITORAMENTO", motivo_abertura_codigo=179),
+            self._os("C", motivo_abertura="MONITORAMENTO", motivo_abertura_codigo=179),
+        ]
+        por_motivo = gerar_dashboard_os(ordens)["por_motivo"]
+        self.assertEqual([l["rotulo"] for l in por_motivo], ["MONITORAMENTO", "MALHA FISCAL"])
+
+    def test_universo_vazio_nao_quebra(self):
+        resultado = gerar_dashboard_os([])
+        self.assertEqual(resultado["visao_geral"]["total_os"], 0)
+        self.assertIsNone(resultado["visao_geral"]["tempo_medio"])
+        self.assertEqual(resultado["por_motivo"], [])
+        self.assertEqual(resultado["por_mes"], [])
 
 
 if __name__ == "__main__":

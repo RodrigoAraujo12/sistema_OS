@@ -527,6 +527,7 @@ Authorization: Bearer <token>
 | ------ | ------------------------------------------------- | ---------------------------------- |
 | GET    | `/admin/dashboard`                                | Dashboard com KPIs e graficos      |
 | GET    | `/admin/dashboard?data_inicio=...&data_fim=...`   | Dashboard filtrado por periodo     |
+| GET    | `/admin/dashboard/os`                             | Cortes de qtd de OS (dados do ATF) |
 | POST   | `/admin/gerencias`                                | Criar gerencia                     |
 | GET    | `/admin/gerencias`                                | Listar gerencias                   |
 | PUT    | `/admin/gerencias/{id}`                           | Atualizar gerencia                 |
@@ -539,6 +540,31 @@ Authorization: Bearer <token>
 | PUT    | `/admin/users/{id}`                               | Atualizar usuario                  |
 | DELETE | `/admin/users/{id}`                               | Excluir usuario (retorna 204)      |
 | POST   | `/admin/users/{id}/reset-password`                | Resetar senha                      |
+
+> **`/admin/dashboard/os` e a excecao da tabela acima: nao exige admin.**
+> Ele agrega o mesmo universo que a listagem de OS ja mostra a quem
+> pergunta, com a hierarquia de `_matriculas_visiveis` — um gerente soma
+> a sua gerencia, um fiscal soma as suas OS. Ficou sob `/admin/` por ser
+> a tela de Dashboard; o conteudo nao e privilegiado.
+
+### Dashboard de OS (`GET /admin/dashboard/os`)
+
+Cortes de **quantidade de OS** sobre os dados reais do ATF, pedidos pela
+area fiscal em 31/08/2026: por gerencia, orgao executor, fiscal, motivo,
+tipo (modelo) e mes de abertura — cada um com o tempo medio de execucao.
+Alimenta a aba "Ordens de Servico" do Dashboard, a unica que nao roda
+sobre o formato interno legado.
+
+Contrato completo, incluindo as tres decisoes que mudam a leitura dos
+numeros (tempo medio so das encerradas, corte por fiscal que soma mais
+que o total, e campo em branco virando grupo proprio) em
+[`docs/dashboard-api-spec.md`](docs/dashboard-api-spec.md).
+
+A **quantidade de eventos**, pedida na mesma demanda, nao esta neste
+endpoint: a listagem do ATF nao traz evento nenhum (so
+`mediaEventosModMot`, uma media ja pronta por modelo+motivo) e a lista de
+eventos so existe no detalhe, uma chamada por OS. Fica para o servico que
+a SEFAZ vai expor.
 
 ### Resposta do Dashboard (`GET /admin/dashboard`)
 

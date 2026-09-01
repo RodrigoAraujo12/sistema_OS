@@ -46,9 +46,11 @@ from .external_api import (
     filtrar_atf_por_matriculas,
     gerar_alertas,
     gerar_dashboard,
+    gerar_dashboard_os,
     listar_ordens_atf,
     listar_ordens_servico,
     mesclar_detalhe_os,
+    universo_ordens_atf,
 )
 from .schemas import (
     AlertaResponse,
@@ -1178,6 +1180,83 @@ def get_dashboard(
     users_list = user_repo.list_users()
 
     return gerar_dashboard(todas_os, gerencias_list, supervisoes_list, users_list)
+
+
+def _gerencia_por_matricula() -> dict[str, dict[str, Any]]:
+    """
+    Mapa matricula -> {id, nome} da gerencia, para o dashboard de OS.
+
+    A OS do ATF nao tem gerencia: a unica ponte ate ela sao as matriculas
+    em fiscais[]. Este mapa e montado por duas vias, na ordem:
+
+    1. lotacao direta (users.gerencia_id), que e a informacao mais
+       especifica — o admin disse em que gerencia aquela pessoa esta;
+    2. equipe fiscal do ATF, pelos supervisores que tem equipe amarrada:
+       todos os membros da equipe herdam a gerencia do supervisor dela.
+
+    A via 2 existe pelo mesmo motivo de _matriculas_visiveis: a equipe do
+    ATF alcanca fiscais que ainda nao tem login aqui, e sem ela o corte
+    por gerencia so enxergaria quem ja foi cadastrado a mao. Ela entra por
+    setdefault, entao nunca sobrescreve uma lotacao direta.
+
+    Hoje o mapa sai quase vazio de proposito: os fiscais importados da
+    planilha entraram sem lotacao e nenhum supervisor tem equipe amarrada.
+    Enquanto isso durar, o corte por gerencia mostra tudo em "sem gerencia
+    cadastrada" — e o painel diz isso na tela, em vez de fingir um numero.
+    """
+    gerencias = [
+        (g["id"], {"id": g["id"], "nome": g["name"]})
+        for g in gerencia_repo.list_gerencias()
+    ]
+    mapa: dict[str, dict[str, Any]] = {}
+
+    for gerencia_id, dados in gerencias:
+        for matricula in user_repo.get_matriculas_by_gerencia(gerencia_id):
+            mapa[str(matricula)] = dados
+
+    # Segunda passada inteira, e nao junto com a primeira: a lotacao
+    # direta de QUALQUER gerencia tem que estar toda no mapa antes de a
+    # equipe preencher o resto, senao a ordem das gerencias decidiria
+    # quem ganha.
+    for gerencia_id, dados in gerencias:
+        codigos = user_repo.get_equipe_codigos_by_gerencia(gerencia_id)
+        for matricula in equipe_repo.get_matriculas_by_equipes(codigos):
+            mapa.setdefault(str(matricula), dados)
+
+    return mapa
+
+
+@app.get("/admin/dashboard/os")
+def get_dashboard_os(
+    user: dict[str, Any] = Depends(get_active_user),
+    data_inicio: str | None = Query(None, description="Abertura a partir de (YYYY-MM-DD)"),
+    data_fim: str | None = Query(None, description="Abertura ate (YYYY-MM-DD)"),
+) -> dict[str, Any]:
+    """
+    Cortes de quantidade de OS sobre os dados reais do ATF.
+
+    Por gerencia, orgao executor, fiscal, motivo, tipo (modelo) e mes de
+    abertura, cada um com o tempo medio de execucao.
+
+    Diferente de /admin/dashboard, que e do admin e roda no formato
+    legado, este respeita a hierarquia de quem chama: cada cargo agrega
+    exatamente as OS que ja veria na tela de consulta. Nao ha
+    require_admin porque nao ha nada aqui que a listagem ja nao mostre —
+    e o mesmo universo, somado.
+    """
+    try:
+        ordens = universo_ordens_atf(
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            matriculas_visiveis=_matriculas_visiveis(user),
+        )
+    except ValueError as e:
+        # Erros de negocio do ATF (dsMensagemErro) viram 400 com a mensagem
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    dashboard = gerar_dashboard_os(ordens, _gerencia_por_matricula())
+    dashboard["periodo"] = {"inicio": data_inicio, "fim": data_fim}
+    return dashboard
 
 
 # ─── Relatorios (sob demanda) ──────────────────────────────────

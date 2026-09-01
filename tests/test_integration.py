@@ -1058,6 +1058,115 @@ class TestDashboardEndpoints(IntegrationTestBase):
         self.assertEqual(r.status_code, 403)
 
 
+class TestDashboardOSEndpoint(IntegrationTestBase):
+    """
+    GET /admin/dashboard/os — os cortes de quantidade de OS sobre os
+    dados do ATF (aqui, o MOCK: ATF_BASE_URL vazio no setUp).
+
+    Diferente de /admin/dashboard, este nao e exclusivo do admin: agrega
+    o mesmo universo que a listagem de OS ja mostra a quem pergunta.
+    """
+
+    _CORTES = (
+        "por_gerencia", "por_orgao_executor", "por_fiscal",
+        "por_motivo", "por_tipo", "por_mes",
+    )
+
+    def test_admin_recebe_todos_os_cortes(self):
+        r = self.client.get("/admin/dashboard/os", headers=self._admin_header())
+        self.assertEqual(r.status_code, 200, r.text)
+        corpo = r.json()
+
+        for corte in self._CORTES:
+            self.assertIn(corte, corpo)
+        self.assertGreater(corpo["visao_geral"]["total_os"], 0)
+
+    def test_cortes_de_dimensao_unica_fecham_com_o_total(self):
+        """
+        Tipo, motivo, orgao e mes sao um grupo por OS: se a soma nao
+        fechar com total_os, alguma OS caiu fora da contagem — que e
+        justamente o que os grupos "Sem <dimensao>" existem para evitar.
+        """
+        r = self.client.get("/admin/dashboard/os", headers=self._admin_header())
+        corpo = r.json()
+        total = corpo["visao_geral"]["total_os"]
+
+        for corte in ("por_tipo", "por_motivo", "por_orgao_executor", "por_mes"):
+            with self.subTest(corte=corte):
+                self.assertEqual(sum(l["total"] for l in corpo[corte]), total)
+
+    def test_encerradas_mais_em_execucao_fecham_com_o_total(self):
+        r = self.client.get("/admin/dashboard/os", headers=self._admin_header())
+        visao = r.json()["visao_geral"]
+        self.assertEqual(visao["encerradas"] + visao["em_execucao"], visao["total_os"])
+
+    def test_periodo_recorta_pela_data_de_abertura(self):
+        """O recorte desce ate o ATF; aqui basta que ele de fato recorte."""
+        h = self._admin_header()
+        completo = self.client.get("/admin/dashboard/os", headers=h).json()
+        recortado = self.client.get(
+            "/admin/dashboard/os?data_inicio=2026-02-01&data_fim=2026-02-28", headers=h,
+        ).json()
+
+        self.assertLess(recortado["visao_geral"]["total_os"], completo["visao_geral"]["total_os"])
+        self.assertEqual(recortado["periodo"], {"inicio": "2026-02-01", "fim": "2026-02-28"})
+        # So sobrou fevereiro: a serie mensal tem que ter um ponto so.
+        self.assertEqual([l["rotulo"] for l in recortado["por_mes"]], ["02/2026"])
+
+    def test_fiscal_ve_somente_o_proprio_universo(self):
+        """
+        A hierarquia e a mesma da listagem de OS: o fiscal soma so as
+        que estao designadas a ele. Sem isso o painel viraria uma porta
+        lateral para o total da casa.
+        """
+        h_admin = self._admin_header()
+        total_admin = self.client.get("/admin/dashboard/os", headers=h_admin).json()
+
+        token = self._login_como("Carlos Mendes")
+        do_fiscal = self.client.get(
+            "/admin/dashboard/os", headers=self._auth_header(token),
+        ).json()
+
+        self.assertLess(
+            do_fiscal["visao_geral"]["total_os"],
+            total_admin["visao_geral"]["total_os"],
+        )
+        self.assertGreater(do_fiscal["visao_geral"]["total_os"], 0)
+
+    def test_gerencia_sai_da_lotacao_do_seed(self):
+        """
+        Com fiscais lotados — o que o seed cria — o corte por gerencia
+        se preenche. A soma pode passar do total (OS com fiscais de
+        gerencias diferentes conta em cada uma), mas nunca pode ficar
+        abaixo: isso seria OS perdida no caminho.
+        """
+        corpo = self.client.get("/admin/dashboard/os", headers=self._admin_header()).json()
+        por_gerencia = corpo["por_gerencia"]
+
+        self.assertGreaterEqual(
+            sum(l["total"] for l in por_gerencia), corpo["visao_geral"]["total_os"],
+        )
+        self.assertTrue(any(not l["vazio"] for l in por_gerencia))
+        self.assertGreater(corpo["visao_geral"]["total_gerencias"], 0)
+
+    @patch("backend.main._gerencia_por_matricula", return_value={})
+    def test_sem_lotacao_as_os_caem_em_sem_gerencia(self, _mock_mapa):
+        """
+        Estado da base real hoje: os 349 fiscais da planilha entraram sem
+        lotacao. O corte tem que devolver as OS num grupo "sem gerencia"
+        — e nao uma lista vazia, que o painel leria como "nenhuma OS".
+        """
+        corpo = self.client.get("/admin/dashboard/os", headers=self._admin_header()).json()
+        por_gerencia = corpo["por_gerencia"]
+
+        self.assertEqual(len(por_gerencia), 1)
+        self.assertTrue(por_gerencia[0]["vazio"])
+        self.assertEqual(por_gerencia[0]["total"], corpo["visao_geral"]["total_os"])
+        self.assertEqual(
+            corpo["visao_geral"]["os_sem_gerencia"], corpo["visao_geral"]["total_os"],
+        )
+
+
 # ═══════════════════════════════════════════════════════════════
 # 10. Fluxos end-to-end
 # ═══════════════════════════════════════════════════════════════
