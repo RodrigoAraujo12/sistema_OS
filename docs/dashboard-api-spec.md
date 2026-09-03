@@ -385,7 +385,8 @@ por motivo de OS. Isso não está aqui, e não é esquecimento:
 - o bloco `<eventos>` **não tem matrícula**, então "evento por fiscal"
   só poderia significar "eventos das OS em que ele está designado".
 
-Fica para o serviço que a SEFAZ vai expor.
+**Chegou em 02/09/2026**, como serviço separado (doc dos eventos). Ver
+`GET /admin/dashboard/eventos`, no fim deste arquivo.
 
 ---
 
@@ -539,3 +540,225 @@ O ATF tem duas coisas parecidas e diferentes:
 Este endpoint corta por **órgão executor**, que foi o pedido, e rotula
 pela sigla (GR2, GOFE-GEFTE) — que é como a área fiscal o conhece. A
 equipe fiscal continua disponível como filtro na listagem de OS.
+
+---
+
+# Especificação do Endpoint: GET /admin/dashboard/eventos
+
+## Visão Geral
+
+**URL:** `GET /admin/dashboard/eventos`
+**Autenticação:** Bearer Token (**somente `admin`** — ver "Por que só admin")
+**Fonte:** serviço `listarEventosOrdemServico` do ATF (doc dos eventos)
+**Tela:** aba "Eventos" do Dashboard (`DashboardEventos.jsx`)
+
+É o **bloco 2** da demanda de 31/08/2026 — quantidade de eventos — que o
+endpoint `/admin/dashboard/os` não tinha como atender. O bloco 1 conta OS;
+este conta **eventos de acompanhamento**, e a mesma OS aparece em vários.
+Os dois números não se somam.
+
+---
+
+## Situação do serviço (02/09/2026): só existe em desenvolvimento
+
+Conferido no `?wsdl` dos três ambientes:
+
+| Ambiente | `listarEventosOrdemServico` |
+|---|---|
+| Produção (o ambiente em uso pela listagem) | **não publicado** |
+| Homologação | **não publicado** |
+| Desenvolvimento | **publicado** |
+
+Por isso a URL que aparece na doc dos eventos é a de desenvolvimento: não é
+engano da doc, é o único lugar onde a operação existe. Em produção a
+chamada volta em SOAP Fault, que o endpoint converte em **HTTP 400**.
+
+Enquanto isso durar, `ATF_EVENTOS_BASE_URL` no `.env` aponta para o
+ambiente que tem o serviço, e a resposta vem com `outro_ambiente: true` —
+a tela mostra um aviso vermelho.
+
+**O que desenvolvimento é, exatamente** (medido em 02/09/2026, depois de
+uma suposição errada de que seria outro banco): é a **mesma base de
+produção com o contribuinte mascarado**. Para a mesma OS, datas de
+abertura e encerramento, modelo, motivo, órgão executor, procedimento,
+dias de execução e até as **matrículas dos fiscais** batem campo a campo;
+só o nome do contribuinte difere. As contagens, portanto, valem.
+
+O problema é outro: é um **snapshot congelado**. Naquela data ia até o
+fim de julho — produção tinha 856 OS abertas em agosto e desenvolvimento,
+zero. Os meses de janeiro a junho batem exatamente (194, 726, 1266,
+292...). Um período que passe do corte cai a zero na tela e parece queda
+de produtividade, quando é só o fim do snapshot. Por isso não serve para
+relatório oficial.
+
+Para conferir se já implantaram:
+
+```bash
+curl -s https://<host-producao>/<caminho-do-servico>?wsdl | grep listarEventosOrdemServico
+```
+
+Achou? Basta esvaziar `ATF_EVENTOS_BASE_URL` e reiniciar o backend.
+
+---
+
+## Duas divergências entre a doc e o serviço real
+
+Verificadas na resposta de desenvolvimento em 02/09/2026. As duas falham
+em silêncio — campo vazio na tela, sem erro:
+
+1. **Nomes das datas do evento.** A doc lista `dataInicialEventoOS` e
+   `dataFinalEventoOS`; o serviço manda **`dataInicioEventoOS`** e
+   **`dataFimEventoOS`**. O parser lê os dois, o real primeiro.
+2. **XML de exemplo malformado.** O corpo da doc abre as tags de período
+   onde deveria fechá-las e repete o par. O corpo real fecha as tags
+   normalmente.
+
+---
+
+## Query Parameters
+
+Pelo menos **um período completo** (início e fim) é obrigatório, e nenhum
+período pode passar de **um ano** — regra do ATF, conferida antes da
+chamada para valer também no MOCK.
+
+| Parâmetro          | Tipo   | Descrição                                        |
+|--------------------|--------|--------------------------------------------------|
+| `data_inicio`      | string | Inclusão do evento, a partir de (YYYY-MM-DD)     |
+| `data_fim`         | string | Inclusão do evento, até (YYYY-MM-DD)             |
+| `abertura_inicio`  | string | Abertura da OS, a partir de (YYYY-MM-DD)         |
+| `abertura_fim`     | string | Abertura da OS, até (YYYY-MM-DD)                 |
+| `modelo`           | string | `cdModeloOS`                                     |
+| `motivo_abertura`  | string | `cdMotivoAbertOS`                                |
+| `equipe_fiscal`    | string | `cdEquipeFisc`                                   |
+| `gerencia`         | string | `cdGerencia` (a gerência **do ATF**)             |
+| `procedimento`     | string | `cdProcedimento`                                 |
+
+Os dois períodos respondem perguntas diferentes: "eventos incluídos em
+janeiro" não é o mesmo conjunto que "eventos de OS abertas em janeiro" —
+um evento de janeiro pode pertencer a uma OS aberta em dezembro. Por isso
+a tela tem um seletor de qual data está sendo filtrada, em vez de duas
+barras de período.
+
+---
+
+## Estrutura do Retorno (JSON)
+
+```json
+{
+  "visao_geral": {
+    "total_eventos": 230,
+    "total_os": 188,
+    "media_por_os": 1.2,
+    "duracao_media": 27.8,
+    "total_gerencias": 10,
+    "total_procedimentos": 16,
+    "eventos_sem_gerencia": 15,
+    "eventos_sem_equipe": 230
+  },
+  "por_gerencia": [ ... ],
+  "por_equipe": [ ... ],
+  "por_procedimento": [ ... ],
+  "por_motivo": [ ... ],
+  "por_tipo": [ ... ],
+  "por_mes": [ ... ],
+  "periodo": { "inclusao_inicio": "...", "inclusao_fim": "...",
+               "abertura_inicio": null, "abertura_fim": null },
+  "outro_ambiente": true
+}
+```
+
+### Linha de um corte
+
+```json
+{ "id": 275, "rotulo": "GOFSE", "vazio": false,
+  "total": 25, "os": 23, "duracao_media": 31.4 }
+```
+
+| Campo           | Descrição                                                        |
+|-----------------|------------------------------------------------------------------|
+| `id`            | Código do ATF da dimensão (pode ser `null`)                      |
+| `rotulo`        | O que aparece no eixo do gráfico                                 |
+| `vazio`         | `true` no grupo "Sem &lt;dimensão&gt;" — buraco, não categoria   |
+| `total`         | Quantidade de **eventos**                                        |
+| `os`            | Quantidade de **OS distintas** que os receberam                  |
+| `duracao_media` | Média de dias entre início e fim do evento; `null` se não der    |
+
+`os` anda junto de `total` de propósito: sem ele, "40 eventos" não
+distingue 40 OS com um evento cada de uma OS com 40 — que é a diferença
+entre uma equipe espalhada e uma OS problemática.
+
+---
+
+## A gerência aqui vem do ATF (ao contrário do bloco 1)
+
+Esta é a diferença que mais importa entre os dois endpoints.
+
+Em `/admin/dashboard/os` a gerência **não existe no ATF**: a listagem não
+tem o campo, e a única ponte até a OS são as matrículas em `fiscais[]`
+cruzadas com o cadastro local. Como quase nenhum fiscal tem lotação
+amarrada, aquele corte sai quase todo em "Sem gerência cadastrada".
+
+Aqui o próprio serviço manda `cdGerencia` / `sgGerencia` / `noGerencia` —
+preenchidos em **97% dos eventos** medidos. O corte se preenche sem
+depender de cadastro nenhum.
+
+**Falta confirmar com a SEFAZ** se a "gerência" do ATF é a mesma coisa que
+a gerência do cadastro local. Enquanto não for, os dois cortes por
+gerência não devem ser comparados linha a linha — por isso os rótulos de
+grupo vazio são diferentes: "Sem gerência **cadastrada**" (buraco nosso)
+contra "Sem gerência **informada**" (buraco do ATF).
+
+---
+
+## A equipe fiscal depende do período, não do campo
+
+A primeira amostra (janeiro/2026) trouxe `cdEquipeFisc` vazio em 230 de
+230 eventos, o que parecia defeito do campo. Não é — medindo o ano
+inteiro:
+
+| Período | Eventos com equipe |
+|---|---|
+| janeiro/2026 | 0% |
+| julho/2026 | 83% |
+| ano de 2026 | 31% (2085/6605) |
+
+A equipe foi **sendo adotada ao longo de 2026**. Uma janela antiga sai
+inteira em "Sem equipe fiscal", e isso é o dado, não falha da integração.
+O corte é exibido mesmo vazio: escondido, viraria a impressão de que a
+dimensão não foi atendida.
+
+Confirmado também que não é máscara do ambiente de desenvolvimento: a
+mesma OS traz `equipe_fiscal` vazia em produção.
+
+---
+
+## Por que só admin
+
+Não é decisão de política, é limite do dado: **o serviço não devolve
+matrícula nem nome de fiscal** — a única chave pela qual este sistema liga
+uma OS a uma pessoa (`_matriculas_visiveis`, em `main.py`). Sem ela não há
+como recortar a resposta pela hierarquia de quem perguntou, e devolver
+tudo a um supervisor seria contrabandear o universo inteiro por uma porta
+lateral.
+
+Na prática isso não tira nada de ninguém hoje: o Dashboard inteiro já é
+renderizado só para admin (`App.jsx`).
+
+As duas saídas quando isso precisar mudar, ambas com custo:
+
+- **cruzar `numero_os` com a listagem de OS** do mesmo período — correto,
+  mas paga a listagem inteira (24s em produção) e joga fora o 0,2s que
+  este serviço custa;
+- **recortar por `cdEquipeFisc`** — barato, mas decide sozinho a questão
+  de visibilidade por equipe × por matrícula que segue em aberto, e hoje o
+  campo volta vazio de qualquer forma.
+
+---
+
+## Desempenho
+
+Medido contra desenvolvimento em 02/09/2026: **230 eventos de 188 OS em
+0,9s** numa janela de 15 dias, e 0,2s nas consultas seguintes (cache de
+`ATF_CACHE_TTL`). Duas ordens de grandeza mais barato que varrer detalhes
+— por isso esta aba não precisa do cuidado que a de OS tem com períodos
+largos. O limite de um ano vem do ATF, não de desempenho.

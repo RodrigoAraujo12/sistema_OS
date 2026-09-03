@@ -411,12 +411,15 @@ sistema_sefaz/
 |   |   +-- assets/app.js           # Bundle gerado pelo esbuild
 |   |-- package.json                # react, chart.js, vite, esbuild
 |   +-- vite.config.js
-|-- tests/                          # 142 testes (unitarios + integracao)
+|-- tests/                          # 329 testes (unitarios + integracao)
 |   |-- test_auth.py                # Hash, tokens, login, registro, troca de senha (18 testes)
-|   |-- test_db.py                  # CRUD usuarios, gerencias, supervisoes – SQLite in-memory (16 testes)
-|   |-- test_schemas.py             # Validacao Pydantic, campos obrigatorios/opcionais (14 testes)
-|   |-- test_external_api.py        # Alertas, dashboard, filtros hierarquicos, dias parado (27 testes)
-|   +-- test_integration.py         # Testes E2E com TestClient FastAPI (67 testes)
+|   |-- test_db.py                  # CRUD usuarios, gerencias, supervisoes – SQLite in-memory (23 testes)
+|   |-- test_schemas.py             # Validacao Pydantic, campos obrigatorios/opcionais (19 testes)
+|   |-- test_external_api.py        # Alertas, dashboard, filtros hierarquicos, dias parado (84 testes)
+|   |-- test_equipes_fiscais.py     # Importacao da planilha de equipes e visibilidade (25 testes)
+|   |-- test_eventos_os.py          # Servico de eventos e cortes do bloco 2 (24 testes)
+|   |-- test_seed_e_importacao_usuarios.py  # Seed e importacao dos auditores reais (12 testes)
+|   +-- test_integration.py         # Testes E2E com TestClient FastAPI (124 testes)
 |-- docs/
 |   +-- diagrama-er.md              # Diagrama ER (Mermaid) – SQLite + ATF
 |-- .github/
@@ -528,6 +531,7 @@ Authorization: Bearer <token>
 | GET    | `/admin/dashboard`                                | Dashboard com KPIs e graficos      |
 | GET    | `/admin/dashboard?data_inicio=...&data_fim=...`   | Dashboard filtrado por periodo     |
 | GET    | `/admin/dashboard/os`                             | Cortes de qtd de OS (dados do ATF) |
+| GET    | `/admin/dashboard/eventos`                        | Cortes de qtd de EVENTOS (doc dos eventos) |
 | POST   | `/admin/gerencias`                                | Criar gerencia                     |
 | GET    | `/admin/gerencias`                                | Listar gerencias                   |
 | PUT    | `/admin/gerencias/{id}`                           | Atualizar gerencia                 |
@@ -546,6 +550,10 @@ Authorization: Bearer <token>
 > pergunta, com a hierarquia de `_matriculas_visiveis` — um gerente soma
 > a sua gerencia, um fiscal soma as suas OS. Ficou sob `/admin/` por ser
 > a tela de Dashboard; o conteudo nao e privilegiado.
+>
+> **`/admin/dashboard/eventos` NAO e excecao: exige admin.** A diferenca
+> nao e de politica, e de dado — o servico de eventos nao devolve
+> matricula, entao a hierarquia acima nao tem por onde ser aplicada.
 
 ### Dashboard de OS (`GET /admin/dashboard/os`)
 
@@ -563,8 +571,44 @@ que o total, e campo em branco virando grupo proprio) em
 A **quantidade de eventos**, pedida na mesma demanda, nao esta neste
 endpoint: a listagem do ATF nao traz evento nenhum (so
 `mediaEventosModMot`, uma media ja pronta por modelo+motivo) e a lista de
-eventos so existe no detalhe, uma chamada por OS. Fica para o servico que
-a SEFAZ vai expor.
+eventos so existe no detalhe, uma chamada por OS. Ela veio em
+`/admin/dashboard/eventos`, abaixo.
+
+### Dashboard de Eventos (`GET /admin/dashboard/eventos`)
+
+Bloco 2 da mesma demanda, sobre o servico `listarEventosOrdemServico`
+(doc dos eventos): **quantidade de eventos de acompanhamento** por gerencia,
+equipe fiscal, procedimento, motivo, tipo e mes de inclusao. Alimenta a
+aba "Eventos" do Dashboard.
+
+Fica em aba separada da de OS, e nao dentro dela, porque conta outra
+coisa: ali a linha e uma OS, aqui e um evento, e a mesma OS aparece em
+varios. Cada linha traz `total` (eventos) **e** `os` (OS distintas) — sem
+o segundo, "40 eventos" nao distingue 40 OS tranquilas de uma OS
+problematica.
+
+Tres coisas que valem saber antes de usar:
+
+- **Em 02/09/2026 a operacao so existe em DESENVOLVIMENTO.** O `?wsdl` de
+  producao e o de homologacao declaram apenas `listarOrdemServico` e
+  `detalharOrdemServico`. Ate a SEFAZ implantar, aponte
+  `ATF_EVENTOS_BASE_URL` para o ambiente que a tem — e a aba mostra um
+  aviso vermelho. Desenvolvimento e a MESMA base de producao com o
+  contribuinte mascarado (o resto dos campos bate, ate as matriculas),
+  entao as contagens valem; o limite e ser um **snapshot congelado**, que
+  naquela data ia so ate o fim de julho. Para diagnosticar o servico
+  isolado: `python -m backend.verificar_eventos --url <URL>`.
+- **A gerencia aqui vem do ATF**, e nao do cadastro local: o servico
+  manda `cdGerencia`/`sgGerencia` (97% dos eventos medidos). Este
+  corte se preenche mesmo com os fiscais sem lotacao amarrada, ao
+  contrario do corte por gerencia da aba de OS.
+- **Este endpoint exige admin**, e por limite de dado: o servico nao
+  devolve matricula nenhuma, que e a unica chave pela qual o sistema liga
+  uma OS a uma pessoa. Sem ela nao ha como aplicar `_matriculas_visiveis`.
+
+Contrato completo, divergencias entre a doc e o servico real, e as saidas
+possiveis para a visibilidade em
+[`docs/dashboard-api-spec.md`](docs/dashboard-api-spec.md).
 
 ### Resposta do Dashboard (`GET /admin/dashboard`)
 
@@ -648,15 +692,18 @@ a SEFAZ vai expor.
 
 ## Testes
 
-O projeto possui **142 testes** (unitarios + integracao) com cobertura dos modulos principais:
+O projeto possui **329 testes** (unitarios + integracao) com cobertura dos modulos principais:
 
 | Modulo         | Arquivo                      | Testes | Foco                                                         |
 | -------------- | ---------------------------- | ------ | ------------------------------------------------------------ |
 | Autenticacao   | `tests/test_auth.py`         | 18     | Hash PBKDF2, criacao/validacao de token, login, registro, troca/reset de senha |
-| Banco de Dados | `tests/test_db.py`           | 16     | CRUD de users, gerencias, supervisoes (SQLite in-memory)     |
-| Schemas        | `tests/test_schemas.py`      | 14     | Validacao Pydantic, campos obrigatorios/opcionais            |
-| API Externa    | `tests/test_external_api.py` | 27     | Alertas, dashboard, filtros hierarquicos, dias parado, metricas |
-| Integracao     | `tests/test_integration.py`  | 67     | Testes E2E com TestClient FastAPI (auth, CRUD, OS, dashboard) |
+| Banco de Dados | `tests/test_db.py`           | 23     | CRUD de users, gerencias, supervisoes (SQLite in-memory)     |
+| Schemas        | `tests/test_schemas.py`      | 19     | Validacao Pydantic, campos obrigatorios/opcionais            |
+| API Externa    | `tests/test_external_api.py` | 84     | Alertas, dashboard, filtros hierarquicos, dias parado, metricas |
+| Equipes fiscais| `tests/test_equipes_fiscais.py` | 25  | Importacao da planilha, vinculo equipe/membros, visibilidade |
+| Eventos de OS  | `tests/test_eventos_os.py`   | 24     | Servico de eventos: envelope, parse, regras de periodo, cortes do bloco 2 |
+| Seed/usuarios  | `tests/test_seed_e_importacao_usuarios.py` | 12 | Seed de exemplo e importacao dos auditores reais |
+| Integracao     | `tests/test_integration.py`  | 124    | Testes E2E com TestClient FastAPI (auth, CRUD, OS, dashboard) |
 | Informix       | `tests/test_informix.py`     | —      | Script standalone de diagnostico de conexao Informix (nao coletado pelo pytest) |
 
 ```powershell
@@ -843,6 +890,7 @@ Todas as variaveis ficam no arquivo `.env` (copiado de `.env.example`):
 | `CORS_ORIGINS`       | Origens permitidas (separadas por `,`) | `http://localhost:5173`    |
 | `ATF_BASE_URL`       | URL base da API ATF (vazio = usa MOCK). Ver [Ambientes](#ambientes--leia-antes-de-trocar-a-url) antes de trocar | `""` (vazio)               |
 | `ATF_DETALHE_BASE_URL` | URL so do servico de detalhe. Vazia = usa `ATF_BASE_URL` | `""` (vazio)             |
+| `ATF_EVENTOS_BASE_URL` | URL so do servico de eventos. Vazia = usa `ATF_BASE_URL` | `""` (vazio)             |
 | `ATF_CACHE_TTL`      | Segundos de cache das respostas do ATF (0 desliga) | `60`             |
 | `INFORMIX_SERVER`    | Servidor Informix (legado)             | (vazio = nao usa Informix) |
 | `INFORMIX_DATABASE`  | Nome do banco Informix                 | —                          |

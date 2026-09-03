@@ -2,12 +2,15 @@
  * DashboardPanel.jsx – Painel principal do Dashboard (admin).
  *
  * Gerencia filtros (gerencia, supervisao, periodo), KPIs computados
- * e roteia para as abas: OS, Geral, Gerencias, Supervisoes, Fiscais.
+ * e roteia para as abas: OS, Eventos, Geral, Gerencias, Supervisoes,
+ * Fiscais.
  *
  * Duas fontes convivem aqui, e a diferenca importa:
  *
- * - "Ordens de Servico" (DashboardOS) le os dados REAIS do ATF por um
- *   endpoint proprio, com filtro de periodo proprio;
+ * - "Ordens de Servico" (DashboardOS) e "Eventos" (DashboardEventos)
+ *   leem os dados REAIS do ATF, cada uma por um endpoint e um filtro de
+ *   periodo proprios — e contam unidades diferentes, OS numa e eventos
+ *   na outra;
  * - as outras quatro abas leem `dashboardData`, do formato interno
  *   legado, que hoje e mock — e por isso a barra de filtros (gerencia,
  *   supervisao, periodo) e os KPI cards so aparecem nelas.
@@ -16,6 +19,7 @@
 import React, { useMemo, useState } from "react";
 import apiClient from "../api.js";
 import DashboardOS from "./DashboardOS.jsx";
+import DashboardEventos from "./DashboardEventos.jsx";
 import DashboardGeral from "./DashboardGeral.jsx";
 import DashboardGerencias from "./DashboardGerencias.jsx";
 import DashboardSupervisoes from "./DashboardSupervisoes.jsx";
@@ -188,6 +192,12 @@ export default function DashboardPanel({ dashboardData, onDashboardDataChange, o
             Ordens de Servico
           </button>
           <button
+            className={`dash-view-tab ${view === "eventos" ? "active" : ""}`}
+            onClick={() => setView("eventos")}
+          >
+            Eventos
+          </button>
+          <button
             className={`dash-view-tab ${view === "geral" ? "active" : ""}`}
             onClick={() => setView("geral")}
           >
@@ -217,8 +227,15 @@ export default function DashboardPanel({ dashboardData, onDashboardDataChange, o
       {/* ===== ABA "ORDENS DE SERVICO": dados reais do ATF ===== */}
       {view === "os" && <DashboardOS onError={onError} />}
 
+      {/* ===== ABA "EVENTOS": dados reais do ATF (doc dos eventos) ===== */}
+      {view === "eventos" && <DashboardEventos onError={onError} />}
+
       {/* ===== DEMAIS ABAS: formato interno legado ===== */}
-      {view !== "os" && (
+      {/* A lista e por exclusao das abas de dados reais, e nao um
+          `!== "os"`: cada aba nova do ATF traz o proprio filtro de
+          periodo, e a barra legada abaixo apareceria em cima dela
+          filtrando outra coisa. */}
+      {view !== "os" && view !== "eventos" && (
       <>
       {/* ===== BARRA DE FILTROS ===== */}
       <div className="card dash-filter-bar">

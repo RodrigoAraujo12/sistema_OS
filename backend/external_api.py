@@ -2930,6 +2930,10 @@ def universo_ordens_atf(
     data_inicio: str | None = None,
     data_fim: str | None = None,
     matriculas_visiveis: set[str] | None = None,
+    modelo: str | None = None,
+    motivo_abertura: str | None = None,
+    orgao_executor: str | None = None,
+    equipe_fiscal: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Todas as OS do periodo que o usuario pode ver, sem paginar.
@@ -2937,12 +2941,682 @@ def universo_ordens_atf(
     O recorte de periodo vai pela data de ABERTURA e desce ate o proprio
     ATF (dataAberturaIni/Fim) em vez de ser um filtro local depois: e o
     unico jeito de a consulta do painel nao arrastar a base inteira.
+
+    Os quatro filtros de dimensao descem junto, pelo mesmo motivo e com
+    um ganho medido: a chamada custa ~5,3s FIXOS mais ~2ms por OS
+    (producao, 02/09/2026 — uma OS por numero leva 5,1s; 17 OS levam
+    5,3s; 5376 levam 15,6s). Filtrar no ATF corta so a parte variavel:
+    restringir a um orgao executor tirou 41% das linhas e 23% do tempo.
+    Ajuda, e nunca leva a zero — nenhum filtro derruba os 5,3s de piso.
+
+    Filtrar por uma dimensao ACHATA o corte dela — filtrado o orgao, o
+    grafico "por orgao executor" vira uma barra so. Isso e esperado: o
+    painel passa a ser o daquele orgao, e os outros cortes (motivo, tipo,
+    mes, fiscal) e que carregam a leitura.
     """
     resultado = listar_ordens_atf(
         data_abertura_ini=data_inicio,
         data_abertura_fim=data_fim,
+        modelo=modelo,
+        motivo_abertura=motivo_abertura,
+        orgao_executor=orgao_executor,
+        equipe_fiscal=equipe_fiscal,
         pagina=1,
         limite=_LIMITE_UNIVERSO,
         matriculas_visiveis=matriculas_visiveis,
     )
     return resultado.get("ordens", [])
+
+
+# ─── Eventos de acompanhamento em lote (doc dos eventos) ────────
+#
+# Servico listarEventosOrdemServico, no MESMO endpoint da listagem e do
+# detalhe (POST {ATF_BASE_URL}{ATF_WS_PATH}): muda so a operacao dentro
+# do envelope. E o bloco 2 da demanda de 31/08/2026 — quantidade de
+# EVENTOS —, que ate agora nao tinha como ser atendido: a listagem so
+# traz mediaEventosModMot (uma media pronta por modelo+motivo) e a lista
+# de eventos de verdade so existia no detalhe, uma chamada por OS.
+#
+# Medido contra desenvolvimento em 02/09/2026: 230 eventos de 188 OS em
+# 0,9s numa janela de 15 dias, e 0,2s nas consultas seguintes. Duas
+# ordens de grandeza mais barato que varrer detalhes — por isso esta aba
+# nao precisa do cuidado que a de OS tem com periodos largos.
+#
+# DUAS DIVERGENCIAS DA DOC, verificadas na resposta real do servico.
+# Cada uma custaria um campo vazio na tela, sem erro nenhum para avisar:
+#
+# 1. A doc lista <dataInicialEventoOS> e <dataFinalEventoOS>. O servico
+#    manda <dataInicioEventoOS> e <dataFimEventoOS>. Lemos os dois
+#    nomes, o real primeiro: se um dia alinharem servico e doc, nada
+#    aqui quebra.
+# 2. O XML de exemplo da doc abre as tags de periodo onde deveria
+#    fecha-las e ainda repete o par. E erro de digitacao da doc; o corpo
+#    real fecha as tags, como _montar_parametros_eventos_atf faz.
+#
+# O que o servico NAO manda: matricula, nome de fiscal, nem qualquer
+# outra chave de pessoa. Ver get_dashboard_eventos (main.py) para o
+# efeito disso na visibilidade.
+
+_SEM_GERENCIA_ATF = "Sem gerencia informada"
+_SEM_EQUIPE = "Sem equipe fiscal"
+_SEM_PROCEDIMENTO = "Sem procedimento informado"
+_SEM_INCLUSAO = "Sem data de inclusao"
+
+# A gerencia vazia aqui tem rotulo diferente do corte de OS ("Sem
+# gerencia cadastrada"): la o buraco e do NOSSO cadastro, que nao amarrou
+# o fiscal a uma lotacao; aqui e do ATF, que mandou o evento sem
+# gerencia. Sao falhas de origens diferentes e quem le o painel precisa
+# saber com qual esta lidando.
+_ROTULOS_VAZIOS_EVT = frozenset({
+    _SEM_MODELO, _SEM_MOTIVO, _SEM_GERENCIA_ATF,
+    _SEM_EQUIPE, _SEM_PROCEDIMENTO, _SEM_INCLUSAO,
+})
+
+# Limite que o servico impoe aos periodos ("Periodo informado ultrapassa
+# um ano"). Conferido contra desenvolvimento em 02/09/2026.
+_MAX_DIAS_PERIODO_EVT = 366
+
+
+def _validar_periodos_eventos(
+    data_abertura_ini: str | None, data_abertura_fim: str | None,
+    data_inclusao_ini: str | None, data_inclusao_fim: str | None,
+) -> None:
+    """
+    Aplica as duas regras da doc antes de sair do processo: pelo menos um
+    periodo completo, e nenhum periodo maior que um ano.
+
+    O ATF valida as duas por conta propria, e com mensagens boas. Isto
+    aqui existe por dois motivos: o caminho MOCK nao tem ATF nenhum para
+    validar — sem esta funcao a aba se comportaria de um jeito com o
+    servico configurado e de outro sem ele — e a mensagem do servico vem
+    em duas linhas, prefixada por "Nao foi possivel realizar a
+    operacao.", que na tela so ocupa espaco.
+    """
+    periodos = [
+        ("abertura", data_abertura_ini, data_abertura_fim),
+        ("inclusao do evento", data_inclusao_ini, data_inclusao_fim),
+    ]
+    completos = [(nome, ini, fim) for nome, ini, fim in periodos if ini and fim]
+    if not completos:
+        raise ValueError(
+            "Informe pelo menos um periodo completo (inicio e fim): "
+            "abertura da OS ou inclusao do evento."
+        )
+
+    for nome, ini, fim in completos:
+        try:
+            d_ini = datetime.strptime(ini, "%Y-%m-%d").date()
+            d_fim = datetime.strptime(fim, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            raise ValueError(f"Periodo de {nome} invalido: use datas em YYYY-MM-DD.")
+        if d_fim < d_ini:
+            raise ValueError(f"No periodo de {nome}, o fim e anterior ao inicio.")
+        if (d_fim - d_ini).days > _MAX_DIAS_PERIODO_EVT:
+            raise ValueError(f"O periodo de {nome} passa de um ano, que e o limite do ATF.")
+
+
+def _montar_parametros_eventos_atf(
+    modelo: str | None = None,
+    motivo_abertura: str | None = None,
+    equipe_fiscal: str | None = None,
+    gerencia: str | None = None,
+    procedimento: str | None = None,
+    data_abertura_ini: str | None = None,
+    data_abertura_fim: str | None = None,
+    data_inclusao_ini: str | None = None,
+    data_inclusao_fim: str | None = None,
+) -> str:
+    """Monta o XML <parametros> do elementoEntrada (nomes da doc dos eventos)."""
+    campos: list[str] = []
+
+    def _add(tag: str, valor: Any) -> None:
+        # Mesmo escape da listagem, pelo mesmo motivo: os valores vem da
+        # query string do usuario e sem ele da para fechar a tag, injetar
+        # outro filtro, ou fechar o CDATA e escrever direto no corpo SOAP.
+        if valor not in (None, ""):
+            campos.append(f"<{tag}>{_escape_xml(str(valor))}</{tag}>")
+
+    _add("cdModeloOS", modelo)
+    _add("cdMotivoAbertOS", motivo_abertura)
+    _add("cdEquipeFisc", equipe_fiscal)
+    _add("cdGerencia", gerencia)
+    _add("cdProcedimento", procedimento)
+    if data_abertura_ini and data_abertura_fim:
+        _add("dataAberturaOSIni", _data_para_atf(data_abertura_ini))
+        _add("dataAberturaOSFin", _data_para_atf(data_abertura_fim))
+    if data_inclusao_ini and data_inclusao_fim:
+        _add("dataInclusaoEvtOSIni", _data_para_atf(data_inclusao_ini))
+        _add("dataInclusaoEvtOSFin", _data_para_atf(data_inclusao_fim))
+
+    # Linha unica, como na listagem: o parser do ATF nao tolera quebra de
+    # linha dentro do CDATA e responde "e necessario informar pelo menos
+    # um filtro" como se nada tivesse sido enviado.
+    return "<parametros>" + "".join(campos) + "</parametros>"
+
+
+def _montar_envelope_eventos_soap(parametros_xml: str) -> str:
+    """
+    Envelope SOAP do servico de eventos.
+
+    Unica diferenca para o da listagem e o nome da operacao. Ele nao saiu
+    da doc e sim do ?wsdl de desenvolvimento, que declara
+    listarEventosOrdemServicoRequest — a doc do detalhe ja custou uma
+    investigacao por divergir do WSDL do ambiente.
+    """
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">\n'
+        "    <soap:Body>\n"
+        '        <ns:listarEventosOrdemServicoRequest xmlns:ns="http://www.receita.pb.gov.br">\n'
+        f"            <ns:elementoEntrada><![CDATA[{parametros_xml}]]></ns:elementoEntrada>\n"
+        "        </ns:listarEventosOrdemServicoRequest>\n"
+        "    </soap:Body>\n"
+        "</soap:Envelope>"
+    )
+
+
+def _parse_resposta_eventos_soap(xml_text: str) -> list[dict[str, Any]]:
+    """
+    Extrai a lista de eventos do retorno do servico de eventos.
+
+    Contrato conferido contra a resposta real (desenvolvimento,
+    02/09/2026):
+        resultado (operacao, listaEventosOS | dsMensagemErro)
+        listaEventosOS (eventoOS*)
+        eventoOS (cdEventoAcompOS, nrOrdemServico, cdModeloOS, noModeloOS,
+            cdMotivoAberturaOS, noMotivoAberturaOS, cdGerencia, sgGerencia,
+            noGerencia, cdEquipeFisc, noEquipeFisc, cdProcedimento,
+            noProcedimento, dataAberturaOS, dataInicioFiscalizacaoOS,
+            dataInclusaoEventoOS, dataInicioEventoOS, dataFimEventoOS)
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml_text)
+
+    # Mesmo empacotamento da listagem: o XML de dados vem escapado dentro
+    # de <retorno> e o ElementTree desfaz o escape no .text.
+    retorno_el = next(
+        (el for el in root.iter() if el.tag.lower().endswith("retorno")), None,
+    )
+    if retorno_el is not None and (retorno_el.text or "").strip():
+        dados_root = ET.fromstring(_escapar_amp_solto(retorno_el.text.strip()))
+    else:
+        dados_root = root
+
+    erro = dados_root.findtext(".//dsMensagemErro")
+    if erro and erro.strip():
+        # O servico manda a mensagem em duas linhas ("Nao foi possivel
+        # realizar a operacao." + a causa). Vira uma linha so porque o
+        # destino e o `detail` de um HTTP 400, que a tela exibe cru.
+        raise ValueError("ATF: " + " ".join(erro.split()))
+
+    def _txt(el: Any, tag: str) -> str:
+        return (el.findtext(tag, "") or "").strip()
+
+    eventos: list[dict[str, Any]] = []
+    for e_el in dados_root.findall(".//eventoOS"):
+        eventos.append({
+            "codigo_evento": _int_ou_none(_txt(e_el, "cdEventoAcompOS")),
+            "numero_os": _txt(e_el, "nrOrdemServico"),
+            "modelo": _txt(e_el, "noModeloOS"),
+            "modelo_codigo": _int_ou_none(_txt(e_el, "cdModeloOS")),
+            "motivo_abertura": _txt(e_el, "noMotivoAberturaOS"),
+            "motivo_abertura_codigo": _int_ou_none(_txt(e_el, "cdMotivoAberturaOS")),
+            "gerencia": _txt(e_el, "noGerencia"),
+            "gerencia_sigla": _txt(e_el, "sgGerencia"),
+            "gerencia_codigo": _int_ou_none(_txt(e_el, "cdGerencia")),
+            "equipe_fiscal": _txt(e_el, "noEquipeFisc"),
+            "equipe_fiscal_codigo": _int_ou_none(_txt(e_el, "cdEquipeFisc")),
+            "procedimento": _txt(e_el, "noProcedimento"),
+            "procedimento_codigo": _int_ou_none(_txt(e_el, "cdProcedimento")),
+            "data_abertura": _data_do_atf(_txt(e_el, "dataAberturaOS")) or None,
+            "data_inicio_fiscalizacao": (
+                _data_do_atf(_txt(e_el, "dataInicioFiscalizacaoOS")) or None
+            ),
+            "data_inclusao": _data_do_atf(_txt(e_el, "dataInclusaoEventoOS")) or None,
+            # Nome real primeiro, nome da doc como reserva — ver a nota de
+            # divergencia no topo desta secao.
+            "data_inicial": (
+                _data_do_atf(_txt(e_el, "dataInicioEventoOS"))
+                or _data_do_atf(_txt(e_el, "dataInicialEventoOS"))
+                or None
+            ),
+            "data_final": (
+                _data_do_atf(_txt(e_el, "dataFimEventoOS"))
+                or _data_do_atf(_txt(e_el, "dataFinalEventoOS"))
+                or None
+            ),
+        })
+
+    return eventos
+
+
+def _chamar_eventos_atf_https(
+    base_url: str,
+    modelo: str | None = None,
+    motivo_abertura: str | None = None,
+    equipe_fiscal: str | None = None,
+    gerencia: str | None = None,
+    procedimento: str | None = None,
+    data_abertura_ini: str | None = None,
+    data_abertura_fim: str | None = None,
+    data_inclusao_ini: str | None = None,
+    data_inclusao_fim: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Chama o listarEventosOrdemServico via SOAP. Devolve a lista completa
+    de eventos do periodo (o servico tambem nao pagina).
+    """
+    import requests
+
+    base = base_url.rstrip("/")
+    url = base if base.endswith("OrdemServico") else f"{base}{_atf_ws_path()}"
+
+    parametros = _montar_parametros_eventos_atf(
+        modelo=modelo, motivo_abertura=motivo_abertura,
+        equipe_fiscal=equipe_fiscal, gerencia=gerencia, procedimento=procedimento,
+        data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
+        data_inclusao_ini=data_inclusao_ini, data_inclusao_fim=data_inclusao_fim,
+    )
+    # A chave leva a URL junto: com ATF_EVENTOS_BASE_URL apontando para
+    # outro ambiente, os mesmos parametros devolvem outro conjunto, e uma
+    # chave so de parametros serviria a resposta do ambiente errado.
+    chave = f"EVT|{url}|{parametros}"
+    em_cache = _cache_atf.get(chave)
+    if em_cache is not None:
+        logger.debug("Cache ATF: reaproveitando %d eventos para %s", len(em_cache), parametros)
+        return em_cache
+
+    envelope = _montar_envelope_eventos_soap(parametros)
+
+    try:
+        resp = requests.post(
+            url,
+            data=envelope.encode("utf-8"),
+            headers={"Content-Type": "text/xml; charset=utf-8"},
+            timeout=60,
+            verify=config.ATF_SSL_VERIFY,
+        )
+        falha = _erro_soap(resp)
+        if falha:
+            # Aqui o Fault mais provavel e a operacao nao existir no
+            # ambiente: em 02/09/2026 so desenvolvimento a publicava.
+            raise ValueError(f"ATF: {falha}")
+        resp.raise_for_status()
+        eventos = _parse_resposta_eventos_soap(resp.text)
+    except Exception:
+        logger.exception("Erro ao chamar servico de eventos do ATF em %s", url)
+        raise
+
+    _cache_atf.set(chave, eventos)
+    logger.debug("Cache ATF: %d eventos guardados para %s", len(eventos), parametros)
+    return eventos
+
+
+def url_base_eventos_atf() -> str:
+    """
+    URL do servico de eventos: a propria, se configurada; senao a da
+    listagem. Vazia nos dois casos significa MOCK.
+    """
+    from .config import ATF_BASE_URL, ATF_EVENTOS_BASE_URL
+
+    return ATF_EVENTOS_BASE_URL or ATF_BASE_URL
+
+
+def eventos_em_outro_ambiente() -> bool:
+    """
+    Diz se os eventos estao vindo de um ambiente diferente do da listagem.
+
+    Enquanto a operacao existir so em desenvolvimento, este sera o estado
+    normal — e a aba precisa dizer isso na tela. Ambientes tem bancos
+    diferentes: a contagem de eventos nao fecha com a contagem de OS ao
+    lado, e ninguem deveria descobrir isso comparando os dois numeros
+    numa reuniao.
+    """
+    from .config import ATF_BASE_URL, ATF_EVENTOS_BASE_URL
+
+    if not ATF_EVENTOS_BASE_URL or not ATF_BASE_URL:
+        return False
+    return ATF_EVENTOS_BASE_URL.rstrip("/") != ATF_BASE_URL.rstrip("/")
+
+
+def _mock_eventos_atf(
+    data_abertura_ini: str | None = None,
+    data_abertura_fim: str | None = None,
+    data_inclusao_ini: str | None = None,
+    data_inclusao_fim: str | None = None,
+    modelo: str | None = None,
+    motivo_abertura: str | None = None,
+    equipe_fiscal: str | None = None,
+    gerencia: str | None = None,
+    procedimento: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Eventos do MOCK, derivados das OS de exemplo.
+
+    Reaproveita qtd_eventos e _EVENTOS_MOCK, os mesmos que o detalhe
+    mockado usa, para que as duas telas contem a mesma coisa. A gerencia
+    sai do orgao executor do mock, que e o campo com a mesma cara.
+    """
+    from datetime import timedelta
+
+    def _codigo_gerencia_mock(nome: str) -> int | None:
+        """Codigo estavel para a gerencia mockada, a partir do nome."""
+        if not nome:
+            return None
+        return 900 + _ORGAOS_EXECUTORES.index(nome) if nome in _ORGAOS_EXECUTORES else 999
+
+    def _sigla(nome: str) -> str:
+        """
+        Sigla do orgao a partir do nome do mock ("GEFIS - 1a GERENCIA
+        REGIONAL" -> "GEFIS - 1a"). Cortar em N caracteres colava
+        "GEFIS - 1a" e "GEFIS - 2a" numa gerencia so, e o corte do painel
+        mostrava duas onde ha tres.
+        """
+        partes = [p.strip() for p in nome.split("-", 1)]
+        if len(partes) == 2 and partes[1]:
+            return f"{partes[0]} - {partes[1].split()[0]}"
+        return partes[0]
+
+    eventos: list[dict[str, Any]] = []
+    for indice, os_item in enumerate(_MOCK_ATF_ORDENS):
+        abertura = os_item.get("data_abertura")
+        inicio_fisc_txt = os_item.get("data_inicio_fiscalizacao") or abertura
+        if not inicio_fisc_txt:
+            continue
+        inicio_fisc = datetime.strptime(inicio_fisc_txt, "%Y-%m-%d").date()
+
+        for n in range(os_item.get("qtd_eventos") or 0):
+            # `no_procedimento`, e nao `procedimento`: este ultimo e o
+            # PARAMETRO de filtro da funcao, e reatribui-lo aqui fazia o
+            # filtro passar a valer o nome do ultimo procedimento gerado
+            # — o mock inteiro voltava vazio.
+            _, _, no_procedimento = _EVENTOS_MOCK[n % len(_EVENTOS_MOCK)]
+            inicio_evento = inicio_fisc + timedelta(days=n * 2)
+            fim_evento = inicio_evento + timedelta(days=1)
+            eventos.append({
+                "codigo_evento": indice * 100 + n,
+                "numero_os": os_item["numero_os"],
+                "modelo": os_item.get("modelo") or "",
+                "modelo_codigo": os_item.get("modelo_codigo"),
+                "motivo_abertura": os_item.get("motivo_abertura") or "",
+                "motivo_abertura_codigo": os_item.get("motivo_abertura_codigo"),
+                "gerencia": os_item.get("orgao_executor") or "",
+                "gerencia_sigla": _sigla(os_item.get("orgao_executor") or ""),
+                # Codigo derivado do nome, e nao copiado de
+                # orgao_executor_codigo: no MOCK aquele campo e None, e
+                # sem codigo o filtro de gerencia da aba nasceria vazio —
+                # a dimensao ficaria intestavel sem o ATF.
+                "gerencia_codigo": _codigo_gerencia_mock(os_item.get("orgao_executor") or ""),
+                "equipe_fiscal": os_item.get("equipe_fiscal") or "",
+                "equipe_fiscal_codigo": os_item.get("equipe_fiscal_codigo"),
+                "procedimento": no_procedimento,
+                "procedimento_codigo": n % len(_EVENTOS_MOCK) + 1,
+                "data_abertura": abertura,
+                "data_inicio_fiscalizacao": inicio_fisc_txt,
+                # No mock o evento e "incluido" no dia em que termina —
+                # e o unico dos dois que sempre existe.
+                "data_inclusao": fim_evento.strftime("%Y-%m-%d"),
+                "data_inicial": inicio_evento.strftime("%Y-%m-%d"),
+                "data_final": fim_evento.strftime("%Y-%m-%d"),
+            })
+
+    def _no_periodo(valor: str | None, ini: str | None, fim: str | None) -> bool:
+        if not (ini and fim):
+            return True
+        if not valor:
+            return False
+        return ini <= valor <= fim
+
+    def _casa(valor: Any, filtro: str | None) -> bool:
+        """Compara como texto: o filtro chega da query string, o dado e int."""
+        if filtro in (None, ""):
+            return True
+        return str(valor) == str(filtro)
+
+    # Os filtros de dimensao sao aplicados aqui tambem, e nao so no
+    # caminho do ATF. Sem isto eles nao fariam NADA em modo MOCK — a tela
+    # mostraria o filtro ativo e o mesmo total de antes, sem erro nenhum.
+    # E o MOCK e justamente o modo em que se testa quando o ATF esta fora.
+    return [
+        e for e in eventos
+        if _no_periodo(e["data_abertura"], data_abertura_ini, data_abertura_fim)
+        and _no_periodo(e["data_inclusao"], data_inclusao_ini, data_inclusao_fim)
+        and _casa(e["modelo_codigo"], modelo)
+        and _casa(e["motivo_abertura_codigo"], motivo_abertura)
+        and _casa(e["equipe_fiscal_codigo"], equipe_fiscal)
+        and _casa(e["gerencia_codigo"], gerencia)
+        and _casa(e["procedimento_codigo"], procedimento)
+    ]
+
+
+def listar_eventos_atf(
+    modelo: str | None = None,
+    motivo_abertura: str | None = None,
+    equipe_fiscal: str | None = None,
+    gerencia: str | None = None,
+    procedimento: str | None = None,
+    data_abertura_ini: str | None = None,
+    data_abertura_fim: str | None = None,
+    data_inclusao_ini: str | None = None,
+    data_inclusao_fim: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Eventos de acompanhamento de OS em lote (doc dos eventos).
+
+    Com o servico configurado, chama o ATF; sem ele, devolve o MOCK. As
+    regras de periodo sao conferidas antes, nos dois caminhos — ver
+    _validar_periodos_eventos.
+    """
+    _validar_periodos_eventos(
+        data_abertura_ini, data_abertura_fim, data_inclusao_ini, data_inclusao_fim,
+    )
+
+    base_url = url_base_eventos_atf()
+    if base_url:
+        logger.debug("Chamando servico de eventos do ATF: %s", base_url)
+        return _chamar_eventos_atf_https(
+            base_url,
+            modelo=modelo, motivo_abertura=motivo_abertura,
+            equipe_fiscal=equipe_fiscal, gerencia=gerencia, procedimento=procedimento,
+            data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
+            data_inclusao_ini=data_inclusao_ini, data_inclusao_fim=data_inclusao_fim,
+        )
+
+    logger.debug("Servico de eventos nao configurado - usando MOCK")
+    return _mock_eventos_atf(
+        data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
+        data_inclusao_ini=data_inclusao_ini, data_inclusao_fim=data_inclusao_fim,
+        modelo=modelo, motivo_abertura=motivo_abertura,
+        equipe_fiscal=equipe_fiscal, gerencia=gerencia, procedimento=procedimento,
+    )
+
+
+# ─── Agregacao do bloco 2: quantidade de EVENTOS ────────────────────
+
+
+def _duracao_evento(evento: dict[str, Any]) -> int | None:
+    """Dias entre inicio e fim do evento. None quando falta uma das duas."""
+    inicio, fim = evento.get("data_inicial"), evento.get("data_final")
+    if not (inicio and fim):
+        return None
+    try:
+        d_ini = datetime.strptime(inicio, "%Y-%m-%d").date()
+        d_fim = datetime.strptime(fim, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    dias = (d_fim - d_ini).days
+    return dias if dias >= 0 else None
+
+
+def _resumo_eventos(eventos: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Quantidade de eventos, de OS distintas e duracao media de um grupo.
+
+    `os` vai junto de `total` de proposito: sem ele nao da para saber se
+    "40 eventos" sao 40 OS com um evento cada ou uma OS com 40 — que e a
+    diferenca entre uma equipe espalhada e uma OS problematica.
+    """
+    duracoes = [d for d in (_duracao_evento(e) for e in eventos) if d is not None]
+    os_distintas = {e["numero_os"] for e in eventos if e.get("numero_os")}
+    return {
+        "total": len(eventos),
+        "os": len(os_distintas),
+        "duracao_media": round(sum(duracoes) / len(duracoes), 1) if duracoes else None,
+    }
+
+
+def _agrupar_eventos(
+    eventos: list[dict[str, Any]],
+    chave_de: Callable[[dict[str, Any]], tuple[Any, str]],
+) -> list[dict[str, Any]]:
+    """
+    Agrupa eventos por uma dimensao e devolve as linhas do corte, da
+    maior para a menor.
+
+    Ao contrario de _agrupar_os, a chave e UMA so: um evento pertence a
+    exatamente uma gerencia, um procedimento, um mes. Nao ha o caso da OS
+    com varios fiscais, entao a soma das linhas fecha com o total.
+    """
+    grupos: dict[tuple[Any, str], list[dict[str, Any]]] = defaultdict(list)
+    for e in eventos:
+        grupos[chave_de(e)].append(e)
+
+    linhas = [
+        {
+            "id": ident,
+            "rotulo": rotulo,
+            "vazio": rotulo in _ROTULOS_VAZIOS_EVT,
+            **_resumo_eventos(lista),
+        }
+        for (ident, rotulo), lista in grupos.items()
+    ]
+    linhas.sort(key=lambda linha: (-linha["total"], linha["rotulo"]))
+    return linhas
+
+
+def _chave_gerencia_evt(e: dict[str, Any]) -> tuple[Any, str]:
+    """
+    Gerencia do evento — e esta vem do ATF, nao do nosso cadastro.
+
+    E a diferenca que mais importa entre os dois blocos: no corte de OS a
+    gerencia so existe se o admin tiver amarrado o fiscal a uma lotacao,
+    e por isso sai quase toda vazia. Aqui o proprio servico manda
+    cdGerencia/sgGerencia — 97% dos eventos na medicao de 02/09/2026.
+    Rotula pela sigla, como o orgao executor, porque e assim que a
+    gerencia e chamada.
+    """
+    rotulo = (
+        (e.get("gerencia_sigla") or "").strip()
+        or (e.get("gerencia") or "").strip()
+        or _SEM_GERENCIA_ATF
+    )
+    return (e.get("gerencia_codigo"), rotulo)
+
+
+def _chave_equipe_evt(e: dict[str, Any]) -> tuple[Any, str]:
+    """
+    Equipe fiscal do evento.
+
+    O preenchimento depende do PERIODO, nao do campo: medido no ambiente
+    de desenvolvimento em 02/09/2026, a equipe veio em 0% dos eventos de
+    janeiro/2026, 83% dos de julho e 31% do ano inteiro — ela foi sendo
+    adotada ao longo de 2026. Uma janela antiga sai inteira em "Sem
+    equipe fiscal", e isso e o dado, nao falha da integracao.
+
+    O corte aparece mesmo vazio: escondido, viraria a impressao de que a
+    dimensao nao foi pedida.
+    """
+    return (
+        e.get("equipe_fiscal_codigo"),
+        (e.get("equipe_fiscal") or "").strip() or _SEM_EQUIPE,
+    )
+
+
+def _chave_procedimento_evt(e: dict[str, Any]) -> tuple[Any, str]:
+    """Procedimento do evento (AUDITORIA NA ESCRITA FISCAL, etc.)."""
+    return (
+        e.get("procedimento_codigo"),
+        (e.get("procedimento") or "").strip() or _SEM_PROCEDIMENTO,
+    )
+
+
+def _chave_modelo_evt(e: dict[str, Any]) -> tuple[Any, str]:
+    """Tipo da OS a que o evento pertence."""
+    return (e.get("modelo_codigo"), (e.get("modelo") or "").strip() or _SEM_MODELO)
+
+
+def _chave_motivo_evt(e: dict[str, Any]) -> tuple[Any, str]:
+    """Motivo de abertura da OS a que o evento pertence."""
+    return (
+        e.get("motivo_abertura_codigo"),
+        (e.get("motivo_abertura") or "").strip() or _SEM_MOTIVO,
+    )
+
+
+def _chave_mes_inclusao_evt(e: dict[str, Any]) -> tuple[Any, str]:
+    """
+    Mes de INCLUSAO do evento, com id ordenavel (YYYY-MM).
+
+    A serie e pela inclusao, e nao pela abertura da OS: o que se mede
+    aqui e o trabalho registrado no periodo. Um evento de janeiro numa OS
+    aberta em dezembro e trabalho de janeiro.
+    """
+    mes = (e.get("data_inclusao") or "")[:7]
+    if len(mes) != 7:
+        return (None, _SEM_INCLUSAO)
+    ano, numero = mes.split("-")
+    return (mes, f"{numero}/{ano}")
+
+
+def gerar_dashboard_eventos(eventos: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Consolida os cortes de quantidade de eventos (bloco 2 da demanda de
+    31/08/2026).
+
+    Mesma divisao de trabalho do bloco 1: quem chama ja entregou o
+    universo que o usuario pode ver, e a agregacao nao filtra nada por
+    conta propria.
+    """
+    geral = _resumo_eventos(eventos)
+
+    por_gerencia = _agrupar_eventos(eventos, _chave_gerencia_evt)
+    por_equipe = _agrupar_eventos(eventos, _chave_equipe_evt)
+    por_procedimento = _agrupar_eventos(eventos, _chave_procedimento_evt)
+    por_motivo = _agrupar_eventos(eventos, _chave_motivo_evt)
+    por_tipo = _agrupar_eventos(eventos, _chave_modelo_evt)
+
+    # Serie no tempo: ordena pelo mes, nao pela quantidade. Os eventos sem
+    # data de inclusao nao tem lugar na linha e vao para o fim.
+    por_mes = sorted(
+        _agrupar_eventos(eventos, _chave_mes_inclusao_evt),
+        key=lambda linha: (linha["vazio"], linha["id"] or ""),
+    )
+
+    def _vazios(linhas: list[dict[str, Any]]) -> int:
+        return next((l["total"] for l in linhas if l["vazio"]), 0)
+
+    return {
+        "visao_geral": {
+            "total_eventos": geral["total"],
+            "total_os": geral["os"],
+            # Media por OS: quantos eventos, em media, cada OS tocada no
+            # periodo recebeu. Nao confundir com mediaEventosModMot da
+            # listagem, que e uma media historica por modelo+motivo.
+            "media_por_os": (
+                round(geral["total"] / geral["os"], 1) if geral["os"] else None
+            ),
+            "duracao_media": geral["duracao_media"],
+            "total_gerencias": len([l for l in por_gerencia if not l["vazio"]]),
+            "total_procedimentos": len([l for l in por_procedimento if not l["vazio"]]),
+            # Os dois buracos que mudam como o painel deve ser lido.
+            "eventos_sem_gerencia": _vazios(por_gerencia),
+            "eventos_sem_equipe": _vazios(por_equipe),
+        },
+        "por_gerencia": por_gerencia,
+        "por_equipe": por_equipe,
+        "por_procedimento": por_procedimento,
+        "por_motivo": por_motivo,
+        "por_tipo": por_tipo,
+        "por_mes": por_mes,
+    }

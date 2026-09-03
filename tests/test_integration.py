@@ -11,7 +11,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -1695,6 +1695,279 @@ class TestEquipesFiscaisEndpoints(IntegrationTestBase):
             "/admin/equipes-fiscais/99999/membros", headers=self._admin_header()
         )
         self.assertEqual(r.status_code, 404)
+
+
+class TestFiltrosDoDashboard(IntegrationTestBase):
+    """
+    Filtros de dimensao nas duas abas de dados reais do ATF.
+
+    O que estes testes protegem nao e a tela: e o fato de os filtros
+    DESCEREM ate o ATF em vez de serem aplicados aqui depois. Aplicados
+    aqui, o resultado na tela seria o mesmo e a consulta continuaria
+    custando os 5 a 16 segundos inteiros — o ganho sumiria sem nada
+    quebrar, que e o jeito mais facil de esta mudanca se perder.
+    """
+
+    _PERIODO_EVT = "data_inicio=2026-01-01&data_fim=2026-12-31"
+
+    def test_os_repassa_os_filtros_ao_atf(self):
+        with patch("backend.main.universo_ordens_atf", return_value=[]) as chamada:
+            r = self.client.get(
+                "/admin/dashboard/os?modelo=1&motivo_abertura=168"
+                "&orgao_executor=383&equipe_fiscal=12",
+                headers=self._admin_header(),
+            )
+        self.assertEqual(r.status_code, 200, r.text)
+        kwargs = chamada.call_args.kwargs
+        self.assertEqual(kwargs["modelo"], "1")
+        self.assertEqual(kwargs["motivo_abertura"], "168")
+        self.assertEqual(kwargs["orgao_executor"], "383")
+        self.assertEqual(kwargs["equipe_fiscal"], "12")
+
+    def test_eventos_repassa_os_filtros_ao_atf(self):
+        with patch("backend.main.listar_eventos_atf", return_value=[]) as chamada:
+            r = self.client.get(
+                f"/admin/dashboard/eventos?{self._PERIODO_EVT}"
+                "&modelo=8&motivo_abertura=233&equipe_fiscal=12"
+                "&gerencia=275&procedimento=10",
+                headers=self._admin_header(),
+            )
+        self.assertEqual(r.status_code, 200, r.text)
+        kwargs = chamada.call_args.kwargs
+        self.assertEqual(kwargs["modelo"], "8")
+        self.assertEqual(kwargs["motivo_abertura"], "233")
+        self.assertEqual(kwargs["equipe_fiscal"], "12")
+        self.assertEqual(kwargs["gerencia"], "275")
+        self.assertEqual(kwargs["procedimento"], "10")
+
+    def test_filtro_chega_ao_xml_enviado_ao_atf(self):
+        """
+        Uma camada abaixo: o parametro tem de virar tag no <parametros>.
+        Repassar ate `listar_ordens_atf` e perder no montador do XML
+        deixaria tudo verde e o filtro sem efeito nenhum.
+        """
+        from backend.external_api import _montar_parametros_atf
+
+        xml = _montar_parametros_atf(
+            modelo="1", motivo_abertura="168", orgao_executor="383", equipe_fiscal="12",
+        )
+        self.assertIn("<cdModeloOS>1</cdModeloOS>", xml)
+        self.assertIn("<cdMotivoAbertOS>168</cdMotivoAbertOS>", xml)
+        self.assertIn("<cdOrgaoExec>383</cdOrgaoExec>", xml)
+        self.assertIn("<cdEquipeFisc>12</cdEquipeFisc>", xml)
+
+    def test_sem_filtro_nada_e_enviado(self):
+        """Filtro vazio nao pode virar tag em branco: o ATF a leva a serio."""
+        from backend.external_api import _montar_parametros_atf
+
+        xml = _montar_parametros_atf(
+            data_abertura_ini="2026-01-01", data_abertura_fim="2026-01-31",
+            modelo="", motivo_abertura=None,
+        )
+        self.assertNotIn("cdModeloOS", xml)
+        self.assertNotIn("cdMotivoAbertOS", xml)
+
+    def test_eventos_filtro_reduz_o_conjunto_tambem_no_mock(self):
+        """
+        O caminho MOCK precisa honrar os filtros de dimensao, nao so o do
+        ATF. Sem isso a tela mostraria o filtro ativo e o mesmo total de
+        antes — sem erro nenhum para avisar — justamente no modo em que
+        se testa quando o ATF esta fora do ar.
+        """
+        h = self._admin_header()
+        todos = self.client.get(
+            f"/admin/dashboard/eventos?{self._PERIODO_EVT}", headers=h,
+        ).json()
+        alvo = next(l for l in todos["por_gerencia"] if not l["vazio"])
+
+        filtrado = self.client.get(
+            f"/admin/dashboard/eventos?{self._PERIODO_EVT}&gerencia={alvo['id']}",
+            headers=h,
+        ).json()
+
+        self.assertEqual(filtrado["visao_geral"]["total_eventos"], alvo["total"])
+        self.assertLess(
+            filtrado["visao_geral"]["total_eventos"],
+            todos["visao_geral"]["total_eventos"],
+        )
+        self.assertEqual(len(filtrado["por_gerencia"]), 1)
+
+    def test_os_devolve_os_filtros_ativos(self):
+        """A tela le daqui o que esta valendo, em vez de reconstruir."""
+        corpo = self.client.get(
+            "/admin/dashboard/os?modelo=1", headers=self._admin_header(),
+        ).json()
+        self.assertEqual(corpo["filtros"]["modelo"], "1")
+        self.assertIsNone(corpo["filtros"]["orgao_executor"])
+
+    def test_filtro_realmente_reduz_o_conjunto(self):
+        """
+        Sobre o MOCK, de ponta a ponta: filtrar tem de tirar OS.
+
+        O codigo vem fixo (1 = NORMAL) e nao do corte: no MOCK as OS nao
+        tem modelo_codigo, entao `por_tipo[0]["id"]` e None e o filtro
+        sairia como "modelo=None".
+        """
+        h = self._admin_header()
+        todas = self.client.get("/admin/dashboard/os", headers=h).json()
+        filtrado = self.client.get("/admin/dashboard/os?modelo=1", headers=h).json()
+
+        self.assertGreater(filtrado["visao_geral"]["total_os"], 0)
+        self.assertLess(
+            filtrado["visao_geral"]["total_os"], todas["visao_geral"]["total_os"],
+        )
+        # E o corte da dimensao filtrada fica com uma linha so — o
+        # "achatamento" que a tela avisa.
+        self.assertEqual(len(filtrado["por_tipo"]), 1)
+        self.assertEqual(filtrado["por_tipo"][0]["rotulo"], "NORMAL")
+
+
+class TestDashboardEventosEndpoint(IntegrationTestBase):
+    """
+    GET /admin/dashboard/eventos — o bloco 2 da demanda de 31/08/2026,
+    sobre o servico de eventos (aqui, o MOCK: ATF_BASE_URL vazio no setUp).
+
+    Ao contrario de /admin/dashboard/os, este e exclusivo do admin: o
+    servico de eventos nao devolve matricula, entao nao ha como recortar
+    a resposta pela hierarquia de quem pergunta.
+    """
+
+    _CORTES = (
+        "por_gerencia", "por_equipe", "por_procedimento",
+        "por_motivo", "por_tipo", "por_mes",
+    )
+
+    _PERIODO = "data_inicio=2026-01-01&data_fim=2026-12-31"
+
+    def test_admin_recebe_todos_os_cortes(self):
+        r = self.client.get(
+            f"/admin/dashboard/eventos?{self._PERIODO}", headers=self._admin_header(),
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        corpo = r.json()
+
+        for corte in self._CORTES:
+            self.assertIn(corte, corpo)
+        self.assertGreater(corpo["visao_geral"]["total_eventos"], 0)
+
+    def test_nao_admin_recebe_403(self):
+        """
+        A restricao e de dado, nao de politica: sem matricula na resposta
+        do ATF nao ha como filtrar por hierarquia.
+        """
+        token = self._login_como("Carlos Mendes")
+        r = self.client.get(
+            f"/admin/dashboard/eventos?{self._PERIODO}", headers=self._auth_header(token),
+        )
+        self.assertEqual(r.status_code, 403)
+
+    def test_sem_periodo_da_400_com_mensagem_util(self):
+        """
+        A regra e do ATF ("e necessario informar pelo menos um filtro"),
+        mas conferida aqui — senao o MOCK aceitaria o que o servico
+        recusa, e a aba se comportaria diferente com e sem o ATF ligado.
+        """
+        r = self.client.get("/admin/dashboard/eventos", headers=self._admin_header())
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("periodo", r.json()["detail"].lower())
+
+    def test_periodo_maior_que_um_ano_da_400(self):
+        r = self.client.get(
+            "/admin/dashboard/eventos?data_inicio=2024-01-01&data_fim=2026-12-31",
+            headers=self._admin_header(),
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("um ano", r.json()["detail"])
+
+    def test_periodo_de_abertura_sozinho_basta(self):
+        """A doc aceita qualquer um dos dois periodos, nao os dois."""
+        r = self.client.get(
+            "/admin/dashboard/eventos?abertura_inicio=2026-01-01&abertura_fim=2026-12-31",
+            headers=self._admin_header(),
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_cortes_fecham_com_o_total_de_eventos(self):
+        """
+        Cada evento cai em exatamente um grupo de cada dimensao — aqui nao
+        existe o caso da OS com varios fiscais, que faz o corte por fiscal
+        do bloco 1 somar mais que o total.
+        """
+        corpo = self.client.get(
+            f"/admin/dashboard/eventos?{self._PERIODO}", headers=self._admin_header(),
+        ).json()
+        total = corpo["visao_geral"]["total_eventos"]
+
+        for corte in self._CORTES:
+            with self.subTest(corte=corte):
+                self.assertEqual(sum(l["total"] for l in corpo[corte]), total)
+
+    def test_os_distintas_nao_passam_do_total_de_eventos(self):
+        """Um evento pertence a uma OS: OS distintas <= eventos, sempre."""
+        visao = self.client.get(
+            f"/admin/dashboard/eventos?{self._PERIODO}", headers=self._admin_header(),
+        ).json()["visao_geral"]
+        self.assertLessEqual(visao["total_os"], visao["total_eventos"])
+        self.assertGreater(visao["total_os"], 0)
+
+    def test_periodo_recorta_o_conjunto(self):
+        h = self._admin_header()
+        completo = self.client.get(
+            f"/admin/dashboard/eventos?{self._PERIODO}", headers=h,
+        ).json()
+        recorte = self.client.get(
+            "/admin/dashboard/eventos?data_inicio=2026-02-01&data_fim=2026-02-28",
+            headers=h,
+        ).json()
+        self.assertLessEqual(
+            recorte["visao_geral"]["total_eventos"],
+            completo["visao_geral"]["total_eventos"],
+        )
+
+    def test_atf_fora_do_ar_vira_502_e_nao_500(self):
+        """
+        Falha de transporte nao e ValueError e passaria batido ate o
+        FastAPI, virando um 500 cru — que na tela nao distingue "o ATF
+        caiu" de "o sistema tem um bug". Producao devolveu 503 em tudo,
+        inclusive no ?wsdl, em 02/09/2026.
+        """
+        import requests
+
+        resposta = MagicMock(status_code=503)
+        erro = requests.HTTPError("503 Server Error", response=resposta)
+
+        with patch("backend.main.listar_eventos_atf", side_effect=erro):
+            r = self.client.get(
+                f"/admin/dashboard/eventos?{self._PERIODO}", headers=self._admin_header(),
+            )
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("503", r.json()["detail"])
+
+    def test_falha_de_tls_tambem_vira_502(self):
+        """O ambiente de dev esta com a cadeia TLS incompleta desde 13/08/2026."""
+        import requests
+
+        with patch(
+            "backend.main.listar_eventos_atf",
+            side_effect=requests.exceptions.SSLError("bad chain"),
+        ):
+            r = self.client.get(
+                f"/admin/dashboard/eventos?{self._PERIODO}", headers=self._admin_header(),
+            )
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("ATF", r.json()["detail"])
+
+    def test_resposta_diz_de_qual_ambiente_veio(self):
+        """
+        A tela precisa do aviso: enquanto a operacao existir so em
+        desenvolvimento, os numeros nao fecham com os da aba de OS.
+        """
+        corpo = self.client.get(
+            f"/admin/dashboard/eventos?{self._PERIODO}", headers=self._admin_header(),
+        ).json()
+        self.assertIn("outro_ambiente", corpo)
+        # Sem ATF configurado (MOCK), nao ha dois ambientes para divergir.
+        self.assertFalse(corpo["outro_ambiente"])
 
 
 if __name__ == "__main__":

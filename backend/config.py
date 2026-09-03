@@ -57,6 +57,22 @@ ATF_BASE_URL: str = os.getenv("ATF_BASE_URL", "")
 # para decidir acesso — ver _buscar_detalhe_os_atf, em main.py.
 ATF_DETALHE_BASE_URL: str = os.getenv("ATF_DETALHE_BASE_URL", "")
 
+# URL do servico de EVENTOS de OS (doc dos eventos, listarEventosOrdemServico).
+# Vazia = usa a mesma do ATF_BASE_URL, que e o estado final desejado.
+#
+# Existe pelo mesmo motivo da variavel acima, e hoje pelo motivo mais
+# concreto possivel: em 02/09/2026 a operacao esta publicada SO em
+# desenvolvimento. O ?wsdl de producao e o de homologacao declaram
+# apenas listarOrdemServico e detalharOrdemServico. Enquanto a SEFAZ nao
+# implantar, esta e a unica forma de exercitar a aba de eventos sem
+# arrastar a listagem inteira para o ambiente de desenvolvimento.
+#
+# ATENCAO: ambiente diferente e BANCO diferente. Apontada para outro
+# host, a aba de eventos mostra dados que nao conversam com o resto do
+# sistema — por isso o endpoint marca a resposta com
+# `outro_ambiente: true` e a tela avisa quem estiver olhando.
+ATF_EVENTOS_BASE_URL: str = os.getenv("ATF_EVENTOS_BASE_URL", "")
+
 # Caminho do endpoint SOAP, acrescentado a ATF_BASE_URL. Fica fora do
 # repositorio (vem do .env) porque host + caminho juntos formam o
 # endereco real do servico.

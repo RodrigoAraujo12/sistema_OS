@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
+import requests
 from fpdf import FPDF
 from sqlite3 import IntegrityError
 from typing import Any
@@ -43,10 +44,13 @@ from .db import (
 from .external_api import (
     detalhar_ordem_atf,
     detalhe_em_outro_ambiente,
+    eventos_em_outro_ambiente,
     filtrar_atf_por_matriculas,
     gerar_alertas,
     gerar_dashboard,
+    gerar_dashboard_eventos,
     gerar_dashboard_os,
+    listar_eventos_atf,
     listar_ordens_atf,
     listar_ordens_servico,
     mesclar_detalhe_os,
@@ -1231,6 +1235,10 @@ def get_dashboard_os(
     user: dict[str, Any] = Depends(get_active_user),
     data_inicio: str | None = Query(None, description="Abertura a partir de (YYYY-MM-DD)"),
     data_fim: str | None = Query(None, description="Abertura ate (YYYY-MM-DD)"),
+    modelo: str | None = Query(None, description="cdModeloOS"),
+    motivo_abertura: str | None = Query(None, description="cdMotivoAbertOS"),
+    orgao_executor: str | None = Query(None, description="cdOrgaoExec"),
+    equipe_fiscal: str | None = Query(None, description="cdEquipeFisc"),
 ) -> dict[str, Any]:
     """
     Cortes de quantidade de OS sobre os dados reais do ATF.
@@ -1243,12 +1251,21 @@ def get_dashboard_os(
     exatamente as OS que ja veria na tela de consulta. Nao ha
     require_admin porque nao ha nada aqui que a listagem ja nao mostre —
     e o mesmo universo, somado.
+
+    Os quatro filtros de dimensao descem ate o ATF (ver
+    universo_ordens_atf), e nao sao aplicados aqui depois: filtrar la
+    corta a parte variavel do tempo de resposta, que nesta consulta e o
+    que da para cortar. O piso de ~5,3s por chamada nenhum deles remove.
     """
     try:
         ordens = universo_ordens_atf(
             data_inicio=data_inicio,
             data_fim=data_fim,
             matriculas_visiveis=_matriculas_visiveis(user),
+            modelo=modelo,
+            motivo_abertura=motivo_abertura,
+            orgao_executor=orgao_executor,
+            equipe_fiscal=equipe_fiscal,
         )
     except ValueError as e:
         # Erros de negocio do ATF (dsMensagemErro) viram 400 com a mensagem
@@ -1256,6 +1273,102 @@ def get_dashboard_os(
 
     dashboard = gerar_dashboard_os(ordens, _gerencia_por_matricula())
     dashboard["periodo"] = {"inicio": data_inicio, "fim": data_fim}
+    # Devolvido para a tela saber o que esta ativo sem reconstruir o
+    # estado a partir da query string.
+    dashboard["filtros"] = {
+        "modelo": modelo, "motivo_abertura": motivo_abertura,
+        "orgao_executor": orgao_executor, "equipe_fiscal": equipe_fiscal,
+    }
+    return dashboard
+
+
+@app.get("/admin/dashboard/eventos")
+def get_dashboard_eventos(
+    user: dict[str, Any] = Depends(get_active_user),
+    data_inicio: str | None = Query(None, description="Inclusao do evento a partir de (YYYY-MM-DD)"),
+    data_fim: str | None = Query(None, description="Inclusao do evento ate (YYYY-MM-DD)"),
+    abertura_inicio: str | None = Query(None, description="Abertura da OS a partir de (YYYY-MM-DD)"),
+    abertura_fim: str | None = Query(None, description="Abertura da OS ate (YYYY-MM-DD)"),
+    modelo: str | None = Query(None, description="cdModeloOS"),
+    motivo_abertura: str | None = Query(None, description="cdMotivoAbertOS"),
+    equipe_fiscal: str | None = Query(None, description="cdEquipeFisc"),
+    gerencia: str | None = Query(None, description="cdGerencia (gerencia do ATF)"),
+    procedimento: str | None = Query(None, description="cdProcedimento"),
+) -> dict[str, Any]:
+    """
+    Cortes de quantidade de EVENTOS de acompanhamento (bloco 2 da demanda
+    de 31/08/2026, doc dos eventos).
+
+    SOMENTE ADMIN, e por um motivo de dado, nao de politica: o servico de
+    eventos nao devolve matricula nem nome de fiscal, que e a unica chave
+    pela qual este sistema liga uma OS a uma pessoa (_matriculas_visiveis).
+    Sem ela nao ha como recortar a resposta pela hierarquia de quem
+    perguntou, e entregar tudo a um supervisor seria contrabandear o
+    universo inteiro por uma porta lateral.
+
+    As duas saidas possiveis quando isso precisar mudar, ambas com custo:
+    cruzar `numero_os` com a listagem de OS do mesmo periodo (correto,
+    porem paga a listagem inteira — 24s em producao — e joga fora o 0,2s
+    que este servico custa), ou recortar por cdEquipeFisc (barato, mas
+    decide sozinho a questao de visibilidade por equipe x por matricula
+    que voce deixou em aberto, e hoje o campo volta vazio de qualquer
+    forma). Nenhuma das duas se escolhe sem voce.
+
+    Na pratica isto nao tira nada de ninguem hoje: o Dashboard inteiro ja
+    e renderizado so para admin (App.jsx).
+    """
+    require_admin(user)
+
+    try:
+        eventos = listar_eventos_atf(
+            modelo=modelo,
+            motivo_abertura=motivo_abertura,
+            equipe_fiscal=equipe_fiscal,
+            gerencia=gerencia,
+            procedimento=procedimento,
+            data_abertura_ini=abertura_inicio,
+            data_abertura_fim=abertura_fim,
+            data_inclusao_ini=data_inicio,
+            data_inclusao_fim=data_fim,
+        )
+    except ValueError as e:
+        # Cobre tanto a validacao local de periodo quanto os erros de
+        # negocio do ATF (dsMensagemErro) e o SOAP Fault de operacao
+        # inexistente.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except requests.RequestException as e:
+        # Falha de transporte NAO e ValueError e passaria batido ate o
+        # FastAPI, virando um 500 cru na tela — sem dizer que o problema
+        # e do ATF, e nao daqui. Os dois casos vistos em 02/09/2026:
+        # producao devolvendo 503 em tudo (mod_cluster sem no JBoss
+        # registrado, some sozinho em minutos) e SSLError no ambiente de
+        # desenvolvimento, cuja cadeia TLS esta incompleta.
+        resposta = getattr(e, "response", None)
+        if resposta is not None and resposta.status_code == 503:
+            detalhe = (
+                "O ATF esta indisponivel (HTTP 503). Costuma ser reinicio da "
+                "aplicacao do lado deles e voltar sozinho em alguns minutos."
+            )
+        else:
+            detalhe = f"Nao foi possivel falar com o ATF: {e.__class__.__name__}."
+        logger.warning("Dashboard de eventos: falha de transporte com o ATF (%s)", e)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detalhe)
+
+    dashboard = gerar_dashboard_eventos(eventos)
+    dashboard["periodo"] = {
+        "inclusao_inicio": data_inicio, "inclusao_fim": data_fim,
+        "abertura_inicio": abertura_inicio, "abertura_fim": abertura_fim,
+    }
+    # A tela precisa dizer de onde vieram estes numeros. O ambiente de
+    # desenvolvimento NAO e outro banco, como se supos a principio: e a
+    # mesma base de producao com o contribuinte mascarado — conferido
+    # campo a campo em 02/09/2026, datas, modelo, motivo, orgao,
+    # procedimento, dias e ate as matriculas dos fiscais batem. Logo as
+    # contagens valem. O que ele e: um SNAPSHOT CONGELADO — naquela data
+    # ia ate o fim de julho, enquanto producao tinha 856 OS so em agosto.
+    # Um periodo que passe do corte cai a zero e parece queda de
+    # produtividade. E disso que a aba precisa avisar.
+    dashboard["outro_ambiente"] = eventos_em_outro_ambiente()
     return dashboard
 
 

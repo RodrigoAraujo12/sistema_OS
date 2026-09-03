@@ -7,6 +7,12 @@
  * motivo, tipo e mes de abertura — cada um com o tempo medio de
  * execucao.
  *
+ * NAO consulta nada ao abrir. O periodo de abertura e obrigatorio
+ * (inicio e fim, no maximo um ano) e o painel so e montado no clique —
+ * mesmo contrato da tela de Ordens de Servico. Ate 03/09/2026 ela puxava
+ * o ano corrente sozinha a cada visita: dezenas de segundos de varredura
+ * no ATF por um recorte que quase nunca era o procurado.
+ *
  * As demais abas (Visao Geral, Gerencias, Supervisoes, Fiscais) ainda
  * consomem o formato interno legado, que e mock.
  *
@@ -18,27 +24,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bar, Doughnut } from "react-chartjs-2";
 import apiClient from "../api.js";
-
-const COR_TOTAL = "#3b82f6";
-const COR_TEMPO = "#f59e0b";
-/** Cinza do grupo "Sem <dimensao>": e um buraco no dado, nao uma
- *  categoria — pintar igual as outras o faria passar por uma. */
-const COR_VAZIO = "#94a3b8";
-
-/** Paleta do grafico de tipo (4 modelos de OS no ATF, com folga). */
-const PALETA_TIPO = ["#1a3a6c", "#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6", "#94a3b8"];
+import {
+  COR_TOTAL, COR_TEMPO, COR_VAZIO, PALETA_TIPO, TOPO_GRAFICO,
+  intervaloDe, formatarDias, formatarNumero,
+} from "../dashboardShared.js";
+import DashboardFiltros, { opcoesDoMapa } from "./DashboardFiltros.jsx";
+import { modeloLabels, motivoLabels, orgaoExecutorOptions } from "../constants.js";
 
 /**
- * Quantas barras cabem antes do grafico virar uma parede ilegivel.
- * Motivo tem ~100 valores ativos e fiscal passa de 300 — nesses dois o
- * grafico mostra o topo e a tabela logo abaixo mostra o resto.
- */
-const TOPO_GRAFICO = 15;
-
-/**
- * Periodos oferecidos. Sem "Todos", de proposito: a consulta desce ate o
- * ATF, e um ano inteiro sao milhares de OS e dezenas de segundos de
- * espera. Quem precisar da base inteira usa "Personalizado" e assume.
+ * Atalhos de periodo. Sao so isso: preenchem as duas datas e NAO
+ * consultam nada — a consulta sai no botao, como na tela de Ordens de
+ * Servico. Nenhum passa de um ano, que e o teto do periodo aqui.
+ *
+ * Nao ha "Todos" nem "Personalizado": os campos de data estao sempre na
+ * tela, entao qualquer intervalo (dentro do teto) e digitavel, e a base
+ * inteira nao cabe — a consulta desce ate o ATF e um ano ja sao milhares
+ * de OS e dezenas de segundos de espera.
  */
 const PERIODO_OPTIONS = [
   { value: "30", label: "30 dias" },
@@ -46,35 +47,25 @@ const PERIODO_OPTIONS = [
   { value: "180", label: "6 meses" },
   { value: "ano", label: "Ano atual" },
   { value: "365", label: "12 meses" },
-  { value: "custom", label: "Personalizado" },
 ];
 
-/** Data em YYYY-MM-DD pelo relogio LOCAL. toISOString() converteria para
- *  UTC e, de tarde no fuso de Brasilia, mandaria o dia seguinte. */
-function iso(data) {
-  const mes = String(data.getMonth() + 1).padStart(2, "0");
-  const dia = String(data.getDate()).padStart(2, "0");
-  return `${data.getFullYear()}-${mes}-${dia}`;
-}
+/** Teto do periodo: um ano. 366 dias para o ano bissexto caber inteiro —
+ *  mesmo numero da busca so por periodo em atfFilters.js. */
+const LIMITE_DIAS = 366;
 
-/** Converte a opcao de periodo no par de datas enviado ao backend. */
-function intervaloDe(periodo) {
-  const hoje = new Date();
-  if (periodo === "ano") {
-    return { inicio: `${hoje.getFullYear()}-01-01`, fim: iso(hoje) };
-  }
-  const inicio = new Date(hoje);
-  inicio.setDate(hoje.getDate() - parseInt(periodo, 10));
-  return { inicio: iso(inicio), fim: iso(hoje) };
-}
-
-function formatarDias(valor) {
-  if (valor === null || valor === undefined) return "—";
-  return `${valor.toLocaleString("pt-BR")} d`;
-}
-
-function formatarNumero(valor) {
-  return (valor ?? 0).toLocaleString("pt-BR");
+/**
+ * Valida o periodo ANTES de gastar uma varredura no ATF.
+ * Retorna a mensagem de erro, ou null se estiver tudo certo.
+ *
+ * As datas vem de <input type="date">, sempre em YYYY-MM-DD: comparar
+ * como texto ja da a ordem certa, sem passar por Date.
+ */
+function validarPeriodo(inicio, fim) {
+  if (!inicio || !fim) return "Informe o periodo de abertura: inicio e fim.";
+  if (inicio > fim) return "Periodo de abertura: o inicio nao pode ser depois do fim.";
+  const dias = (new Date(fim) - new Date(inicio)) / 86400000;
+  if (dias > LIMITE_DIAS) return "Periodo de abertura: no maximo um ano entre inicio e fim.";
+  return null;
 }
 
 /**
@@ -153,26 +144,62 @@ function TabelaCorte({ linhas, cabecalho, altura }) {
   );
 }
 
+/**
+ * Dimensoes filtraveis. Sao as quatro que o ATF aceita em <parametros> e
+ * que correspondem a cortes desta aba. Situacao ficou de fora de
+ * proposito: o painel ja separa encerradas de em execucao, e o tempo
+ * medio e definido sobre as encerradas — filtrar por situacao mudaria o
+ * significado do KPI sem dizer isso na tela.
+ */
+const SEM_FILTRO = {
+  modelo: "", motivoAbertura: "", orgaoExecutor: "", equipeFiscal: "",
+};
+
 export default function DashboardOS({ onError }) {
   const [dados, setDados] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [periodo, setPeriodo] = useState("ano");
+  // Nada preenchido na entrada: a aba abre vazia e nao consulta o ATF
+  // ate alguem definir o periodo — mesmo contrato da tela de Ordens de
+  // Servico, que so pesquisa depois que o filtro esta posto. Antes daqui
+  // ela puxava um ano inteiro sozinha a cada visita, uma varredura de
+  // dezenas de segundos que quase sempre nao era o recorte procurado.
+  const [periodo, setPeriodo] = useState("");
   const [dataInicio, setDataInicio] = useState("");
   const [dataFim, setDataFim] = useState("");
+  const [erro, setErro] = useState("");
 
-  // Consulta em voo, para nao disparar a mesma duas vezes. O StrictMode
-  // roda o efeito de montagem em duplicata no dev, e aqui cada disparo e
-  // uma varredura demorada no ATF — a segunda sai antes de a primeira
-  // popular o cache do backend, entao seriam duas idas de verdade.
+  // `filtros` e o que esta nos campos; `consulta`, o que a consulta na
+  // tela usou (null = nenhuma ainda). Aqui a distincao pesa mais que na
+  // aba de Eventos: cada consulta custa de 5 a 16 segundos, entao o
+  // botao existe para que montar um recorte de periodo mais tres
+  // dimensoes nao dispare quatro varreduras.
+  const [filtros, setFiltros] = useState(SEM_FILTRO);
+  const [consulta, setConsulta] = useState(null);
+  const [equipes, setEquipes] = useState([]);
+
+  // Consulta em voo, para nao disparar a mesma duas vezes — dois cliques
+  // no botao sairiam antes de a primeira popular o cache do backend,
+  // entao seriam duas idas de verdade ao ATF.
   const emVoo = useRef(null);
 
-  const carregar = useCallback(async (inicio, fim) => {
-    const chave = `${inicio}|${fim}`;
+  const carregar = useCallback(async (inicio, fim, dims) => {
+    // O periodo e barrado aqui, e nao so no botao: e o unico caminho ate
+    // o ATF, entao vale para o Aplicar, para o Limpar e para o que vier.
+    const problema = validarPeriodo(inicio, fim);
+    if (problema) {
+      setErro(problema);
+      return;
+    }
+    setErro("");
+    const chave = `${inicio}|${fim}|${JSON.stringify(dims)}`;
     if (emVoo.current === chave) return;
     emVoo.current = chave;
     setLoading(true);
     try {
-      setDados(await apiClient.getDashboardOS({ dataInicio: inicio, dataFim: fim }));
+      setDados(await apiClient.getDashboardOS({
+        dataInicio: inicio, dataFim: fim, ...dims,
+      }));
+      setConsulta({ inicio, fim, dims });
     } catch (err) {
       onError(err.message);
     } finally {
@@ -181,24 +208,55 @@ export default function DashboardOS({ onError }) {
     }
   }, [onError]);
 
-  // Carga inicial: o periodo padrao (ano atual) ja definido no estado.
   useEffect(() => {
-    const { inicio, fim } = intervaloDe("ano");
-    setDataInicio(inicio);
-    setDataFim(fim);
-    carregar(inicio, fim);
-  }, [carregar]);
+    apiClient.listEquipesFiscais().then(setEquipes).catch(() => setEquipes([]));
+  }, []);
 
+  /** Atalho de periodo: preenche as duas datas e para por ai. */
   function handlePeriodoChange(novo) {
     setPeriodo(novo);
-    // "Personalizado" nao consulta sozinho: o usuario ainda vai escolher
-    // as datas, e cada consulta destas custa uma varredura no ATF.
-    if (novo === "custom") return;
     const { inicio, fim } = intervaloDe(novo);
     setDataInicio(inicio);
     setDataFim(fim);
-    carregar(inicio, fim);
+    setErro("");
   }
+
+  /** Data digitada na mao desmarca o atalho — ele nao descreve mais o
+   *  intervalo que esta na tela. */
+  function handleDataChange(qual, valor) {
+    if (qual === "inicio") setDataInicio(valor);
+    else setDataFim(valor);
+    setPeriodo("");
+    setErro("");
+  }
+
+  function handleLimpar() {
+    setFiltros(SEM_FILTRO);
+    // So refaz a consulta se ja houver uma na tela: sem isso, Limpar em
+    // uma aba ainda vazia viraria um segundo jeito de consultar.
+    if (consulta) carregar(dataInicio, dataFim, SEM_FILTRO);
+  }
+
+  const campos = [
+    { chave: "modelo", label: "Tipo", vazio: "Todos os tipos", opcoes: opcoesDoMapa(modeloLabels) },
+    { chave: "motivoAbertura", label: "Motivo", vazio: "Todos os motivos", opcoes: opcoesDoMapa(motivoLabels) },
+    {
+      chave: "orgaoExecutor", label: "Orgao executor", vazio: "Todos os orgaos",
+      opcoes: orgaoExecutorOptions.map((o) => ({ value: o.codigo, label: o.sigla })),
+    },
+    {
+      chave: "equipeFiscal", label: "Equipe", vazio: "Todas as equipes",
+      opcoes: equipes.map((e) => ({ value: String(e.codigo), label: e.nome })),
+    },
+  ];
+  // Ha o que aplicar quando a tela difere da consulta que esta nela — e
+  // sempre, enquanto nao houver consulta nenhuma. Diferente da aba de
+  // Eventos, o periodo entra na conta: aqui ele tambem so vai ao ATF no
+  // clique, entao mudar so as datas ja precisa habilitar o botao.
+  const pendente = !consulta
+    || consulta.inicio !== dataInicio
+    || consulta.fim !== dataFim
+    || JSON.stringify(consulta.dims) !== JSON.stringify(filtros);
 
   const visao = dados?.visao_geral;
 
@@ -209,64 +267,111 @@ export default function DashboardOS({ onError }) {
     [dados],
   );
 
-  if (!dados && loading) {
-    return <div className="card"><p className="muted">Consultando o ATF...</p></div>;
-  }
+  // A barra fica em pe nos tres estados (vazio, consultando e com
+  // dados): e ela que o usuario veio usar, e esconde-la enquanto o ATF
+  // responde tiraria da tela o recorte que ele acabou de montar.
+  const barraFiltros = (
+    <div className="card dash-filter-bar">
+      <div className="dash-periodo-row" style={{ borderTop: "none", paddingTop: 0 }}>
+        <label className="dash-filter-label">Abertura em:</label>
+        <div className="dash-periodo-btns">
+          {PERIODO_OPTIONS.map((p) => (
+            <button
+              key={p.value}
+              className={`dash-periodo-btn ${periodo === p.value ? "active" : ""}`}
+              onClick={() => handlePeriodoChange(p.value)}
+              disabled={loading}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <div className="dash-periodo-custom">
+          <input
+            type="date"
+            value={dataInicio}
+            onChange={(e) => handleDataChange("inicio", e.target.value)}
+            className="dash-periodo-date"
+            disabled={loading}
+            aria-label="Abertura de"
+          />
+          <span className="dash-periodo-sep">ate</span>
+          <input
+            type="date"
+            value={dataFim}
+            onChange={(e) => handleDataChange("fim", e.target.value)}
+            className="dash-periodo-date"
+            disabled={loading}
+            aria-label="Abertura ate"
+          />
+        </div>
+        {loading && <span className="dash-periodo-loading">Consultando o ATF...</span>}
+      </div>
 
+      <DashboardFiltros
+        campos={campos}
+        valores={filtros}
+        onChange={(chave, valor) => setFiltros({ ...filtros, [chave]: valor })}
+        onAplicar={() => carregar(dataInicio, dataFim, filtros)}
+        onLimpar={handleLimpar}
+        pendente={pendente}
+        loading={loading}
+        rotuloAplicar="Gerar dashboard"
+      />
+
+      {erro && <div className="alert error" style={{ marginBottom: 12 }}>{erro}</div>}
+
+      <p className="muted" style={{ marginTop: 8, marginBottom: 4 }}>
+        O periodo de abertura e <strong>obrigatorio</strong> — inicio e fim, com no maximo
+        um ano entre os dois. Os botoes acima so preenchem as datas: o dashboard e montado
+        no clique em <strong>Gerar dashboard</strong>.
+      </p>
+      <p className="muted" style={{ marginTop: 0, marginBottom: 4 }}>
+        Dados vindos direto da listagem do ATF. O tempo medio e a media de dias das OS
+        <strong> ja encerradas</strong> — as que ainda correm nao entram, porque o contador
+        delas cresce todo dia.
+      </p>
+      <p className="muted" style={{ marginTop: 0, marginBottom: 4 }}>
+        Os filtros descem ate o ATF e encurtam a consulta, mas so em parte: a chamada tem
+        um piso de <strong>~5s</strong> mais cerca de 2ms por OS. Restringir a metade das
+        OS corta perto de um quarto do tempo, nao a metade. E filtrar por uma dimensao
+        achata o corte dela — escolhido um orgao, o grafico de orgaos vira uma barra so.
+      </p>
+    </div>
+  );
+
+  // Sem consulta feita, a aba mostra so o filtro e o que fazer com ele.
   if (!dados) {
-    return <div className="card"><p className="muted">Sem dados do ATF para o periodo.</p></div>;
+    return (
+      <>
+        {barraFiltros}
+        <div className="card">
+          {loading ? (
+            <p className="muted">Consultando o ATF...</p>
+          ) : (
+            <>
+              <h2>Escolha o periodo</h2>
+              <p className="muted" style={{ marginBottom: 4 }}>
+                Esta aba nao consulta nada sozinha. Informe o periodo de abertura (inicio e
+                fim, no maximo um ano), escolha os filtros que quiser e clique em
+                {" "}<strong>Gerar dashboard</strong>.
+              </p>
+              <p className="muted" style={{ marginTop: 0 }}>
+                E o mesmo caminho da tela de Ordens de Servico, pelo mesmo motivo: cada
+                consulta desce ate o ATF e custa de 5 a 16 segundos — nao vale gastar isso
+                num recorte que ninguem pediu.
+              </p>
+            </>
+          )}
+        </div>
+      </>
+    );
   }
 
   return (
     <>
-      {/* ─── Periodo ─── */}
-      <div className="card dash-filter-bar">
-        <div className="dash-periodo-row" style={{ borderTop: "none", paddingTop: 0 }}>
-          <label className="dash-filter-label">Abertura em:</label>
-          <div className="dash-periodo-btns">
-            {PERIODO_OPTIONS.map((p) => (
-              <button
-                key={p.value}
-                className={`dash-periodo-btn ${periodo === p.value ? "active" : ""}`}
-                onClick={() => handlePeriodoChange(p.value)}
-                disabled={loading}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-          {periodo === "custom" && (
-            <div className="dash-periodo-custom">
-              <input
-                type="date"
-                value={dataInicio}
-                onChange={(e) => setDataInicio(e.target.value)}
-                className="dash-periodo-date"
-              />
-              <span className="dash-periodo-sep">ate</span>
-              <input
-                type="date"
-                value={dataFim}
-                onChange={(e) => setDataFim(e.target.value)}
-                className="dash-periodo-date"
-              />
-              <button
-                className="btn btn-primary dash-periodo-apply"
-                onClick={() => carregar(dataInicio, dataFim)}
-                disabled={loading || (!dataInicio && !dataFim)}
-              >
-                Aplicar
-              </button>
-            </div>
-          )}
-          {loading && <span className="dash-periodo-loading">Consultando o ATF...</span>}
-        </div>
-        <p className="muted" style={{ marginTop: 8, marginBottom: 4 }}>
-          Dados vindos direto da listagem do ATF. O tempo medio e a media de dias das OS
-          <strong> ja encerradas</strong> — as que ainda correm nao entram, porque o contador
-          delas cresce todo dia.
-        </p>
-      </div>
+      {/* ─── Periodo e filtros ─── */}
+      {barraFiltros}
 
       {/* ─── KPIs ─── */}
       <div className="stats-row">

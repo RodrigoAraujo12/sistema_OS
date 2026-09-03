@@ -8,8 +8,14 @@
  */
 
 // URL da API – pode ser sobrescrita via define do bundler: --define:API_BASE_URL='\"https://...\"'
-// Em desenvolvimento, aponta para localhost:8000
-const API_BASE = typeof API_BASE_URL !== "undefined" ? API_BASE_URL : "http://localhost:8000";
+//
+// Sem esse define, a chamada sai RELATIVA, para a mesma origem da pagina,
+// e o proxy do vite (vite.config.js) a encaminha ao backend. Nao da para
+// fixar "localhost": o codigo roda no navegador de quem abre, entao numa
+// maquina que acessa pela rede "localhost" seria a maquina DELA e toda
+// chamada falharia. Relativo tambem dispensa CORS, porque front e API
+// passam a ter a mesma origem.
+const API_BASE = typeof API_BASE_URL !== "undefined" ? API_BASE_URL : "";
 
 class ApiClient {
   constructor(baseUrl) {
@@ -245,12 +251,51 @@ class ApiClient {
    *  "Ordens de Servico" do Dashboard). O periodo e pela data de
    *  ABERTURA e desce ate o proprio ATF — sem ele a consulta arrasta a
    *  base inteira. */
-  getDashboardOS({ dataInicio, dataFim } = {}) {
+  /**
+   * Cortes de quantidade de OS (bloco 1).
+   *
+   * Os quatro filtros de dimensao descem ate o ATF, e nao sao aplicados
+   * no navegador: la eles cortam o tempo de resposta, aqui so cortariam
+   * a tela depois de a consulta inteira ja ter sido paga.
+   */
+  getDashboardOS({
+    dataInicio, dataFim, modelo, motivoAbertura, orgaoExecutor, equipeFiscal,
+  } = {}) {
     const params = new URLSearchParams();
     if (dataInicio) params.set("data_inicio", dataInicio);
     if (dataFim) params.set("data_fim", dataFim);
+    if (modelo) params.set("modelo", modelo);
+    if (motivoAbertura) params.set("motivo_abertura", motivoAbertura);
+    if (orgaoExecutor) params.set("orgao_executor", orgaoExecutor);
+    if (equipeFiscal) params.set("equipe_fiscal", equipeFiscal);
     const qs = params.toString();
     return this.request(`/admin/dashboard/os${qs ? `?${qs}` : ""}`);
+  }
+
+  /**
+   * Cortes de quantidade de EVENTOS (bloco 2, doc dos eventos).
+   *
+   * Dois periodos, e o backend exige pelo menos um completo: `dataInicio`
+   * / `dataFim` sao a INCLUSAO do evento, `aberturaInicio` / `aberturaFim`
+   * a abertura da OS. Sao coisas diferentes — um evento de janeiro pode
+   * ser de uma OS aberta em dezembro.
+   */
+  getDashboardEventos({
+    dataInicio, dataFim, aberturaInicio, aberturaFim,
+    modelo, motivoAbertura, equipeFiscal, gerencia, procedimento,
+  } = {}) {
+    const params = new URLSearchParams();
+    if (dataInicio) params.set("data_inicio", dataInicio);
+    if (dataFim) params.set("data_fim", dataFim);
+    if (aberturaInicio) params.set("abertura_inicio", aberturaInicio);
+    if (aberturaFim) params.set("abertura_fim", aberturaFim);
+    if (modelo) params.set("modelo", modelo);
+    if (motivoAbertura) params.set("motivo_abertura", motivoAbertura);
+    if (equipeFiscal) params.set("equipe_fiscal", equipeFiscal);
+    if (gerencia) params.set("gerencia", gerencia);
+    if (procedimento) params.set("procedimento", procedimento);
+    const qs = params.toString();
+    return this.request(`/admin/dashboard/eventos${qs ? `?${qs}` : ""}`);
   }
 
   /** Monta a query string do relatorio de OS (mesmos filtros do painel). */
