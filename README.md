@@ -134,12 +134,13 @@ cp .env.example .env
 ```powershell
 # Terminal 1 – Backend (API FastAPI)
 .venv\Scripts\Activate.ps1
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
-# -> http://localhost:8000  (Swagger: http://localhost:8000/docs)
+uvicorn backend.main:app --reload --port 8000
+# -> http://127.0.0.1:8000 (so local: a rede entra pelo proxy do front, porta 5000)
+#    Swagger em /docs apenas com API_DOCS=true no .env
 
 # Terminal 2 – Frontend (dev server)
 npm --prefix .\frontend run dev
-# -> http://localhost:5173
+# -> http://localhost:5000 (porta do vite.config.js; publica na rede)
 ```
 
 ### Build do Frontend (producao)
@@ -150,35 +151,41 @@ npm --prefix .\frontend run build
 
 ## Credenciais
 
-Todos os usuarios sao criados automaticamente na primeira execucao (seed). Usuarios nao-admin usam senha temporaria e devem troca-la no primeiro login.
+Todos os usuarios sao criados automaticamente na primeira execucao (seed).
+**Nao existe senha padrao.** O `admin` usa a senha de `ADMIN_PASSWORD` no
+`.env`; se a variavel estiver vazia, o sistema gera uma aleatoria e a imprime
+no log do primeiro boot. Os demais usuarios do seed nascem com uma senha
+aleatoria que e descartada: o admin usa "Resetar Senha" na tela de usuarios
+e recebe uma temporaria, exibida uma unica vez, que o usuario e obrigado a
+trocar no primeiro acesso.
 
-| Usuario             | Senha      | Cargo       | Gerencia             | Supervisao               |
-| ------------------- | ---------- | ----------- | -------------------- | ------------------------- |
-| `admin`             | `admin123` | Admin       | —                    | —                         |
-| `Roberto Santos`    | `temp1234` | Gerente     | Fiscalizacao         | —                         |
-| `Helena Rodrigues`  | `temp1234` | Gerente     | Arrecadacao          | —                         |
-| `Sergio Barbosa`    | `temp1234` | Gerente     | Tributacao           | —                         |
-| `Patricia Oliveira` | `temp1234` | Supervisor  | Fiscalizacao         | Supervisao Fiscal A       |
-| `Joao Silva`        | `temp1234` | Supervisor  | Fiscalizacao         | Supervisao Fiscal B       |
-| `Maria Santos`      | `temp1234` | Supervisor  | Arrecadacao          | Supervisao Arrecadacao A  |
-| `Ricardo Pereira`   | `temp1234` | Supervisor  | Arrecadacao          | Supervisao Arrecadacao B  |
-| `Lucia Costa`       | `temp1234` | Supervisor  | Tributacao           | Supervisao Tributaria A   |
-| `Antonio Ferreira`  | `temp1234` | Supervisor  | Tributacao           | Supervisao Tributaria B   |
-| `Carlos Mendes`     | `temp1234` | Fiscal      | Fiscalizacao         | Supervisao Fiscal A       |
-| `Ana Ribeiro`       | `temp1234` | Fiscal      | Fiscalizacao         | Supervisao Fiscal A       |
-| `Pedro Nascimento`  | `temp1234` | Fiscal      | Fiscalizacao         | Supervisao Fiscal A       |
-| `Jose Almeida`      | `temp1234` | Fiscal      | Fiscalizacao         | Supervisao Fiscal B       |
-| `Fernanda Costa`    | `temp1234` | Fiscal      | Fiscalizacao         | Supervisao Fiscal B       |
-| `Marcos Silva`      | `temp1234` | Fiscal      | Arrecadacao          | Supervisao Arrecadacao A  |
-| `Claudia Souza`     | `temp1234` | Fiscal      | Arrecadacao          | Supervisao Arrecadacao A  |
-| `Rafael Lima`       | `temp1234` | Fiscal      | Arrecadacao          | Supervisao Arrecadacao A  |
-| `Juliana Martins`   | `temp1234` | Fiscal      | Arrecadacao          | Supervisao Arrecadacao B  |
-| `Bruno Araujo`      | `temp1234` | Fiscal      | Arrecadacao          | Supervisao Arrecadacao B  |
-| `Tatiana Gomes`     | `temp1234` | Fiscal      | Tributacao           | Supervisao Tributaria A   |
-| `Diego Cardoso`     | `temp1234` | Fiscal      | Tributacao           | Supervisao Tributaria A   |
-| `Vanessa Rocha`     | `temp1234` | Fiscal      | Tributacao           | Supervisao Tributaria A   |
-| `Leandro Pinto`     | `temp1234` | Fiscal      | Tributacao           | Supervisao Tributaria B   |
-| `Camila Teixeira`   | `temp1234` | Fiscal      | Tributacao           | Supervisao Tributaria B   |
+| Usuario | Cargo | Gerencia | Supervisao |
+| ------------------- | ----------- | -------------------- | ------------------------- |
+| `admin` | Admin | — | — |
+| `Roberto Santos` | Gerente | Fiscalizacao | — |
+| `Helena Rodrigues` | Gerente | Arrecadacao | — |
+| `Sergio Barbosa` | Gerente | Tributacao | — |
+| `Patricia Oliveira` | Supervisor | Fiscalizacao | Supervisao Fiscal A |
+| `Joao Silva` | Supervisor | Fiscalizacao | Supervisao Fiscal B |
+| `Maria Santos` | Supervisor | Arrecadacao | Supervisao Arrecadacao A |
+| `Ricardo Pereira` | Supervisor | Arrecadacao | Supervisao Arrecadacao B |
+| `Lucia Costa` | Supervisor | Tributacao | Supervisao Tributaria A |
+| `Antonio Ferreira` | Supervisor | Tributacao | Supervisao Tributaria B |
+| `Carlos Mendes` | Fiscal | Fiscalizacao | Supervisao Fiscal A |
+| `Ana Ribeiro` | Fiscal | Fiscalizacao | Supervisao Fiscal A |
+| `Pedro Nascimento` | Fiscal | Fiscalizacao | Supervisao Fiscal A |
+| `Jose Almeida` | Fiscal | Fiscalizacao | Supervisao Fiscal B |
+| `Fernanda Costa` | Fiscal | Fiscalizacao | Supervisao Fiscal B |
+| `Marcos Silva` | Fiscal | Arrecadacao | Supervisao Arrecadacao A |
+| `Claudia Souza` | Fiscal | Arrecadacao | Supervisao Arrecadacao A |
+| `Rafael Lima` | Fiscal | Arrecadacao | Supervisao Arrecadacao A |
+| `Juliana Martins` | Fiscal | Arrecadacao | Supervisao Arrecadacao B |
+| `Bruno Araujo` | Fiscal | Arrecadacao | Supervisao Arrecadacao B |
+| `Tatiana Gomes` | Fiscal | Tributacao | Supervisao Tributaria A |
+| `Diego Cardoso` | Fiscal | Tributacao | Supervisao Tributaria A |
+| `Vanessa Rocha` | Fiscal | Tributacao | Supervisao Tributaria A |
+| `Leandro Pinto` | Fiscal | Tributacao | Supervisao Tributaria B |
+| `Camila Teixeira` | Fiscal | Tributacao | Supervisao Tributaria B |
 
 > **Total:** 1 admin + 3 gerentes + 6 supervisores + 15 fiscais = **25 usuarios**
 
@@ -407,9 +414,8 @@ sistema_sefaz/
 |   |       |-- UsuariosAdmin.jsx   # CRUD de usuarios com cascata
 |   |       |-- RelatoriosPanel.jsx  # Gerador de relatorios CSV e PDF com filtros
 |   |       +-- ConfirmModal.jsx    # Modal de confirmacao reutilizavel
-|   |-- public/
-|   |   +-- assets/app.js           # Bundle gerado pelo esbuild
-|   |-- package.json                # react, chart.js, vite, esbuild
+|   |-- public/                     # logo e imagens estaticas
+|   |-- package.json                # react, chart.js, vite
 |   +-- vite.config.js
 |-- tests/                          # 329 testes (unitarios + integracao)
 |   |-- test_auth.py                # Hash, tokens, login, registro, troca de senha (18 testes)
@@ -886,12 +892,16 @@ Todas as variaveis ficam no arquivo `.env` (copiado de `.env.example`):
 | -------------------- | -------------------------------------- | -------------------------- |
 | `APP_TITLE`          | Titulo da aplicacao                    | `Sistema Sefaz`            |
 | `LOG_LEVEL`          | Nivel de log (DEBUG/INFO/WARNING)      | `INFO`                     |
-| `DEFAULT_PASSWORD`   | Senha temporaria para novos usuarios   | `temp1234`                 |
 | `CORS_ORIGINS`       | Origens permitidas (separadas por `,`) | `http://localhost:5173`    |
 | `ATF_BASE_URL`       | URL base da API ATF (vazio = usa MOCK). Ver [Ambientes](#ambientes--leia-antes-de-trocar-a-url) antes de trocar | `""` (vazio)               |
 | `ATF_DETALHE_BASE_URL` | URL so do servico de detalhe. Vazia = usa `ATF_BASE_URL` | `""` (vazio)             |
 | `ATF_EVENTOS_BASE_URL` | URL so do servico de eventos. Vazia = usa `ATF_BASE_URL` | `""` (vazio)             |
 | `ATF_CACHE_TTL`      | Segundos de cache das respostas do ATF (0 desliga) | `60`             |
+| `ATF_SSL_VERIFY`     | Verifica o certificado TLS do ATF (so desligue em ambiente controlado) | `true` |
+| `ADMIN_PASSWORD`     | Senha do `admin` no primeiro boot (vazia = aleatoria, impressa no log) | `""` (vazio) |
+| `API_DOCS`           | Liga `/docs`, `/redoc` e `/openapi.json` (so em desenvolvimento) | `false` |
+| `WORKER_THREADS`     | Threads dos endpoints sincronos (cada chamada ao ATF ocupa uma por ate 60 s) | `100` |
+| `PBKDF2_ITERATIONS`  | Iteracoes do hash de senha; hashes antigos sao refeitos no login | `600000` |
 | `INFORMIX_SERVER`    | Servidor Informix (legado)             | (vazio = nao usa Informix) |
 | `INFORMIX_DATABASE`  | Nome do banco Informix                 | —                          |
 | `INFORMIX_HOST`      | Host do servidor Informix              | —                          |
@@ -1127,15 +1137,15 @@ a descricao na mesclagem — por isso o detalhe usa `status_codigo`.
 Remove-Item backend\app.db
 
 # Ver portas em uso
-Get-NetTCPConnection -LocalPort 8000,5173 -ErrorAction SilentlyContinue
+Get-NetTCPConnection -LocalPort 8000,5000 -ErrorAction SilentlyContinue
 
-# Rebuild do frontend
-cd frontend; npx esbuild src/main.jsx --bundle --outfile=public/assets/app.js --loader:.jsx=jsx --loader:.css=css
+# Build do frontend (gera frontend/dist, servido por `npm run preview`)
+npm --prefix .\frontend run build
 
 # Rodar testes com output detalhado
 python -m pytest tests/ -v --tb=short
 
-# Ver Swagger da API
+# Ver Swagger da API (exige API_DOCS=true no .env; fica desligado por padrao)
 # Abra http://localhost:8000/docs no navegador
 ```
 
@@ -1147,11 +1157,11 @@ Para deploy em producao, considerar:
 | ----------------------- | -------------------------- | ------------------------------- |
 | Banco de usuarios       | SQLite (`app.db`)          | PostgreSQL ou MySQL             |
 | Tokens de sessao        | UUID em memoria (dict)     | JWT + Redis                     |
-| Hash de senha           | PBKDF2 (120k iteracoes)   | Argon2id                        |
-| Frontend                | esbuild dev                | Build otimizado + CDN           |
+| Hash de senha           | PBKDF2 (600k iteracoes, rehash no login) | Argon2id         |
+| Frontend                | vite (dev ou preview)      | Build otimizado + CDN           |
 | CORS                    | `localhost:5173`           | Dominio real                    |
 | HTTPS                   | Nao                        | Certificado TLS obrigatorio     |
-| Rate limiting           | Nao                        | Middleware ou WAF               |
+| Rate limiting           | So no login e troca de senha | Middleware ou WAF             |
 | Monitoramento           | Logs (stdout)              | Sentry, Datadog, etc.           |
 | Backup de dados         | Nao                        | Rotina automatizada             |
 | App.jsx                 | 245 linhas (decomposto)    | 14 componentes separados (OK)   |

@@ -40,6 +40,12 @@ LOGIN_MAX_FALHAS_USUARIO: int = int(os.getenv("LOGIN_MAX_FALHAS_USUARIO", "5"))
 LOGIN_MAX_FALHAS_IP: int = int(os.getenv("LOGIN_MAX_FALHAS_IP", "20"))
 LOGIN_BLOQUEIO_MINUTOS: int = int(os.getenv("LOGIN_BLOQUEIO_MINUTOS", "15"))
 
+# Iteracoes do PBKDF2-HMAC-SHA256 dos hashes de senha. 600 mil e a
+# recomendacao atual da OWASP para SHA-256. Hashes antigos (120 mil, sem
+# prefixo) continuam validos e sao refeitos no primeiro login. Os testes
+# baixam este numero pelo ambiente para nao gastar minutos em hashing.
+PBKDF2_ITERATIONS: int = int(os.getenv("PBKDF2_ITERATIONS", "600000"))
+
 # ─── ATF API ────────────────────────────────────────────────────
 # URL base do servico ATF. Quando vazia, o sistema usa dados MOCK.
 # Exemplo: https://<host-do-atf>
@@ -102,6 +108,20 @@ ATF_SSL_VERIFY: bool = os.getenv("ATF_SSL_VERIFY", "true").strip().lower() not i
 # a lista inteira e nao pagina, entao sem cache cada troca de pagina ou de
 # ordenacao refaz a consulta completa. 0 desliga o cache.
 ATF_CACHE_TTL: float = float(os.getenv("ATF_CACHE_TTL", "60"))
+
+# ─── API ────────────────────────────────────────────────────────
+
+# Documentacao interativa (/docs, /redoc, /openapi.json). Desligada por
+# padrao: descreve a API inteira para quem nem fez login, e o proxy do
+# front a publica na rede. Ligue no .env de desenvolvimento.
+API_DOCS: bool = os.getenv("API_DOCS", "false").strip().lower() in (
+    "true", "1", "sim", "s", "yes", "on",
+)
+
+# Threads para os endpoints sincronos. Cada chamada ao ATF ocupa uma por
+# ate 60 s; com o padrao do AnyIO (40 para o processo inteiro) bastam 40
+# consultas lentas para o login parar de responder junto.
+WORKER_THREADS: int = int(os.getenv("WORKER_THREADS", "100"))
 
 # ─── CORS ───────────────────────────────────────────────────────
 

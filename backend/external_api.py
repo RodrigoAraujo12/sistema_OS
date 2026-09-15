@@ -1383,6 +1383,9 @@ class _CacheATF:
         self._max = max_entradas
         self._dados: dict[str, tuple[float, list[dict[str, Any]]]] = {}
         self._lock = Lock()
+        # Uma trava por chave em consulta: quem chega enquanto a chamada
+        # ao ATF esta no ar espera por ela em vez de disparar outra.
+        self._em_andamento: dict[str, Lock] = {}
 
     def get(self, chave: str) -> list[dict[str, Any]] | None:
         if self._ttl <= 0:
@@ -1412,6 +1415,59 @@ class _CacheATF:
                 del self._dados[min(self._dados, key=lambda k: self._dados[k][0])]
             self._dados[chave] = (agora, [dict(o) for o in ordens])
 
+    def obter_ou_calcular(
+        self, chave: str, calcular: Callable[[], list[dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        """
+        Devolve o que esta em cache ou calcula UMA vez por chave.
+
+        Quando o TTL vence com varios usuarios pesquisando ao mesmo tempo,
+        cada um dispararia a mesma consulta de 5 a 24 s ao ATF. Aqui o
+        primeiro faz a chamada e os demais esperam por ela ("single
+        flight"). Se a chamada falhar, nada e guardado e o proximo tenta
+        de novo. Com o cache desligado (TTL 0) cada chamada segue sozinha.
+        """
+        em_cache = self.get(chave)
+        if em_cache is not None:
+            return em_cache
+        if self._ttl <= 0:
+            return calcular()
+        with self._lock:
+            trava = self._em_andamento.setdefault(chave, Lock())
+        with trava:
+            # Quem esperou a trava encontra a resposta que o primeiro guardou.
+            em_cache = self.get(chave)
+            if em_cache is not None:
+                return em_cache
+            try:
+                resultado = calcular()
+                self.set(chave, resultado)
+            finally:
+                with self._lock:
+                    self._em_andamento.pop(chave, None)
+        return resultado
+
+    def procurar_os(self, numero_os: str) -> dict[str, Any] | None:
+        """
+        Procura uma OS pelo numero em TODAS as listas guardadas.
+
+        A linha de uma OS e a mesma em qualquer resposta da listagem, seja
+        qual for o filtro que a trouxe. Se o usuario acabou de listar, a
+        OS que ele clicou esta aqui e dispensa outra ida ao ATF, que tem
+        piso de ~5 s por chamada. Devolve uma copia rasa, ou None.
+        """
+        if self._ttl <= 0:
+            return None
+        agora = monotonic()
+        with self._lock:
+            for gravado_em, ordens in self._dados.values():
+                if agora - gravado_em > self._ttl:
+                    continue
+                for o in ordens:
+                    if o.get("numero_os") == numero_os:
+                        return dict(o)
+        return None
+
     def limpar(self) -> None:
         with self._lock:
             self._dados.clear()
@@ -1427,15 +1483,21 @@ _cache_atf = _CacheATF(ATF_CACHE_TTL)
 # hierarquia e aplicada depois, por requisicao, em main.py.
 _cache_detalhe_atf = _CacheATF(ATF_CACHE_TTL)
 
+# Cache dos eventos em lote, separado da listagem: a busca por numero de
+# OS (procurar_os) varre so as listas de OS, e um evento tambem carrega
+# numero_os — misturados, um evento seria confundido com a linha da OS.
+_cache_eventos_atf = _CacheATF(ATF_CACHE_TTL)
+
 
 def limpar_cache_atf() -> None:
     """
-    Descarta os caches do ATF (listagem e detalhe).
+    Descarta os caches do ATF (listagem, detalhe e eventos).
 
     Usado pelos testes e util para depuracao.
     """
     _cache_atf.limpar()
     _cache_detalhe_atf.limpar()
+    _cache_eventos_atf.limpar()
 
 
 def _data_para_atf(data_iso: str) -> str:
@@ -1886,36 +1948,33 @@ def _chamar_atf_https(
         data_encerramento_fim=data_encerramento_fim,
     )
     chave = f"{url}|{parametros}"
-    em_cache = _cache_atf.get(chave)
-    if em_cache is not None:
-        logger.debug("Cache ATF: reaproveitando %d OS para %s", len(em_cache), parametros)
-        return em_cache
 
-    envelope = _montar_envelope_soap(parametros)
-
-    try:
-        resp = requests.post(
-            url,
-            data=envelope.encode("utf-8"),
-            headers={"Content-Type": "text/xml; charset=utf-8"},
-            timeout=60,
-            verify=config.ATF_SSL_VERIFY,
-        )
-        falha = _erro_soap(resp)
-        if falha:
-            raise ValueError(f"ATF: {falha}")
-        resp.raise_for_status()
-        ordens = _parse_resposta_soap(resp.text)
-    except Exception:
-        logger.exception("Erro ao chamar API ATF em %s", url)
-        raise
+    def _consultar() -> list[dict[str, Any]]:
+        envelope = _montar_envelope_soap(parametros)
+        try:
+            resp = requests.post(
+                url,
+                data=envelope.encode("utf-8"),
+                headers={"Content-Type": "text/xml; charset=utf-8"},
+                timeout=60,
+                verify=config.ATF_SSL_VERIFY,
+            )
+            falha = _erro_soap(resp)
+            if falha:
+                raise ValueError(f"ATF: {falha}")
+            resp.raise_for_status()
+            ordens = _parse_resposta_soap(resp.text)
+        except Exception:
+            logger.exception("Erro ao chamar API ATF em %s", url)
+            raise
+        logger.debug("ATF: %d OS recebidas para %s", len(ordens), parametros)
+        return ordens
 
     # So o sucesso vai para o cache: erro de negocio do ATF (ValueError) e
     # falha de rede sobem sem serem guardados, para nao repetir a mesma
-    # resposta ruim durante todo o TTL.
-    _cache_atf.set(chave, ordens)
-    logger.debug("Cache ATF: %d OS guardadas para %s", len(ordens), parametros)
-    return ordens
+    # resposta ruim durante todo o TTL. Chamadas simultaneas com os mesmos
+    # parametros esperam a primeira em vez de repeti-la (ver _CacheATF).
+    return _cache_atf.obter_ou_calcular(chave, _consultar)
 
 
 # ─── Detalhe da OS (doc do detalhe) ─────────────────────────────────
@@ -2360,37 +2419,34 @@ def _chamar_detalhe_atf_https(base_url: str, numero_os: str) -> dict[str, Any] |
     url = base if base.endswith("OrdemServico") else f"{base}{_atf_ws_path()}"
 
     chave = f"{url}|detalhe|{numero_os}"
-    em_cache = _cache_detalhe_atf.get(chave)
-    if em_cache is not None:
-        logger.debug("Cache ATF: reaproveitando detalhe da OS %s", numero_os)
-        return em_cache[0] if em_cache else None
 
-    envelope = _montar_envelope_detalhe_soap(numero_os)
+    def _consultar() -> list[dict[str, Any]]:
+        envelope = _montar_envelope_detalhe_soap(numero_os)
+        try:
+            resp = requests.post(
+                url,
+                data=envelope.encode("utf-8"),
+                headers={"Content-Type": "text/xml; charset=utf-8"},
+                timeout=60,
+                verify=config.ATF_SSL_VERIFY,
+            )
+            # O SOAP Fault chega com HTTP 500: le a mensagem antes de tratar
+            # como erro de transporte, senao ela se perde.
+            falha = _erro_soap(resp)
+            if falha:
+                raise ValueError(f"ATF: {falha}")
+            resp.raise_for_status()
+            detalhe = _parse_detalhe_soap(resp.text)
+        except Exception:
+            logger.exception("Erro ao detalhar OS %s na API ATF em %s", numero_os, url)
+            raise
+        # "OS nao encontrada" tambem vai para o cache (como lista vazia): e
+        # uma resposta valida do servico, e nao adianta reperguntar em
+        # seguida. Erro de negocio e falha de rede sobem sem ser guardados.
+        return [detalhe] if detalhe else []
 
-    try:
-        resp = requests.post(
-            url,
-            data=envelope.encode("utf-8"),
-            headers={"Content-Type": "text/xml; charset=utf-8"},
-            timeout=60,
-            verify=config.ATF_SSL_VERIFY,
-        )
-        # O SOAP Fault chega com HTTP 500: le a mensagem antes de tratar
-        # como erro de transporte, senao ela se perde.
-        falha = _erro_soap(resp)
-        if falha:
-            raise ValueError(f"ATF: {falha}")
-        resp.raise_for_status()
-        detalhe = _parse_detalhe_soap(resp.text)
-    except Exception:
-        logger.exception("Erro ao detalhar OS %s na API ATF em %s", numero_os, url)
-        raise
-
-    # "OS nao encontrada" tambem vai para o cache (como lista vazia): e
-    # uma resposta valida do servico, e nao adianta reperguntar em
-    # seguida. Erro de negocio e falha de rede sobem sem ser guardados.
-    _cache_detalhe_atf.set(chave, [detalhe] if detalhe else [])
-    return detalhe
+    lista = _cache_detalhe_atf.obter_ou_calcular(chave, _consultar)
+    return lista[0] if lista else None
 
 
 def url_base_detalhe_atf() -> str:
@@ -2607,6 +2663,29 @@ def listar_ordens_atf(
     medias = _calcular_medias_modelo_motivo(_MOCK_ATF_ORDENS, hoje)
     _anexar_campos_calculados(resultado["ordens"], medias, hoje)
     return resultado
+
+
+def buscar_os_em_cache(numero_os: str) -> dict[str, Any] | None:
+    """
+    Uma OS pelo numero, reaproveitando as listagens que estao em cache.
+
+    O painel abre a OS logo depois de lista-la, e a lista inteira ficou
+    guardada em _cache_atf. Achar a linha ali poupa a consulta por numero
+    ao ATF, que custa o piso de ~5 s mesmo para um registro so. Devolve
+    a linha no mesmo formato de listar_ordens_atf (com dias_execucao
+    completado), ou None quando nao ha nada em cache — ai quem chama vai
+    ao servico como sempre foi.
+
+    A permissao NAO e decidida aqui: o cache guarda a resposta crua do
+    ATF, e quem chama aplica filtrar_atf_por_matriculas como faria com a
+    resposta do servico.
+    """
+    ordem = _cache_atf.procurar_os(numero_os)
+    if ordem is None:
+        return None
+    if ordem.get("dias_execucao") is None:
+        ordem["dias_execucao"] = _dias_execucao(ordem, datetime.now(timezone.utc).date())
+    return ordem
 
 
 def _calcular_evolucao_mensal(todas_os: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3222,35 +3301,31 @@ def _chamar_eventos_atf_https(
     # outro ambiente, os mesmos parametros devolvem outro conjunto, e uma
     # chave so de parametros serviria a resposta do ambiente errado.
     chave = f"EVT|{url}|{parametros}"
-    em_cache = _cache_atf.get(chave)
-    if em_cache is not None:
-        logger.debug("Cache ATF: reaproveitando %d eventos para %s", len(em_cache), parametros)
-        return em_cache
 
-    envelope = _montar_envelope_eventos_soap(parametros)
+    def _consultar() -> list[dict[str, Any]]:
+        envelope = _montar_envelope_eventos_soap(parametros)
+        try:
+            resp = requests.post(
+                url,
+                data=envelope.encode("utf-8"),
+                headers={"Content-Type": "text/xml; charset=utf-8"},
+                timeout=60,
+                verify=config.ATF_SSL_VERIFY,
+            )
+            falha = _erro_soap(resp)
+            if falha:
+                # Aqui o Fault mais provavel e a operacao nao existir no
+                # ambiente: em 02/09/2026 so desenvolvimento a publicava.
+                raise ValueError(f"ATF: {falha}")
+            resp.raise_for_status()
+            eventos = _parse_resposta_eventos_soap(resp.text)
+        except Exception:
+            logger.exception("Erro ao chamar servico de eventos do ATF em %s", url)
+            raise
+        logger.debug("ATF: %d eventos recebidos para %s", len(eventos), parametros)
+        return eventos
 
-    try:
-        resp = requests.post(
-            url,
-            data=envelope.encode("utf-8"),
-            headers={"Content-Type": "text/xml; charset=utf-8"},
-            timeout=60,
-            verify=config.ATF_SSL_VERIFY,
-        )
-        falha = _erro_soap(resp)
-        if falha:
-            # Aqui o Fault mais provavel e a operacao nao existir no
-            # ambiente: em 02/09/2026 so desenvolvimento a publicava.
-            raise ValueError(f"ATF: {falha}")
-        resp.raise_for_status()
-        eventos = _parse_resposta_eventos_soap(resp.text)
-    except Exception:
-        logger.exception("Erro ao chamar servico de eventos do ATF em %s", url)
-        raise
-
-    _cache_atf.set(chave, eventos)
-    logger.debug("Cache ATF: %d eventos guardados para %s", len(eventos), parametros)
-    return eventos
+    return _cache_eventos_atf.obter_ou_calcular(chave, _consultar)
 
 
 def url_base_eventos_atf() -> str:

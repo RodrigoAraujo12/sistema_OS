@@ -138,5 +138,99 @@ class TestAuthService(unittest.TestCase):
         self.mock_repo.set_must_change_password.assert_called_once_with(1, True)
 
 
+
+class TestHashVersionadoERehash(unittest.TestCase):
+    """
+    O hash carrega o numero de iteracoes; o formato antigo (so o hex,
+    120 mil iteracoes) continua valido e e refeito no login.
+    """
+
+    SALT = "abc123"
+    SENHA = "Senha@123"
+
+    def setUp(self):
+        self.hasher = PasswordHasher()
+
+    def _hash_legado(self, senha: str) -> str:
+        import hashlib
+
+        return hashlib.pbkdf2_hmac(
+            "sha256", senha.encode("utf-8"), self.SALT.encode("utf-8"), 120_000,
+        ).hex()
+
+    def test_hash_novo_carrega_algoritmo_e_iteracoes(self):
+        h, _ = self.hasher.hash_password(self.SENHA)
+        self.assertTrue(h.startswith(f"pbkdf2_sha256${self.hasher.PBKDF2_ITERATIONS}$"))
+        self.assertFalse(self.hasher.precisa_rehash(h))
+
+    def test_hash_legado_continua_valido_e_pede_rehash(self):
+        legado = self._hash_legado(self.SENHA)
+        self.assertTrue(self.hasher.verify_password(self.SENHA, legado, self.SALT))
+        self.assertFalse(self.hasher.verify_password("outra", legado, self.SALT))
+        self.assertTrue(self.hasher.precisa_rehash(legado))
+
+    def test_formato_desconhecido_nao_autentica(self):
+        self.assertFalse(self.hasher.verify_password("x", "md5$1$abc", "s"))
+        self.assertFalse(self.hasher.verify_password("x", "pbkdf2_sha256$abc$def", "s"))
+
+    def test_iteracoes_de_producao_verificam(self):
+        """Os testes rodam com PBKDF2_ITERATIONS baixo; este confere o valor real uma vez."""
+
+        class Producao(PasswordHasher):
+            PBKDF2_ITERATIONS = 600_000
+
+        hasher = Producao()
+        h, s = hasher.hash_password(self.SENHA)
+        self.assertTrue(h.startswith("pbkdf2_sha256$600000$"))
+        self.assertTrue(hasher.verify_password(self.SENHA, h, s))
+
+    def test_login_refaz_hash_legado(self):
+        repo = MagicMock()
+        repo.get_user_by_username.return_value = {
+            "id": 7, "username": "u", "password_hash": self._hash_legado(self.SENHA),
+            "salt": self.SALT, "role": "fiscal",
+        }
+        service = AuthService(repo, self.hasher, TokenStore())
+
+        self.assertIsNone(service.authenticate_user("u", "errada"))
+        repo.update_password.assert_not_called()
+
+        user = service.authenticate_user("u", self.SENHA)
+        self.assertIsNotNone(user)
+        repo.update_password.assert_called_once()
+        user_id, novo_hash, novo_salt = repo.update_password.call_args[0]
+        self.assertEqual(user_id, 7)
+        self.assertTrue(self.hasher.verify_password(self.SENHA, novo_hash, novo_salt))
+        self.assertFalse(self.hasher.precisa_rehash(novo_hash))
+
+    def test_usuario_inexistente_nao_devolve_na_hora(self):
+        """Mesmo custo de PBKDF2 para usuario inexistente: o tempo nao entrega logins."""
+        repo = MagicMock()
+        repo.get_user_by_username.return_value = None
+        hasher = MagicMock(wraps=self.hasher)
+        service = AuthService(repo, hasher, TokenStore())
+        self.assertIsNone(service.authenticate_user("fantasma", "x"))
+        hasher.gastar_tempo_de_verificacao.assert_called_once()
+
+
+class TestLimitadorLoginTeto(unittest.TestCase):
+    """O contador de falhas nao cresce sem limite com usernames inventados."""
+
+    def test_respeita_o_teto_e_preserva_bloqueio_em_vigor(self):
+        from backend.auth import LimitadorLogin
+
+        lim = LimitadorLogin(max_usuario=3, max_ip=100, bloqueio_segundos=900, max_entradas=50)
+        for _ in range(3):
+            lim.registrar_falha("alvo", None)
+        self.assertGreater(lim.segundos_de_bloqueio("alvo", None), 0)
+
+        for i in range(500):
+            lim.registrar_falha(f"fantasma{i}", None)
+
+        self.assertLessEqual(len(lim._falhas), 50)
+        # O bloqueio real foi a ultima coisa a ceder lugar: continua de pe
+        self.assertGreater(lim.segundos_de_bloqueio("alvo", None), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

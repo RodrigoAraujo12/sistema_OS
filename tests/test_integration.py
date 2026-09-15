@@ -82,6 +82,11 @@ class IntegrationTestBase(unittest.TestCase):
         self.client = _create_app(self.db_path)
         # Entra no context manager do TestClient para disparar o lifespan (seed)
         self.client.__enter__()
+        # O limitador de login e global ao modulo e conta por IP: sem zerar
+        # aqui, as falhas de um teste bloqueariam o login do seguinte.
+        import backend.main as main_module
+
+        main_module.limitador_login.limpar()
 
     def tearDown(self):
         self.client.__exit__(None, None, None)
@@ -1968,6 +1973,50 @@ class TestDashboardEventosEndpoint(IntegrationTestBase):
         self.assertIn("outro_ambiente", corpo)
         # Sem ATF configurado (MOCK), nao ha dois ambientes para divergir.
         self.assertFalse(corpo["outro_ambiente"])
+
+
+
+class TestEndurecimentoHTTP(IntegrationTestBase):
+    """Documentacao fora do ar por padrao, cabecalhos de seguranca e limite na troca de senha."""
+
+    def test_docs_desligada_por_padrao(self):
+        self.assertEqual(self.client.get("/docs").status_code, 404)
+        self.assertEqual(self.client.get("/openapi.json").status_code, 404)
+
+    def test_cabecalhos_de_seguranca_em_toda_resposta(self):
+        r = self.client.get("/alertas", headers=self._admin_header())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(r.headers["X-Frame-Options"], "DENY")
+        self.assertEqual(r.headers["Referrer-Policy"], "no-referrer")
+        self.assertEqual(r.headers["Cache-Control"], "no-store")
+        # Vale tambem para erro: e o middleware, nao o endpoint
+        r = self.client.get("/alertas")
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.headers["X-Content-Type-Options"], "nosniff")
+
+    def test_troca_de_senha_bloqueia_apos_falhas_seguidas(self):
+        """
+        A senha atual e conferida em /auth/change-password: sem o limite,
+        um token roubado viraria uma porta para adivinha-la sem pressa.
+        """
+        cabecalho = self._admin_header()
+        payload = {"current_password": "errada", "new_password": "Nova@Senha123"}
+        for i in range(5):
+            r = self.client.post("/auth/change-password", json=payload, headers=cabecalho)
+            self.assertEqual(r.status_code, 400, f"tentativa {i + 1}")
+        r = self.client.post("/auth/change-password", json=payload, headers=cabecalho)
+        self.assertEqual(r.status_code, 429)
+        self.assertIn("Retry-After", r.headers)
+
+    def test_senha_nova_exige_oito_caracteres(self):
+        cabecalho = self._admin_header()
+        r = self.client.post(
+            "/auth/change-password",
+            json={"current_password": ADMIN_PASSWORD_TESTE, "new_password": "Ab1@567"},
+            headers=cabecalho,
+        )
+        self.assertEqual(r.status_code, 422)
 
 
 if __name__ == "__main__":

@@ -46,9 +46,18 @@ def _wsdl_declara_a_operacao(url: str) -> bool | None:
     """
     import requests
 
+    from .external_api import _atf_ws_path
+
+    # A base do .env pode ou nao trazer o caminho do servico — as tres
+    # chamadas do external_api resolvem isso do mesmo jeito, e aqui tem de
+    # ser igual. Sem isto, uma base so com o host lia o ?wsdl da RAIZ e o
+    # diagnostico acusava "nao implantado" num ambiente que responde.
+    base = url.rstrip("/")
+    alvo = base if base.endswith("OrdemServico") else f"{base}{_atf_ws_path()}"
+
     try:
         resp = requests.get(
-            f"{url.rstrip('/')}?wsdl", timeout=30, verify=config.ATF_SSL_VERIFY,
+            f"{alvo}?wsdl", timeout=30, verify=config.ATF_SSL_VERIFY,
         )
         resp.raise_for_status()
     except Exception as e:

@@ -160,14 +160,14 @@ class UserCreatedResponse(UserResponse):
 class PasswordChangeRequest(BaseModel):
     """Payload para troca de senha (usuario autenticado)."""
     current_password: str
-    new_password: str = Field(min_length=6)
+    new_password: str = Field(min_length=8)
 
     @field_validator("new_password")
     @classmethod
     def validate_password_strength(cls, v: str) -> str:
         errors: list[str] = []
-        if len(v) < 6:
-            errors.append("mínimo 6 caracteres")
+        if len(v) < 8:
+            errors.append("mínimo 8 caracteres")
         if not any(c.isupper() for c in v):
             errors.append("pelo menos 1 letra maiúscula")
         if not any(c.islower() for c in v):

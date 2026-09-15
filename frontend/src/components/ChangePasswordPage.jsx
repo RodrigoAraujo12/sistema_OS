@@ -15,7 +15,7 @@ import React, { useState, useMemo } from "react";
 import apiClient from "../api.js";
 
 const PASSWORD_RULES = [
-  { key: "length", label: "Mínimo 6 caracteres", test: (v) => v.length >= 6 },
+  { key: "length", label: "Mínimo 8 caracteres", test: (v) => v.length >= 8 },
   { key: "upper", label: "Letra maiúscula (A-Z)", test: (v) => /[A-Z]/.test(v) },
   { key: "lower", label: "Letra minúscula (a-z)", test: (v) => /[a-z]/.test(v) },
   { key: "digit", label: "Número (0-9)", test: (v) => /\d/.test(v) },

@@ -45,6 +45,10 @@ class Database:
         """
         conn = sqlite3.connect(self._path)
         conn.row_factory = sqlite3.Row
+        # Sem este PRAGMA o SQLite ignora as FOREIGN KEY declaradas no
+        # schema: uma supervisao podia apontar para gerencia inexistente.
+        # E por conexao, entao tem que ser aqui e nao no init_schema.
+        conn.execute("PRAGMA foreign_keys = ON")
         try:
             with conn:
                 yield conn
@@ -118,6 +122,21 @@ class Database:
                 ("equipe_codigo", "INTEGER"),
             ):
                 self._ensure_column(conn, "users", coluna, definicao)
+            # A tabela nova ja nasce com UNIQUE em matricula; em banco
+            # migrado a coluna entrou por ALTER TABLE, que nao aceita
+            # UNIQUE. Sem o indice, duas contas com a mesma matricula
+            # passariam a enxergar as OS uma da outra. NULL nao conta:
+            # o admin e os usuarios sem matricula continuam convivendo.
+            try:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_matricula "
+                    "ON users (matricula)"
+                )
+            except sqlite3.IntegrityError:
+                logger.warning(
+                    "users.matricula tem valores repetidos; indice unico NAO criado. "
+                    "Corrija os cadastros duplicados na tela de usuarios."
+                )
         logger.info("Schema do banco inicializado com sucesso.")
 
     @staticmethod

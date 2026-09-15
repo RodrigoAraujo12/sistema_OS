@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
+import anyio
 import requests
 from fpdf import FPDF
 from sqlite3 import IntegrityError
@@ -32,7 +33,14 @@ from .auth import (
     TokenStore,
     gerar_senha_temporaria,
 )
-from .config import ADMIN_PASSWORD, APP_TITLE, CORS_ORIGINS, setup_logging
+from .config import (
+    ADMIN_PASSWORD,
+    API_DOCS,
+    APP_TITLE,
+    CORS_ORIGINS,
+    WORKER_THREADS,
+    setup_logging,
+)
 from .db import (
     DB_PATH,
     Database,
@@ -42,6 +50,7 @@ from .db import (
     UserRepository,
 )
 from .external_api import (
+    buscar_os_em_cache,
     detalhar_ordem_atf,
     detalhe_em_outro_ambiente,
     eventos_em_outro_ambiente,
@@ -90,11 +99,25 @@ logger = logging.getLogger("sefaz.main")
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Inicializa o banco de dados e popula dados de exemplo no primeiro uso."""
+    # Endpoints `def` rodam no threadpool do AnyIO, que por padrao tem 40
+    # vagas para o processo inteiro. Cada consulta ao ATF ocupa uma por
+    # ate 60 s, entao 40 consultas lentas travariam ate o login. O limite
+    # e do AnyIO, nao do uvicorn, por isso e ajustado aqui.
+    anyio.to_thread.current_default_thread_limiter().total_tokens = WORKER_THREADS
     _seed_database()
     yield
 
 
-app = FastAPI(title=APP_TITLE, lifespan=lifespan)
+# A documentacao interativa descreve a API inteira para quem nem fez
+# login, e o proxy do front a publica na rede: fica desligada a menos que
+# API_DOCS esteja ligada no .env (ambiente de desenvolvimento).
+app = FastAPI(
+    title=APP_TITLE,
+    lifespan=lifespan,
+    docs_url="/docs" if API_DOCS else None,
+    redoc_url="/redoc" if API_DOCS else None,
+    openapi_url="/openapi.json" if API_DOCS else None,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -103,6 +126,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _cabecalhos_de_seguranca(request: Request, call_next):
+    """
+    Cabecalhos que nao custam nada e fecham portas comuns: o navegador
+    nao adivinha tipo de conteudo (nosniff), a API nao entra em iframe de
+    outro site, o Referer nao leva numero de OS para fora, e resposta de
+    API — que carrega dado de contribuinte — nao fica em cache.
+    """
+    resposta = await call_next(request)
+    resposta.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resposta.headers.setdefault("X-Frame-Options", "DENY")
+    resposta.headers.setdefault("Referrer-Policy", "no-referrer")
+    resposta.headers.setdefault("Cache-Control", "no-store")
+    return resposta
 
 # ─── Repositorios e servicos (instanciados uma vez) ────────────
 
@@ -271,6 +310,41 @@ def require_admin(user: dict[str, Any]) -> None:
 
 # ─── Auth ───────────────────────────────────────────────────────
 
+def _ip_do_cliente(request: Request) -> str | None:
+    """
+    IP de quem chamou.
+
+    Atras do proxy do Vite todo mundo chegaria como 127.0.0.1, e o limite
+    por IP contaria as falhas do predio inteiro numa conta so. O proxy
+    manda o IP real em X-Forwarded-For (xfwd em vite.config.js) e o
+    uvicorn, que confia nesse header apenas quando a conexao vem de
+    127.0.0.1, ja o coloca em request.client.
+
+    O proxy escuta em socket dual-stack e entrega IPv4 no formato mapeado
+    em IPv6 ("::ffff:10.1.2.3"); o prefixo sai para o log e o contador
+    ficarem legiveis.
+    """
+    host = request.client.host if request.client else None
+    if host and host.startswith("::ffff:"):
+        host = host[len("::ffff:"):]
+    return host
+
+
+def _conferir_bloqueio_login(username: str, ip: str | None) -> None:
+    """Levanta 429 se usuario ou IP estiverem bloqueados por falhas seguidas."""
+    espera = limitador_login.segundos_de_bloqueio(username, ip)
+    if not espera:
+        return
+    logger.warning(
+        "Login bloqueado por excesso de tentativas (usuario='%s', ip=%s).", username, ip,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=f"Muitas tentativas. Tente novamente em {espera // 60 + 1} minuto(s).",
+        headers={"Retry-After": str(espera)},
+    )
+
+
 @app.post("/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest, request: Request) -> LoginResponse:
     """
@@ -279,18 +353,8 @@ def login(payload: LoginRequest, request: Request) -> LoginResponse:
     O bloqueio por tentativas e conferido antes de verificar a senha: alem
     de conter forca bruta, evita que uma rajada gaste CPU com PBKDF2.
     """
-    ip = request.client.host if request.client else None
-    espera = limitador_login.segundos_de_bloqueio(payload.username, ip)
-    if espera:
-        logger.warning(
-            "Login bloqueado por excesso de tentativas (usuario='%s', ip=%s).",
-            payload.username, ip,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Muitas tentativas. Tente novamente em {espera // 60 + 1} minuto(s).",
-            headers={"Retry-After": str(espera)},
-        )
+    ip = _ip_do_cliente(request)
+    _conferir_bloqueio_login(payload.username, ip)
 
     user = auth_service.authenticate_user(payload.username, payload.password)
     if not user:
@@ -319,17 +383,27 @@ def login(payload: LoginRequest, request: Request) -> LoginResponse:
 
 @app.post("/auth/change-password")
 def change_password(
-    payload: PasswordChangeRequest, user: dict[str, Any] = Depends(get_current_user)
+    payload: PasswordChangeRequest,
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, str]:
     """
     Permite que o usuario autenticado troque sua propria senha.
 
     Unico endpoint em get_current_user em vez de get_active_user: quem tem
     must_change_password pendente precisa justamente chegar aqui.
+
+    Passa pelo mesmo limitador do login: a senha atual e conferida aqui,
+    e sem o limite um token roubado viraria uma porta para adivinha-la
+    sem pressa — cada palpite custando um PBKDF2 inteiro de CPU.
     """
+    ip = _ip_do_cliente(request)
+    _conferir_bloqueio_login(user["username"], ip)
     if not auth_service.authenticate_user(user["username"], payload.current_password):
+        limitador_login.registrar_falha(user["username"], ip)
         logger.info("Troca de senha falhou – senha atual incorreta (user=%s).", user["username"])
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Senha atual invalida")
+    limitador_login.registrar_sucesso(user["username"])
     auth_service.change_password(
         int(user["id"]), payload.new_password, manter_token=user.get("token_sessao"),
     )
@@ -724,16 +798,20 @@ def _buscar_os_atf(numero: str, user: dict[str, Any]) -> dict[str, Any]:
     proposito: assim da para distinguir "nao existe" (404) de "existe mas
     nao e sua" (403), o que uma busca ja filtrada tornaria indistinguivel.
     """
-    try:
-        resultado = listar_ordens_atf(numero_os=numero, pagina=1, limite=1)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    # A OS aberta quase sempre acabou de sair de uma listagem, que esta em
+    # cache: reaproveitar a linha poupa a ida ao ATF (piso de ~5 s).
+    ordem = buscar_os_em_cache(numero)
+    if ordem is None:
+        try:
+            resultado = listar_ordens_atf(numero_os=numero, pagina=1, limite=1)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    ordens = resultado.get("ordens", [])
-    if not ordens:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OS nao encontrada")
+        ordens = resultado.get("ordens", [])
+        if not ordens:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OS nao encontrada")
+        ordem = ordens[0]
 
-    ordem = ordens[0]
     if not filtrar_atf_por_matriculas([ordem], _matriculas_visiveis(user)):
         logger.warning(
             "Acesso negado a OS %s para '%s' (role=%s): fora da sua equipe.",

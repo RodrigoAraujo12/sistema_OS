@@ -27,6 +27,7 @@ from .config import (
     LOGIN_BLOQUEIO_MINUTOS,
     LOGIN_MAX_FALHAS_IP,
     LOGIN_MAX_FALHAS_USUARIO,
+    PBKDF2_ITERATIONS as _ITERACOES_PADRAO,
     SESSION_TTL_MINUTES,
 )
 from .db import UserRepository
@@ -49,23 +50,66 @@ def gerar_senha_temporaria() -> str:
 
 
 class PasswordHasher:
-    """Gera e verifica hashes de senha usando PBKDF2-HMAC-SHA256."""
+    """
+    Gera e verifica hashes de senha usando PBKDF2-HMAC-SHA256.
 
-    PBKDF2_ITERATIONS = 120_000
+    O hash vai para o banco como "pbkdf2_sha256$<iteracoes>$<hex>": cada
+    um carrega o proprio numero de iteracoes, entao subir o padrao nao
+    invalida senha nenhuma. Hashes do formato antigo (so o hex, com
+    120 mil iteracoes) continuam sendo verificados, e `precisa_rehash`
+    diz quando refazer — o AuthService faz isso no login, o unico momento
+    em que a senha esta em texto para ser rehasheada.
+    """
+
+    ALGORITMO = "pbkdf2_sha256"
+    PBKDF2_ITERATIONS = _ITERACOES_PADRAO
+    ITERACOES_LEGADO = 120_000
     SALT_BYTES = 16
+    # Salt fixo do hash descartado em gastar_tempo_de_verificacao.
+    _SALT_DUMMY = "0" * 32
+
+    def _digest(self, password: str, salt: str, iteracoes: int) -> str:
+        return hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt.encode("utf-8"), iteracoes,
+        ).hex()
 
     def hash_password(self, password: str, salt: str | None = None) -> tuple[str, str]:
-        """Retorna (hash_hex, salt_hex). Se salt nao for informado, gera um novo."""
+        """Retorna (hash, salt_hex). Se salt nao for informado, gera um novo."""
         salt_value = salt or secrets.token_hex(self.SALT_BYTES)
-        digest = hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), salt_value.encode("utf-8"), self.PBKDF2_ITERATIONS
-        )
-        return digest.hex(), salt_value
+        digest = self._digest(password, salt_value, self.PBKDF2_ITERATIONS)
+        return f"{self.ALGORITMO}${self.PBKDF2_ITERATIONS}${digest}", salt_value
+
+    def _decompor(self, password_hash: str) -> tuple[int, str] | None:
+        """(iteracoes, digest_hex) de um hash gravado; None se o formato for desconhecido."""
+        if "$" not in password_hash:
+            return self.ITERACOES_LEGADO, password_hash
+        partes = password_hash.split("$")
+        if len(partes) != 3 or partes[0] != self.ALGORITMO or not partes[1].isdigit():
+            return None
+        return int(partes[1]), partes[2]
 
     def verify_password(self, password: str, password_hash: str, salt: str) -> bool:
-        """Compara a senha fornecida com o hash armazenado de forma segura."""
-        check_hash, _ = self.hash_password(password, salt)
-        return secrets.compare_digest(check_hash, password_hash)
+        """Compara a senha fornecida com o hash armazenado em tempo constante."""
+        decomposto = self._decompor(password_hash)
+        if decomposto is None:
+            return False
+        iteracoes, esperado = decomposto
+        return secrets.compare_digest(self._digest(password, salt, iteracoes), esperado)
+
+    def precisa_rehash(self, password_hash: str) -> bool:
+        """Verdadeiro se o hash esta no formato antigo ou com outro numero de iteracoes."""
+        decomposto = self._decompor(password_hash)
+        return decomposto is None or decomposto[0] != self.PBKDF2_ITERATIONS
+
+    def gastar_tempo_de_verificacao(self) -> None:
+        """
+        Calcula um hash e o descarta.
+
+        Chamado quando o usuario nao existe: sem isto a resposta sairia
+        na hora, enquanto a de um usuario real gasta o PBKDF2 inteiro —
+        e a diferenca de tempo entregaria quais logins existem.
+        """
+        self._digest("", self._SALT_DUMMY, self.PBKDF2_ITERATIONS)
 
 
 class TokenStore:
@@ -145,9 +189,11 @@ class LimitadorLogin:
         max_usuario: int = LOGIN_MAX_FALHAS_USUARIO,
         max_ip: int = LOGIN_MAX_FALHAS_IP,
         bloqueio_segundos: float = LOGIN_BLOQUEIO_MINUTOS * 60,
+        max_entradas: int = 10_000,
     ) -> None:
         self._max = {"usuario": max_usuario, "ip": max_ip}
         self._bloqueio = bloqueio_segundos
+        self._max_entradas = max_entradas
         self._falhas: dict[tuple[str, str], tuple[int, float]] = {}
         self._lock = Lock()
 
@@ -179,6 +225,8 @@ class LimitadorLogin:
         """Soma uma falha ao usuario e ao IP, reiniciando a janela."""
         agora = monotonic()
         with self._lock:
+            if len(self._falhas) >= self._max_entradas:
+                self._podar(agora)
             for escopo, valor in (("usuario", usuario.lower()), ("ip", ip or "")):
                 if escopo == "ip" and not ip:
                     continue
@@ -195,6 +243,34 @@ class LimitadorLogin:
         """
         with self._lock:
             self._falhas.pop(("usuario", usuario.lower()), None)
+
+    def _podar(self, agora: float) -> None:
+        """
+        Mantem o dicionario abaixo do teto. Chamado com o lock adquirido.
+
+        Sem isto cada username inventado numa rajada viraria uma entrada
+        permanente, e a memoria cresceria ate o restart. Primeiro saem as
+        janelas vencidas; se ainda nao couber, saem as entradas mais
+        antigas que NAO estao bloqueando ninguem — um bloqueio em vigor e
+        a ultima coisa a ceder lugar.
+        """
+        for chave in [
+            k for k, (_, ultima) in self._falhas.items() if agora - ultima >= self._bloqueio
+        ]:
+            del self._falhas[chave]
+        excedente = len(self._falhas) - self._max_entradas + 1
+        if excedente <= 0:
+            return
+
+        def _bloqueada(item: tuple[tuple[str, str], tuple[int, float]]) -> bool:
+            (escopo, _), (contagem, _) = item
+            return contagem >= self._max[escopo]
+
+        candidatas = sorted(
+            self._falhas.items(), key=lambda item: (_bloqueada(item), item[1][1]),
+        )
+        for chave, _ in candidatas[:excedente]:
+            del self._falhas[chave]
 
     def limpar(self) -> None:
         with self._lock:
@@ -215,9 +291,19 @@ class AuthService:
         """Valida credenciais. Retorna os dados do usuario ou None."""
         user = self._user_repo.get_user_by_username(username)
         if not user:
+            # Mesmo custo de um usuario real, para o tempo de resposta nao
+            # dizer quais logins existem.
+            self._hasher.gastar_tempo_de_verificacao()
             return None
         if not self._hasher.verify_password(password, user["password_hash"], user["salt"]):
             return None
+        if self._hasher.precisa_rehash(user["password_hash"]):
+            # Unico momento em que a senha esta em texto: aproveita para
+            # trazer o hash ao formato e ao numero de iteracoes atuais.
+            novo_hash, novo_salt = self._hasher.hash_password(password)
+            self._user_repo.update_password(int(user["id"]), novo_hash, novo_salt)
+            user["password_hash"], user["salt"] = novo_hash, novo_salt
+            logger.info("Hash de senha atualizado no login (user_id=%s).", user["id"])
         return user
 
     def create_token(self, user_id: int) -> str:

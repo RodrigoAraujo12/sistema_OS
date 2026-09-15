@@ -1104,5 +1104,72 @@ class TestGerarDashboardOS(unittest.TestCase):
         self.assertEqual(resultado["por_mes"], [])
 
 
+
+class TestSingleFlightEBuscaEmCache(unittest.TestCase):
+    """
+    Chamadas simultaneas com os mesmos parametros vao UMA vez ao ATF, e a
+    OS que acabou de ser listada e encontrada pelo numero sem nova ida.
+    """
+
+    def setUp(self):
+        limpar_cache_atf()
+        self.addCleanup(limpar_cache_atf)
+
+    def test_chamadas_simultaneas_iguais_vao_uma_vez_ao_atf(self):
+        import threading
+        import time
+
+        from backend.external_api import _chamar_atf_https, buscar_os_em_cache
+
+        xml = _resposta_soap({"OS-1": "111"})
+        chamadas: list[int] = []
+
+        def post_lento(*args, **kwargs):
+            chamadas.append(1)
+            time.sleep(0.3)
+            resp = MagicMock()
+            resp.text = xml
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        resultados: list = []
+        with patch("requests.post", side_effect=post_lento):
+            threads = [
+                threading.Thread(
+                    target=lambda: resultados.append(
+                        _chamar_atf_https("https://atf.teste", numero_os="OS-1")
+                    )
+                )
+                for _ in range(5)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(len(chamadas), 1, "cinco threads, uma ida ao ATF")
+        self.assertEqual(len(resultados), 5)
+        self.assertTrue(all(r[0]["numero_os"] == "OS-1" for r in resultados))
+
+        # A OS listada e localizavel pelo numero sem nova chamada
+        with patch("requests.post") as post:
+            self.assertEqual(buscar_os_em_cache("OS-1")["numero_os"], "OS-1")
+            self.assertIsNone(buscar_os_em_cache("OS-9"))
+            post.assert_not_called()
+
+    def test_falha_nao_fica_presa_na_trava(self):
+        """Se a primeira chamada falhar, a seguinte tenta de novo (e nao espera para sempre)."""
+        from backend.external_api import _chamar_atf_https
+
+        ok = MagicMock()
+        ok.text = _resposta_soap({"OS-2": "222"})
+        ok.raise_for_status = MagicMock()
+        with patch("requests.post", side_effect=[ConnectionError("caiu"), ok]) as post:
+            with self.assertRaises(ConnectionError):
+                _chamar_atf_https("https://atf.teste", numero_os="OS-2")
+            self.assertEqual(_chamar_atf_https("https://atf.teste", numero_os="OS-2")[0]["numero_os"], "OS-2")
+            self.assertEqual(post.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -68,7 +68,7 @@ echo ""
 echo "┌──────────────────────────────────────────────────────────┐"
 echo "│  Backend:  http://localhost:8000                         │"
 echo "│  Docs:     http://localhost:8000/docs                    │"
-echo "│  Frontend: http://localhost:5173                         │"
+echo "│  Frontend: http://localhost:5000                         │"
 echo "└──────────────────────────────────────────────────────────┘"
 echo ""
 echo "💡 Pressione Ctrl+C para parar ambos os servidores"
@@ -108,9 +108,9 @@ echo ""
 # Aguardar mais um pouco e abrir navegador
 sleep 5
 if command -v xdg-open &> /dev/null; then
-    xdg-open http://localhost:5173
+    xdg-open http://localhost:5000
 elif command -v open &> /dev/null; then
-    open http://localhost:5173
+    open http://localhost:5000
 fi
 
 # Manter o script rodando

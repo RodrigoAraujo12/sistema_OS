@@ -70,7 +70,7 @@ echo.
 echo ┌──────────────────────────────────────────────────────────┐
 echo │  Backend:  http://localhost:8000                         │
 echo │  Docs:     http://localhost:8000/docs                    │
-echo │  Frontend: http://localhost:5173                         │
+echo │  Frontend: http://localhost:5000                         │
 echo └──────────────────────────────────────────────────────────┘
 echo.
 echo 💡 Pressione Ctrl+C em ambas as janelas para parar
@@ -98,7 +98,7 @@ timeout /t 3 /nobreak >nul
 
 echo Abrindo navegador...
 timeout /t 5 /nobreak >nul
-start http://localhost:5173
+start http://localhost:5000
 
 echo.
 echo Pressione qualquer tecla para fechar esta janela...
