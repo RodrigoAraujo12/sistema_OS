@@ -1456,6 +1456,95 @@ class TestVisibilidadePorEquipeFiscal(IntegrationTestBase):
         for o in r.json()["ordens"]:
             self.assertIn("23456", {f["matricula"] for f in o["fiscais"]})
 
+    # ── Chefia marcada na planilha (equipe_membros.supervisor) ──────────
+    # As matriculas 99xxx nao tem login nem lotacao no seed: so chegam ao
+    # conjunto visivel pela equipe. Assim o teste nao passa por acidente
+    # porque a pessoa ja era alcancavel pelo cadastro local.
+
+    def test_chefia_da_planilha_soma_as_duas_equipes(self):
+        """
+        Quem a planilha marca como chefe de duas equipes ve as duas, sem
+        `equipe_codigo` — que guarda um codigo so e o deixaria cego para
+        metade do que e dele.
+        """
+        import backend.main as main_module
+
+        main_module.equipe_repo.substituir_tudo(
+            [(910, "EQUIPE A"), (911, "EQUIPE B")],
+            [
+                (910, "23456", "PATRICIA"), (910, "34571", "FERNANDA"),
+                (910, "99001", "SEM LOGIN A"),
+                (911, "23456", "PATRICIA"), (911, "99002", "SEM LOGIN B"),
+            ],
+            {(910, "23456"), (911, "23456")},
+        )
+        patricia = main_module.user_repo.get_user_by_username("Patricia Oliveira")
+        self.assertIsNone(patricia["equipe_codigo"])
+
+        vistas = main_module._matriculas_visiveis(patricia)
+        self.assertTrue({"99001", "99002", "34571"} <= vistas)
+        # Com equipe, a supervisao local para de valer, como na amarracao manual
+        self.assertNotIn("34567", vistas)
+        self.assertIn("OS-2026-009", self._numeros_vistos("Patricia Oliveira"))
+
+    def test_chefia_da_planilha_e_amarracao_manual_se_somam(self):
+        import backend.main as main_module
+
+        main_module.equipe_repo.substituir_tudo(
+            [(913, "DA PLANILHA"), (914, "AMARRADA A MAO")],
+            [
+                (913, "23456", "PATRICIA"), (913, "99003", "SEM LOGIN C"),
+                (914, "99004", "SEM LOGIN D"),
+            ],
+            {(913, "23456")},
+        )
+        self._amarrar("Patricia Oliveira", 914)
+        patricia = main_module.user_repo.get_user_by_username("Patricia Oliveira")
+        vistas = main_module._matriculas_visiveis(patricia)
+        self.assertTrue({"99003", "99004"} <= vistas)
+
+    def test_gerente_soma_a_chefia_da_planilha(self):
+        """
+        Sem isso a hierarquia inverte: o supervisor veria, pela planilha,
+        OS que o proprio gerente dele nao ve.
+        """
+        import backend.main as main_module
+
+        main_module.equipe_repo.substituir_tudo(
+            [(915, "EQUIPE A"), (916, "EQUIPE B")],
+            [
+                (915, "23456", "PATRICIA"), (915, "99005", "SEM LOGIN E"),
+                (916, "23456", "PATRICIA"), (916, "99006", "SEM LOGIN F"),
+            ],
+            {(915, "23456"), (916, "23456")},
+        )
+        patricia = main_module.user_repo.get_user_by_username("Patricia Oliveira")
+        gerente = next(
+            u for u in main_module.user_repo.list_users(role="gerente")
+            if u["gerencia_id"] == patricia["gerencia_id"]
+        )
+        vistas = main_module._matriculas_visiveis(
+            main_module.user_repo.get_user_by_id(gerente["id"])
+        )
+        self.assertTrue({"99005", "99006"} <= vistas)
+
+    def test_fiscal_marcado_como_chefe_nao_ganha_acesso(self):
+        """
+        A marca so vale para quem e supervisor no cadastro. Promover e
+        decisao do admin (ou do `--amarrar-supervisores`), nao efeito
+        colateral de uma importacao.
+        """
+        import backend.main as main_module
+
+        main_module.equipe_repo.substituir_tudo(
+            [(917, "EQUIPE C")],
+            [(917, "34567", "CARLOS"), (917, "99007", "SEM LOGIN G")],
+            {(917, "34567")},
+        )
+        carlos = main_module.user_repo.get_user_by_username("Carlos Mendes")
+        self.assertEqual(carlos["role"], "fiscal")
+        self.assertEqual(main_module._matriculas_visiveis(carlos), {"34567"})
+
     def test_fiscal_ignora_a_equipe(self):
         """Equipe so vale para supervisor; fiscal continua vendo so as suas."""
         self._importar([(907, "EQUIPE GRANDE")], [(907, "34571", "FERNANDA")])

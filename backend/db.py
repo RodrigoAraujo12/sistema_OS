@@ -122,6 +122,14 @@ class Database:
                 ("equipe_codigo", "INTEGER"),
             ):
                 self._ensure_column(conn, "users", coluna, definicao)
+            # Quem chefia cada equipe so veio na planilha de 02/09/2026, e
+            # marcado com fundo amarelo em vez de coluna propria (ver
+            # importar_equipes). Aqui e coluna, nao tabela nova: chefiar e
+            # atributo do vinculo que ja existia, e a planilha marca a
+            # pessoa dentro do grupo, nunca fora dele.
+            self._ensure_column(
+                conn, "equipe_membros", "supervisor", "INTEGER NOT NULL DEFAULT 0"
+            )
             # A tabela nova ja nasce com UNIQUE em matricula; em banco
             # migrado a coluna entrou por ALTER TABLE, que nao aceita
             # UNIQUE. Sem o indice, duas contas com a mesma matricula
@@ -252,6 +260,50 @@ class UserRepository:
         """Busca usuario pelo id (inclui hash e salt)."""
         return self._get_user_by("u.id = ?", (user_id,))
 
+    def get_user_by_matricula(self, matricula: str) -> dict[str, Any] | None:
+        """Busca usuario pela matricula, a chave que vem da planilha da SEFAZ."""
+        return self._get_user_by("u.matricula = ?", (str(matricula),))
+
+    def amarrar_equipe_por_matricula(
+        self, matricula: str, equipe_codigo: int | None, promover: bool = False,
+    ) -> bool:
+        """
+        Amarra a equipe que a pessoa chefia ao usuario dela. True se mudou.
+
+        `promover` sobe o papel de fiscal para supervisor, porque a chefia
+        so tem efeito em `_matriculas_visiveis` para quem e supervisor:
+        amarrar sem promover nao da acesso nenhum. Gerente e admin nunca
+        sao rebaixados nem promovidos aqui — o papel deles vem do cadastro
+        local, que manda mais do que a planilha.
+
+        `equipe_codigo=None` promove sem tocar na coluna. E o caso de quem
+        chefia duas equipes: a coluna guarda um codigo so, e a chefia dele
+        ja vem inteira de `equipe_membros.supervisor`. Escrever None ali
+        apagaria uma amarracao que o admin tenha feito a mao.
+        """
+        usuario = self.get_user_by_matricula(matricula)
+        if usuario is None:
+            return False
+        papel = usuario["role"]
+        novo_papel = "supervisor" if promover and papel == "fiscal" else papel
+        muda_equipe = (
+            equipe_codigo is not None and usuario.get("equipe_codigo") != equipe_codigo
+        )
+        if not muda_equipe and novo_papel == papel:
+            return False
+        with self._db.connect() as conn:
+            if muda_equipe:
+                conn.execute(
+                    "UPDATE users SET equipe_codigo = ?, role = ? WHERE id = ?",
+                    (equipe_codigo, novo_papel, usuario["id"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE users SET role = ? WHERE id = ?",
+                    (novo_papel, usuario["id"]),
+                )
+        return True
+
     def get_matriculas_cadastradas(self) -> set[str]:
         """
         Matriculas que ja tem usuario, para a importacao em lote saber o
@@ -321,22 +373,33 @@ class UserRepository:
 
     def get_equipe_codigos_by_gerencia(self, gerencia_id: int) -> list[int]:
         """
-        Codigos das equipes fiscais amarradas aos supervisores da gerencia.
+        Codigos das equipes que os supervisores da gerencia chefiam.
 
         Existe para o gerente enxergar o mesmo que a soma dos seus
         supervisores: sem isso, um supervisor com equipe amarrada veria
         OS que o proprio gerente nao ve.
+
+        Soma as duas origens de chefia, na mesma ordem em que
+        `_matriculas_visiveis` as consulta: a marca da planilha
+        (`equipe_membros.supervisor`, que alcanca quem chefia mais de uma
+        equipe) e a amarracao manual em `users.equipe_codigo`.
         """
         with self._db.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT DISTINCT equipe_codigo FROM users
+                SELECT DISTINCT equipe_codigo AS codigo FROM users
                 WHERE role = 'supervisor' AND gerencia_id = ?
                   AND equipe_codigo IS NOT NULL
+                UNION
+                SELECT DISTINCT m.codigo_equipe AS codigo
+                FROM equipe_membros m
+                JOIN users u ON u.matricula = m.matricula
+                WHERE m.supervisor = 1
+                  AND u.role = 'supervisor' AND u.gerencia_id = ?
                 """,
-                (gerencia_id,),
+                (gerencia_id, gerencia_id),
             ).fetchall()
-        return [int(row["equipe_codigo"]) for row in rows]
+        return [int(row["codigo"]) for row in rows]
 
     def get_matriculas_by_gerencia(self, gerencia_id: int) -> list[str]:
         """Matriculas de todos os usuarios lotados na gerencia (todos os cargos)."""
@@ -495,7 +558,10 @@ class EquipeFiscalRepository:
         self._db = db
 
     def substituir_tudo(
-        self, equipes: list[tuple[int, str]], membros: list[tuple[int, str, str]],
+        self,
+        equipes: list[tuple[int, str]],
+        membros: list[tuple[int, str, str]],
+        supervisores: set[tuple[int, str]] | None = None,
     ) -> tuple[int, int]:
         """
         Recarrega equipes e membros numa transacao unica.
@@ -505,9 +571,15 @@ class EquipeFiscalRepository:
         manteria o vinculo antigo vivo — dando a um supervisor acesso a
         OS de quem nao e mais dele. Retorna (equipes, membros) gravados.
 
+        `supervisores` e o conjunto de (codigo_equipe, matricula) que a
+        planilha marca como chefia; quem nao estiver nele entra como
+        membro comum. Omitir o argumento marca todo mundo como membro —
+        e o certo para planilha antiga, que nao trazia a informacao.
+
         Nao mexe em `users.equipe_codigo`: um codigo que aponte para uma
         equipe extinta e tratado na leitura, onde vira conjunto vazio.
         """
+        chefia = supervisores or set()
         with self._db.connect() as conn:
             conn.execute("DELETE FROM equipe_membros")
             conn.execute("DELETE FROM equipes_fiscais")
@@ -517,14 +589,18 @@ class EquipeFiscalRepository:
             )
             conn.executemany(
                 """
-                INSERT INTO equipe_membros (codigo_equipe, matricula, nome)
-                VALUES (?, ?, ?)
+                INSERT INTO equipe_membros
+                    (codigo_equipe, matricula, nome, supervisor)
+                VALUES (?, ?, ?, ?)
                 """,
-                membros,
+                [
+                    (cod, mat, nome, 1 if (cod, mat) in chefia else 0)
+                    for cod, mat, nome in membros
+                ],
             )
         logger.info(
-            "Equipes fiscais importadas: %d equipes, %d vinculos.",
-            len(equipes), len(membros),
+            "Equipes fiscais importadas: %d equipes, %d vinculos, %d chefias.",
+            len(equipes), len(membros), len(chefia),
         )
         return len(equipes), len(membros)
 
@@ -599,13 +675,58 @@ class EquipeFiscalRepository:
             )
         return mapa
 
-    def get_membros(self, codigo_equipe: int) -> list[dict[str, Any]]:
-        """Membros de uma equipe (matricula e nome), em ordem alfabetica."""
+    def get_codigos_chefiados(self, matricula: str) -> list[int]:
+        """
+        Equipes que essa matricula CHEFIA, segundo a marca da planilha.
+
+        Lista, e nao um codigo so, porque a planilha de 02/09/2026 marca
+        duas pessoas como chefe de duas equipes cada. `users.equipe_codigo`
+        nao daria conta: a coluna guarda um valor, e escolher um dos dois
+        deixaria o supervisor cego para metade do que e dele.
+        """
         with self._db.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT matricula, nome FROM equipe_membros
-                WHERE codigo_equipe = ? ORDER BY nome
+                SELECT codigo_equipe FROM equipe_membros
+                WHERE matricula = ? AND supervisor = 1
+                ORDER BY codigo_equipe
+                """,
+                (str(matricula),),
+            ).fetchall()
+        return [int(row["codigo_equipe"]) for row in rows]
+
+    def get_chefias_por_matricula(self) -> dict[str, list[dict[str, Any]]]:
+        """
+        Mapa matricula -> equipes que ela chefia, com codigo e nome.
+
+        Versao em lote de `get_codigos_chefiados`, para a tela de usuarios
+        pedir tudo de uma vez. Irmao de `get_equipes_por_matricula`, que
+        responde a pergunta oposta: de que equipe a pessoa E MEMBRO.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.matricula, e.codigo, e.nome
+                FROM equipe_membros m
+                JOIN equipes_fiscais e ON e.codigo = m.codigo_equipe
+                WHERE m.supervisor = 1
+                ORDER BY e.nome
+                """
+            ).fetchall()
+        mapa: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            mapa.setdefault(str(row["matricula"]), []).append(
+                {"codigo": int(row["codigo"]), "nome": row["nome"]}
+            )
+        return mapa
+
+    def get_membros(self, codigo_equipe: int) -> list[dict[str, Any]]:
+        """Membros de uma equipe, quem chefia primeiro, depois por nome."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT matricula, nome, supervisor FROM equipe_membros
+                WHERE codigo_equipe = ? ORDER BY supervisor DESC, nome
                 """,
                 (codigo_equipe,),
             ).fetchall()

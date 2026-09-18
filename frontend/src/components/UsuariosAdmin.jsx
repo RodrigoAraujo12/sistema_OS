@@ -21,6 +21,35 @@ function nomesDasEquipes(item) {
 }
 
 /**
+ * Chefia do usuario, como a tela deve mostra-la.
+ *
+ * Prefere o que a planilha da SEFAZ marca (`equipes_chefiadas`) a
+ * amarracao manual (`equipe_nome`), porque e a marca que a visibilidade
+ * consulta. Quem chefia mais de uma equipe aparece com as duas e um "!":
+ * `users.equipe_codigo` guarda um codigo so e nao conseguiria dizer isso,
+ * e o admin precisa saber que nao ha nada a escolher ali.
+ */
+function chefiaDoUsuario(item) {
+  const chefiadas = item.equipes_chefiadas || [];
+  if (chefiadas.length > 1) {
+    const nomes = chefiadas.map((e) => e.nome);
+    return (
+      <>
+        {nomes.join(" + ")}{" "}
+        <span
+          className="badge alta"
+          title={`Chefia ${chefiadas.length} equipes na planilha da SEFAZ: ${nomes.join(", ")}. Enxerga as OS de todas elas.`}
+        >
+          !
+        </span>
+      </>
+    );
+  }
+  if (chefiadas.length === 1) return chefiadas[0].nome;
+  return item.equipe_nome || "-";
+}
+
+/**
  * Equipe a sugerir como chefia ao promover alguem a supervisor.
  *
  * So sugere quando nao ha duvida: quem pertence a duas equipes (cinco
@@ -404,8 +433,9 @@ export default function UsuariosAdmin({
                         <td>{item.matricula || "-"}</td>
                         <td><span className="badge normal">{item.role}</span></td>
                         <td>{item.gerencia_name || "-"}</td>
+                        <td>{item.supervisao_name || "-"}</td>
                         <td>{nomesDasEquipes(item)}</td>
-                        <td>{item.equipe_nome || "-"}</td>
+                        <td>{chefiaDoUsuario(item)}</td>
                         <td>
                           <div className="row-actions">
                             <button

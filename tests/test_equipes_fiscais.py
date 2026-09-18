@@ -13,8 +13,16 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from backend.db import Database, EquipeFiscalRepository
-from backend.importar_equipes import _numero, extrair
+from backend.db import Database, EquipeFiscalRepository, UserRepository
+from backend.importar_equipes import (
+    COR_CABECALHO,
+    COR_SUPERVISOR,
+    Celula,
+    _numero,
+    extrair,
+    extrair_supervisores,
+    planejar_amarracao,
+)
 
 _MEMORY = Path(":memory:")
 
@@ -31,17 +39,22 @@ class InMemoryDatabase(Database):
         return self._conn
 
 
-def _linha(codigo=None, grupo=None, matricula=None, nome=None) -> dict[str, str]:
-    """Monta uma linha da aba no formato que _ler_aba devolve."""
+def _linha(codigo=None, grupo=None, matricula=None, nome=None, cor="") -> dict[str, str]:
+    """
+    Monta uma linha da aba no formato que _ler_aba devolve.
+
+    `cor` pinta matricula e nome, que e onde a planilha da SEFAZ marca a
+    chefia — as colunas de codigo e grupo ficam sempre sem cor.
+    """
     celulas = {}
     if codigo is not None:
         celulas["A"] = codigo
     if grupo is not None:
         celulas["B"] = grupo
     if matricula is not None:
-        celulas["C"] = matricula
+        celulas["C"] = Celula(matricula, cor)
     if nome is not None:
-        celulas["D"] = nome
+        celulas["D"] = Celula(nome, cor)
     return celulas
 
 
@@ -152,6 +165,177 @@ class TestExtrair(unittest.TestCase):
         self.assertEqual((equipes, membros, avisos), ([], [], []))
 
 
+class TestExtrairSupervisores(unittest.TestCase):
+    """
+    A chefia so existe na cor de fundo da celula: a planilha de
+    02/09/2026 pinta matricula e nome de amarelo dentro do bloco do
+    grupo, sem coluna que diga quem e.
+    """
+
+    def test_marca_apenas_quem_esta_pintado(self):
+        linhas = [
+            _linha("Código", "Grupo", "Matrícula", "Fiscal", cor=COR_CABECALHO),
+            _linha("427.0", "GOFE - VAREJO", "9000001.0", "CHEFE", cor=COR_SUPERVISOR),
+            _linha("427.0", "GOFE - VAREJO", "9000002.0", "MEMBRO"),
+        ]
+        _, membros, _ = extrair(linhas)
+        supervisores, avisos = extrair_supervisores(linhas, membros)
+        self.assertEqual(supervisores, [(427, "9000001", "CHEFE")])
+        self.assertEqual(avisos, [])
+
+    def test_cabecalho_pintado_nao_vira_pessoa(self):
+        """
+        So entra quem sobreviveu a `extrair`. O cabecalho se repete a cada
+        grupo, e sem esse filtro viraria um supervisor chamado "Fiscal".
+        """
+        linhas = [
+            _linha("Código", "Grupo", "Matrícula", "Fiscal", cor=COR_SUPERVISOR),
+            _linha("427.0", "GOFE - VAREJO", "9000002.0", "MEMBRO"),
+        ]
+        _, membros, _ = extrair(linhas)
+        supervisores, _ = extrair_supervisores(linhas, membros)
+        self.assertEqual(supervisores, [])
+
+    def test_uma_pessoa_pode_chefiar_duas_equipes(self):
+        """A planilha de 02/09/2026 tem dois casos assim; sao legitimos."""
+        linhas = [
+            _linha("423.0", "GOFE/GR5", "9000001.0", "CHEFE", cor=COR_SUPERVISOR),
+            _linha("434.0", "GOFE/GR4", "9000001.0", "CHEFE", cor=COR_SUPERVISOR),
+        ]
+        _, membros, _ = extrair(linhas)
+        supervisores, _ = extrair_supervisores(linhas, membros)
+        self.assertEqual(
+            supervisores, [(423, "9000001", "CHEFE"), (434, "9000001", "CHEFE")]
+        )
+
+    def test_avisa_quando_nao_ha_marca_nenhuma(self):
+        """
+        Zero chefias e ambiguo: pode ser planilha antiga ou formatacao
+        perdida numa reexportacao. Nos dois casos o operador precisa saber.
+        """
+        linhas = [_linha("427.0", "GOFE - VAREJO", "9000002.0", "MEMBRO")]
+        _, membros, _ = extrair(linhas)
+        supervisores, avisos = extrair_supervisores(linhas, membros)
+        self.assertEqual(supervisores, [])
+        self.assertTrue(any("nenhuma chefia" in a for a in avisos))
+
+    def test_avisa_cor_desconhecida(self):
+        """Se a SEFAZ trocar o tom do amarelo, isso aparece em vez de sumir."""
+        linhas = [
+            _linha("427.0", "GOFE - VAREJO", "9000001.0", "CHEFE", cor="00FF00"),
+            _linha("427.0", "GOFE - VAREJO", "9000002.0", "OUTRO", cor=COR_SUPERVISOR),
+        ]
+        _, membros, _ = extrair(linhas)
+        supervisores, avisos = extrair_supervisores(linhas, membros)
+        self.assertEqual(supervisores, [(427, "9000002", "OUTRO")])
+        self.assertTrue(any("00FF00" in a for a in avisos))
+
+    def test_planilha_sem_cor_alguma_nao_quebra(self):
+        """Celula de texto puro (planilha antiga) segue valendo como membro."""
+        linhas = [{"A": "427.0", "B": "GOFE", "C": "9000001.0", "D": "FULANO"}]
+        _, membros, _ = extrair(linhas)
+        supervisores, _ = extrair_supervisores(linhas, membros)
+        self.assertEqual(supervisores, [])
+
+
+class TestPlanejarAmarracao(unittest.TestCase):
+    """
+    Cruzamento da chefia da planilha com os usuarios do banco.
+
+    `users.equipe_codigo` guarda um codigo so, e so tem efeito para quem e
+    supervisor — por isso amarrar envolve promover, e por isso quem chefia
+    duas equipes nao pode ser resolvido no palpite.
+    """
+
+    def setUp(self):
+        self.db = InMemoryDatabase()
+        self.db.init_schema()
+        self.users = UserRepository(self.db)
+        EquipeFiscalRepository(self.db).substituir_tudo(
+            [(427, "GOFE - VAREJO"), (429, "GOAC - MALHAS")], [],
+        )
+        self.nomes = {427: "GOFE - VAREJO", 429: "GOAC - MALHAS"}
+
+    def _criar(self, username, matricula, role="fiscal", equipe=None):
+        return self.users.create_user(
+            username, "hash", "salt", role, None, None, False, matricula, equipe,
+        )
+
+    def test_promove_fiscal_e_amarra_a_equipe(self):
+        self._criar("chefe", "1000")
+        a_amarrar, ja_ok, impedidos = planejar_amarracao(
+            self.users, [(427, "1000", "CHEFE")], self.nomes
+        )
+        self.assertEqual(a_amarrar, [("1000", "CHEFE", 427, "GOFE - VAREJO", "fiscal")])
+        self.assertEqual((ja_ok, impedidos), ([], []))
+
+        self.assertTrue(
+            self.users.amarrar_equipe_por_matricula("1000", 427, promover=True)
+        )
+        usuario = self.users.get_user_by_matricula("1000")
+        self.assertEqual(usuario["role"], "supervisor")
+        self.assertEqual(usuario["equipe_codigo"], 427)
+
+    def test_quem_chefia_duas_equipes_e_promovido_sem_equipe(self):
+        """
+        `equipe_codigo` guarda um codigo so, entao fica vazio: a chefia
+        dele vem inteira de `equipe_membros.supervisor`, e escolher uma
+        das duas o deixaria cego para metade do que e dele.
+        """
+        self._criar("chefe", "1000")
+        a_amarrar, _, impedidos = planejar_amarracao(
+            self.users, [(427, "1000", "CHEFE"), (429, "1000", "CHEFE")], self.nomes
+        )
+        self.assertEqual(impedidos, [])
+        (matricula, _, codigo, descricao, papel) = a_amarrar[0]
+        self.assertEqual((matricula, codigo, papel), ("1000", None, "fiscal"))
+        self.assertIn("GOAC - MALHAS", descricao)
+
+        self.assertTrue(
+            self.users.amarrar_equipe_por_matricula("1000", None, promover=True)
+        )
+        usuario = self.users.get_user_by_matricula("1000")
+        self.assertEqual(usuario["role"], "supervisor")
+        self.assertIsNone(usuario["equipe_codigo"])
+
+    def test_promover_sem_equipe_nao_apaga_amarracao_manual(self):
+        """Passar None e "nao mexe na coluna", nao "limpa a coluna"."""
+        self._criar("chefe", "1000", role="fiscal", equipe=429)
+        self.users.amarrar_equipe_por_matricula("1000", None, promover=True)
+        usuario = self.users.get_user_by_matricula("1000")
+        self.assertEqual(usuario["role"], "supervisor")
+        self.assertEqual(usuario["equipe_codigo"], 429)
+
+    def test_supervisor_sem_login_fica_de_fora(self):
+        a_amarrar, _, impedidos = planejar_amarracao(
+            self.users, [(427, "1000", "CHEFE")], self.nomes
+        )
+        self.assertEqual(a_amarrar, [])
+        self.assertTrue(any("sem usuario cadastrado" in m for m in impedidos))
+
+    def test_gerente_nao_e_rebaixado_a_supervisor(self):
+        """O papel do cadastro local manda mais do que a marca da planilha."""
+        self._criar("gerente", "1000", role="gerente")
+        a_amarrar, _, impedidos = planejar_amarracao(
+            self.users, [(427, "1000", "CHEFE")], self.nomes
+        )
+        self.assertEqual(a_amarrar, [])
+        self.assertTrue(any("e gerente" in m for m in impedidos))
+        self.users.amarrar_equipe_por_matricula("1000", 427, promover=True)
+        self.assertEqual(self.users.get_user_by_matricula("1000")["role"], "gerente")
+
+    def test_quem_ja_esta_correto_nao_entra_na_lista(self):
+        self._criar("chefe", "1000", role="supervisor", equipe=427)
+        a_amarrar, ja_ok, impedidos = planejar_amarracao(
+            self.users, [(427, "1000", "CHEFE")], self.nomes
+        )
+        self.assertEqual((a_amarrar, impedidos), ([], []))
+        self.assertEqual(len(ja_ok), 1)
+        self.assertFalse(
+            self.users.amarrar_equipe_por_matricula("1000", 427, promover=True)
+        )
+
+
 class TestEquipeFiscalRepository(unittest.TestCase):
     """Armazenamento das equipes e seus membros."""
 
@@ -179,6 +363,49 @@ class TestEquipeFiscalRepository(unittest.TestCase):
         self.assertEqual(
             set(self.repo.get_matriculas_by_equipe(427)), {"1000", "1001"}
         )
+
+    def test_grava_quem_chefia_a_equipe(self):
+        self.repo.substituir_tudo(
+            [(427, "GOFE - VAREJO")],
+            [(427, "1000", "CHEFE"), (427, "1001", "MEMBRO")],
+            {(427, "1000")},
+        )
+        membros = self.repo.get_membros(427)
+        # get_membros poe a chefia na frente, e so depois ordena por nome
+        self.assertEqual(membros[0]["nome"], "CHEFE")
+        self.assertEqual(membros[0]["supervisor"], 1)
+        self.assertEqual(membros[1]["supervisor"], 0)
+
+    def test_sem_chefia_todo_mundo_e_membro(self):
+        """Planilha ate 25/08/2026 nao trazia a informacao — e valido."""
+        self.repo.substituir_tudo(
+            [(427, "GOFE - VAREJO")], [(427, "1000", "FULANO")],
+        )
+        self.assertEqual(self.repo.get_membros(427)[0]["supervisor"], 0)
+
+    def test_chefia_tambem_e_substituida(self):
+        """Quem deixou de chefiar na carga nova nao continua chefiando."""
+        self.repo.substituir_tudo(
+            [(427, "A")], [(427, "1000", "ANTIGO")], {(427, "1000")},
+        )
+        self.repo.substituir_tudo([(427, "A")], [(427, "1000", "ANTIGO")])
+        self.assertEqual(self.repo.get_membros(427)[0]["supervisor"], 0)
+
+    def test_consulta_as_equipes_que_a_matricula_chefia(self):
+        self.repo.substituir_tudo(
+            [(427, "GOFE - VAREJO"), (429, "GOAC - MALHAS")],
+            [
+                (427, "1000", "CHEFE DOS DOIS"),
+                (429, "1000", "CHEFE DOS DOIS"),
+                (427, "1001", "MEMBRO"),
+            ],
+            {(427, "1000"), (429, "1000")},
+        )
+        self.assertEqual(self.repo.get_codigos_chefiados("1000"), [427, 429])
+        self.assertEqual(self.repo.get_codigos_chefiados("1001"), [])
+        mapa = self.repo.get_chefias_por_matricula()
+        self.assertEqual([e["nome"] for e in mapa["1000"]], ["GOAC - MALHAS", "GOFE - VAREJO"])
+        self.assertNotIn("1001", mapa)
 
     def test_substituir_apaga_o_que_saiu(self):
         """

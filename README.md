@@ -954,6 +954,47 @@ fiscal, e foram **mantidos como estao** por decisao de 25/08/2026.
 Expandir a lista enche o filtro de opcoes que nunca retornam OS. A
 planilha serve aqui como fonte para conferir, nao para substituir.
 
+#### Quem chefia cada equipe vem na cor da celula
+
+A exportacao de 02/09/2026 respondeu a pendencia da chefia, mas **sem
+coluna nova**: a aba passou a se chamar "Supervisores do Grupo" e marca o
+supervisor pintando matricula e nome de amarelo (`FFF2CC`, a mesma cor da
+celula que serve de legenda ao lado do titulo). Fora o destaque, os 339
+vinculos sao identicos aos da planilha anterior.
+
+O importador le a marca direto do `xl/styles.xml` — celula aponta para
+estilo, estilo aponta para preenchimento — e grava em
+`equipe_membros.supervisor`.
+
+**A visibilidade soma as duas origens de chefia.** Para um supervisor,
+`_matriculas_visiveis` junta as equipes que a planilha marca para a
+matricula dele com a que o admin amarrou a mao em `users.equipe_codigo`.
+A marca da planilha e o que resolve quem chefia **mais de uma** equipe —
+a exportacao de 02/09/2026 tem dois casos. A coluna guarda um codigo so,
+e escolher um dos dois deixaria o supervisor cego para metade do que e
+dele. O gerente soma do mesmo jeito, senao a hierarquia inverte. A tela
+de usuarios mostra as equipes chefiadas, com um "!" quando sao mais de
+uma.
+
+A marca so vale para quem **ja e supervisor** no cadastro: importar a
+planilha nao promove ninguem sozinho. Para promover:
+
+```bash
+python -m backend.importar_equipes CAMINHO.xlsx --amarrar-supervisores
+```
+
+A flag promove de fiscal a supervisor cada pessoa marcada e, quando ela
+chefia uma equipe so, preenche tambem `users.equipe_codigo` (quem chefia
+duas fica com a coluna vazia — a chefia dele vem inteira da planilha).
+Ficam de fora quem ainda nao tem login e quem ja e gerente ou admin: o
+papel do cadastro local manda mais que a planilha. Com `--dry-run` a
+lista sai nome por nome, sem gravar.
+
+Como e formatacao e nao dado, a informacao e fragil: uma reexportacao ou
+um "limpar formatacao" apaga tudo sem deixar rastro. Por isso o importador
+avisa quando nao encontra marca alguma — ou quando encontra uma cor que
+nao conhece — em vez de gravar zero chefias em silencio.
+
 #### A importacao substitui, nao mescla
 
 `substituir_tudo` apaga as duas tabelas antes de gravar. E de proposito:
@@ -961,9 +1002,11 @@ quem sai de uma equipe some da planilha seguinte sem deixar rastro, e um
 merge manteria o vinculo antigo vivo — dando a um supervisor acesso a OS
 de quem nao e mais dele.
 
-O `users.equipe_codigo` nao e tocado pela importacao. Um codigo que
-aponte para equipe extinta vira conjunto vazio na leitura, nunca "ve
-tudo".
+O `users.equipe_codigo` nao e tocado pela importacao, a nao ser com
+`--amarrar-supervisores`. Um codigo que aponte para equipe extinta vira
+conjunto vazio na leitura, nunca "ve tudo". A marca de chefia, ao
+contrario, e substituida junto: quem deixou de chefiar na planilha nova
+perde a visibilidade na mesma carga.
 
 #### A planilha nao entra no repositorio
 
@@ -984,18 +1027,24 @@ matriculas sao ficticias e nunca aparecem numa OS real.
 Para trabalhar com matricula real, a partir da mesma planilha:
 
 ```bash
-# 1. as equipes (46 equipes, 339 vinculos)
+# 1. as equipes (46 equipes, 339 vinculos) e quem chefia cada uma
 python -m backend.importar_equipes CAMINHO/DADOS_ORDEM_SERVICO.xlsx
 
 # 2. os auditores como usuarios (334 pessoas)
 python -m backend.importar_usuarios CAMINHO/DADOS_ORDEM_SERVICO.xlsx --remover-seed
+
+# 3. so agora, com os usuarios criados: amarra cada supervisor a sua equipe
+python -m backend.importar_equipes CAMINHO/DADOS_ORDEM_SERVICO.xlsx --amarrar-supervisores
 ```
+
+A ordem importa: `--amarrar-supervisores` procura o usuario pela
+matricula, entao rodado antes do passo 2 nao encontraria ninguem.
 
 Os dois aceitam `--dry-run`. O segundo:
 
 - cria todos como **fiscal, sem gerencia nem supervisao** — e o unico
-  cargo que o modelo resolve so pela matricula. Quem for supervisor e
-  promovido depois na tela de admin, onde tambem se amarra a equipe;
+  cargo que o modelo resolve so pela matricula. Quem a planilha marca
+  como supervisor e promovido pelo passo 3; os demais, na tela de admin;
 - e **idempotente**: quem ja tem a matricula cadastrada e pulado;
 - com `--remover-seed`, apaga antes os usuarios de exemplo. O admin nunca
   e tocado — ele nao tem matricula, e o `DELETE` ainda filtra por

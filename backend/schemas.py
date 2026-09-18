@@ -143,6 +143,11 @@ class UserResponse(BaseModel):
     equipe_codigo: int | None = None
     equipe_nome: str | None = None
     equipes_membro: list[EquipeVinculoResponse] = []
+    # As equipes que a planilha da SEFAZ diz que ele chefia. Lista porque
+    # a exportacao de 02/09/2026 marca duas pessoas como chefe de duas
+    # equipes cada — caso que `equipe_codigo`, sendo um valor so, nao
+    # consegue representar.
+    equipes_chefiadas: list[EquipeVinculoResponse] = []
 
 
 class UserCreatedResponse(UserResponse):

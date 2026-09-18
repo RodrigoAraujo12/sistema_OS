@@ -609,17 +609,20 @@ def list_users(user: dict[str, Any] = Depends(get_active_user)) -> list[UserResp
     """
     Lista os usuarios com gerencia, supervisao e equipes. Apenas admin.
 
-    Cada usuario leva duas informacoes de equipe, que sao coisas
-    diferentes: `equipes_membro` sao as equipes a que ele PERTENCE, vindas
-    da planilha da SEFAZ; `equipe_codigo` e a que ele CHEFIA, preenchida a
-    mao aqui. A tela usa a primeira para sugerir a segunda.
+    Cada usuario leva tres informacoes de equipe, que sao coisas
+    diferentes: `equipes_membro` sao as equipes a que ele PERTENCE;
+    `equipes_chefiadas` sao as que a planilha diz que ele CHEFIA (podem
+    ser duas); `equipe_codigo` e a chefia amarrada a mao aqui, para quem a
+    planilha nao marca. A tela usa a primeira para sugerir a terceira.
     """
     require_admin(user)
     por_matricula = equipe_repo.get_equipes_por_matricula()
+    chefias = equipe_repo.get_chefias_por_matricula()
     return [
         UserResponse(
             **row,
             equipes_membro=por_matricula.get(str(row.get("matricula")), []),
+            equipes_chefiadas=chefias.get(str(row.get("matricula")), []),
         )
         for row in user_repo.list_users()
     ]
@@ -698,8 +701,8 @@ def _matriculas_visiveis(user: dict[str, Any]) -> set[str] | None:
     a hierarquia vira um conjunto de matriculas resolvido no banco local:
 
     - fiscal:     apenas a propria
-    - supervisor: a propria + a equipe fiscal do ATF que ele chefia,
-                  se houver uma amarrada; senao, os lotados na sua
+    - supervisor: a propria + as equipes fiscais do ATF que ele chefia
+                  (podem ser mais de uma); senao, os lotados na sua
                   supervisao (cadastro local)
     - gerente:    a propria + os lotados na sua gerencia + as equipes
                   dos seus supervisores
@@ -707,8 +710,15 @@ def _matriculas_visiveis(user: dict[str, Any]) -> set[str] | None:
     A equipe fiscal tem precedencia sobre a supervisao local por ser a
     fonte da verdade da SEFAZ, e cobre tambem os fiscais que ainda nao
     tem login aqui — com a supervisao local, um fiscal sem cadastro era
-    invisivel para o proprio supervisor. O `equipe_codigo` e amarrado a
-    mao pelo admin, entao ate ele existir vale o comportamento antigo.
+    invisivel para o proprio supervisor. Sem equipe nenhuma vale o
+    comportamento antigo, pela supervisao local.
+
+    A chefia vem de duas origens que se somam: a planilha, que desde
+    02/09/2026 marca o supervisor de cada grupo e pode marcar a mesma
+    pessoa em duas equipes, e o `users.equipe_codigo` amarrado a mao pelo
+    admin. Somar as duas evita o caso ruim: escolher uma das duas equipes
+    de quem chefia duas deixaria o supervisor cego para metade do que e
+    dele.
 
     Quem nao tem matricula nem lotacao recebe um conjunto vazio e nao ve
     nenhuma OS. E o comportamento correto: um cadastro incompleto nao pode
@@ -723,8 +733,18 @@ def _matriculas_visiveis(user: dict[str, Any]) -> set[str] | None:
         matriculas.add(str(user["matricula"]))
 
     if role == "supervisor":
+        # Duas origens de chefia, somadas: a marca da planilha (que alcanca
+        # quem chefia mais de uma equipe) e a amarracao manual, que continua
+        # valendo para quem a planilha nao marca.
+        codigos = set(
+            equipe_repo.get_codigos_chefiados(str(user["matricula"]))
+            if user.get("matricula")
+            else []
+        )
         if user.get("equipe_codigo"):
-            matriculas.update(equipe_repo.get_matriculas_by_equipe(int(user["equipe_codigo"])))
+            codigos.add(int(user["equipe_codigo"]))
+        if codigos:
+            matriculas.update(equipe_repo.get_matriculas_by_equipes(sorted(codigos)))
         elif user.get("supervisao_id"):
             matriculas.update(user_repo.get_matriculas_by_supervisao(int(user["supervisao_id"])))
     elif role == "gerente" and user.get("gerencia_id"):
