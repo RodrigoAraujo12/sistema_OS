@@ -29,7 +29,14 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from .db import DB_PATH, Database, EquipeFiscalRepository, UserRepository
+from .db import (
+    DB_PATH,
+    Database,
+    EquipeFiscalRepository,
+    GerenciaRepository,
+    UserRepository,
+)
+from .gerencias_atf import GERENCIAS, SIGLA_POR_CODIGO, gerencias_das_equipes
 
 logger = logging.getLogger("sefaz.importar_equipes")
 
@@ -371,8 +378,9 @@ def main(argv: list[str] | None = None) -> int:
     linhas = _ler_aba(args.planilha, ABA_GRUPOS)
     equipes, membros, avisos = extrair(linhas)
     supervisores, avisos_chefia = extrair_supervisores(linhas, membros)
+    gerencias_equipe, avisos_gerencia = gerencias_das_equipes(equipes)
 
-    for aviso in avisos + avisos_chefia:
+    for aviso in avisos + avisos_chefia + avisos_gerencia:
         print(f"  aviso: {aviso}", file=sys.stderr)
     if not equipes:
         print("Nenhuma equipe encontrada na planilha.", file=sys.stderr)
@@ -393,11 +401,22 @@ def main(argv: list[str] | None = None) -> int:
         f"sem supervisor marcado"
     )
 
+    usadas = sorted(set(gerencias_equipe.values()))
+    print(
+        f"{len(gerencias_equipe)} equipe(s) com gerencia deduzida do nome, "
+        f"em {len(usadas)} gerencia(s): "
+        f"{', '.join(SIGLA_POR_CODIGO.get(c, str(c)) for c in usadas)}"
+    )
+
     if args.dry_run:
         for codigo, nome in equipes:
             total = sum(1 for c, _, _ in membros if c == codigo)
             marca = sum(1 for c, _, _ in supervisores if c == codigo)
-            print(f"  {codigo:>6}  {nome:<50} {total:>3}  chefia: {marca}")
+            sigla = SIGLA_POR_CODIGO.get(gerencias_equipe.get(codigo), "-")
+            print(
+                f"  {codigo:>6}  {nome:<50} {total:>3}  chefia: {marca}  "
+                f"gerencia: {sigla}"
+            )
 
         if supervisores:
             print("\n  --- supervisores marcados na planilha ---")
@@ -441,12 +460,33 @@ def main(argv: list[str] | None = None) -> int:
 
     database = Database(args.db)
     database.init_schema()
+
+    # As gerencias vao ANTES das equipes: a equipe guarda o codigo do
+    # elemento organizacional, e o corte do painel so mostra gerencia que
+    # exista no cadastro. Cria so as que alguma equipe usa — a aba de
+    # elementos tem 595, e o resto nao executa OS.
+    gerencia_repo = GerenciaRepository(database)
+    nomes_gerencia = {cod: nome for cod, _, nome in GERENCIAS}
+    antes = len(gerencia_repo.list_gerencias())
+    for codigo in usadas:
+        gerencia_repo.upsert_por_codigo_atf(
+            codigo, nomes_gerencia.get(codigo, SIGLA_POR_CODIGO.get(codigo, str(codigo)))
+        )
+    novas = len(gerencia_repo.list_gerencias()) - antes
+    print(
+        f"{len(usadas)} gerencia(s) do ATF garantidas no cadastro "
+        f"({novas} criada(s) agora; as demais ja existiam)."
+    )
+
     n_equipes, n_membros = EquipeFiscalRepository(database).substituir_tudo(
-        equipes, membros, {(cod, mat) for cod, mat, _ in supervisores}
+        equipes,
+        membros,
+        {(cod, mat) for cod, mat, _ in supervisores},
+        gerencias_equipe,
     )
     print(
         f"Importado em {args.db}: {n_equipes} equipes, {n_membros} vinculos, "
-        f"{len(supervisores)} chefias."
+        f"{len(supervisores)} chefias, {len(gerencias_equipe)} com gerencia."
     )
 
     if args.amarrar_supervisores and supervisores:

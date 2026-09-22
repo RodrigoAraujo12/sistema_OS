@@ -130,6 +130,26 @@ class Database:
             self._ensure_column(
                 conn, "equipe_membros", "supervisor", "INTEGER NOT NULL DEFAULT 0"
             )
+            # A gerencia dona de cada equipe, deduzida do nome da equipe
+            # (ver backend/gerencias_atf.py). Guardamos o codigo do
+            # ELEMENTO ORGANIZACIONAL do ATF, e nao `gerencias.id`: esta
+            # tabela e espelho de dado externo, recriada a cada carga, e
+            # o codigo do ATF sobrevive a uma gerencia local renomeada ou
+            # ainda nao cadastrada.
+            self._ensure_column(
+                conn, "equipes_fiscais", "gerencia_codigo", "INTEGER"
+            )
+            # O mesmo codigo do lado do cadastro local, que e quem liga as
+            # duas pontas. Fica nulo nas gerencias criadas a mao pelo
+            # admin, que nao correspondem a elemento nenhum do ATF.
+            self._ensure_column(conn, "gerencias", "codigo_atf", "INTEGER")
+            # Sem o indice, importar duas vezes criaria a mesma gerencia
+            # em duplicata — o upsert procura justamente por este campo.
+            # Parcial porque NULL se repete a vontade: as locais.
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_gerencias_codigo_atf "
+                "ON gerencias (codigo_atf) WHERE codigo_atf IS NOT NULL"
+            )
             # A tabela nova ja nasce com UNIQUE em matricula; em banco
             # migrado a coluna entrou por ALTER TABLE, que nao aceita
             # UNIQUE. Sem o indice, duas contas com a mesma matricula
@@ -463,11 +483,37 @@ class GerenciaRepository:
             )
             return int(cur.lastrowid)
 
+    def upsert_por_codigo_atf(self, codigo_atf: int, name: str) -> int:
+        """
+        Garante que a gerencia daquele elemento organizacional existe.
+
+        Casa pelo `codigo_atf`, e nao pelo nome, porque o nome e editavel
+        na tela de gerencias: se alguem renomear "GOFE-GEFTE" para "GOFE",
+        uma nova importacao tem que reconhecer a mesma gerencia em vez de
+        criar outra. Por isso tambem NAO sobrescreve o nome existente —
+        renomear e direito do admin, e a importacao nao desfaz isso.
+
+        Ao contrario de `equipes_fiscais`, aqui nao ha substituicao total:
+        as gerencias locais criadas a mao tem usuarios lotados nelas
+        (`users.gerencia_id`), e apagar levaria a lotacao junto.
+        """
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM gerencias WHERE codigo_atf = ?", (codigo_atf,),
+            ).fetchone()
+            if row:
+                return int(row["id"])
+            cur = conn.execute(
+                "INSERT INTO gerencias (name, codigo_atf) VALUES (?, ?)",
+                (name, codigo_atf),
+            )
+            return int(cur.lastrowid)
+
     def list_gerencias(self) -> list[dict[str, Any]]:
         """Lista todas as gerencias ordenadas por nome."""
         with self._db.connect() as conn:
             rows = conn.execute(
-                "SELECT id, name FROM gerencias ORDER BY name"
+                "SELECT id, name, codigo_atf FROM gerencias ORDER BY name"
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -475,7 +521,7 @@ class GerenciaRepository:
         """Busca uma gerencia pelo id."""
         with self._db.connect() as conn:
             row = conn.execute(
-                "SELECT id, name FROM gerencias WHERE id = ?",
+                "SELECT id, name, codigo_atf FROM gerencias WHERE id = ?",
                 (gerencia_id,),
             ).fetchone()
         return dict(row) if row else None
@@ -562,6 +608,7 @@ class EquipeFiscalRepository:
         equipes: list[tuple[int, str]],
         membros: list[tuple[int, str, str]],
         supervisores: set[tuple[int, str]] | None = None,
+        gerencias: dict[int, int] | None = None,
     ) -> tuple[int, int]:
         """
         Recarrega equipes e membros numa transacao unica.
@@ -576,16 +623,23 @@ class EquipeFiscalRepository:
         membro comum. Omitir o argumento marca todo mundo como membro —
         e o certo para planilha antiga, que nao trazia a informacao.
 
+        `gerencias` mapeia codigo_equipe -> codigo do elemento
+        organizacional da gerencia dona dela, deduzido do nome da equipe
+        (ver backend/gerencias_atf.py). Equipe fora do mapa fica com
+        gerencia nula e some do corte por gerencia do painel.
+
         Nao mexe em `users.equipe_codigo`: um codigo que aponte para uma
         equipe extinta e tratado na leitura, onde vira conjunto vazio.
         """
         chefia = supervisores or set()
+        por_equipe = gerencias or {}
         with self._db.connect() as conn:
             conn.execute("DELETE FROM equipe_membros")
             conn.execute("DELETE FROM equipes_fiscais")
             conn.executemany(
-                "INSERT INTO equipes_fiscais (codigo, nome) VALUES (?, ?)",
-                equipes,
+                "INSERT INTO equipes_fiscais (codigo, nome, gerencia_codigo) "
+                "VALUES (?, ?, ?)",
+                [(cod, nome, por_equipe.get(cod)) for cod, nome in equipes],
             )
             conn.executemany(
                 """
@@ -599,10 +653,39 @@ class EquipeFiscalRepository:
                 ],
             )
         logger.info(
-            "Equipes fiscais importadas: %d equipes, %d vinculos, %d chefias.",
-            len(equipes), len(membros), len(chefia),
+            "Equipes fiscais importadas: %d equipes, %d vinculos, %d chefias, "
+            "%d com gerencia.",
+            len(equipes), len(membros), len(chefia), len(por_equipe),
         )
         return len(equipes), len(membros)
+
+    def get_gerencia_atf_por_matricula(self) -> dict[str, int]:
+        """
+        Mapa matricula -> codigo da gerencia (elemento organizacional).
+
+        E a ponte que faltava para o corte por gerencia do painel de OS:
+        a equipe vem do ATF e alcanca os 334 auditores, enquanto a lotacao
+        local (`users.gerencia_id`) so existe para quem o admin cadastrou
+        a mao — hoje, as 24 matriculas de exemplo.
+
+        Quem esta em duas equipes de gerencias diferentes aparece uma vez
+        so, com a de MENOR codigo. E arbitrario, e de proposito: o corte
+        conta OS por gerencia, e deixar a mesma matricula em duas faria a
+        soma passar do total sem que ninguem soubesse dizer por que. O
+        caso e raro (a planilha tem 339 vinculos para 334 pessoas) e quem
+        precisa da visao completa tem o corte por equipe no filtro.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.matricula AS matricula, MIN(e.gerencia_codigo) AS gerencia
+                FROM equipe_membros m
+                JOIN equipes_fiscais e ON e.codigo = m.codigo_equipe
+                WHERE e.gerencia_codigo IS NOT NULL
+                GROUP BY m.matricula
+                """
+            ).fetchall()
+        return {str(row["matricula"]): int(row["gerencia"]) for row in rows}
 
     def list_equipes(self) -> list[dict[str, Any]]:
         """Lista as equipes com a contagem de membros, em ordem alfabetica."""

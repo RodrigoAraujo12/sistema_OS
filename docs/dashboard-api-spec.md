@@ -504,27 +504,40 @@ nulo: no ATF um órgão pode vir com nome e sem `cdOrgaoExec`, e aí o `id`
 
 ---
 
-## De onde vem a gerência (e por que ela está vazia hoje)
+## De onde vem a gerência
 
 **A gerência não existe no ATF.** É cadastro nosso, e a única ponte até
 a OS são as matrículas em `fiscais[]`. O mapa matrícula → gerência é
-montado em `_gerencia_por_matricula()` (`main.py`) por duas vias, nesta
-ordem:
+montado em `_gerencia_por_matricula()` (`main.py`) por três vias, da mais
+específica para a mais ampla — cada uma entra por `setdefault`, então
+nunca sobrescreve a anterior:
 
 1. **lotação direta** (`users.gerencia_id`) — o admin disse em que
    gerência a pessoa está;
 2. **equipe fiscal do ATF**, pelos supervisores com `equipe_codigo`
-   amarrado: os membros da equipe herdam a gerência do supervisor dela.
+   amarrado: os membros da equipe herdam a gerência do supervisor dela;
+3. **a gerência da própria equipe**, deduzida do nome dela e casada com
+   o cadastro pelo código do elemento organizacional.
 
-A via 2 existe pelo mesmo motivo de `_matriculas_visiveis`: a equipe do
-ATF alcança fiscais que ainda não têm login aqui. Ela entra por
-`setdefault`, então nunca sobrescreve uma lotação direta.
+A via 3 (22/09/2026) é a que sustenta o corte hoje, e vem de uma regra de
+nome confirmada pela área fiscal: **em `A - B`, o `B` é o nível ACIMA —
+a gerência é sempre o lado esquerdo**, e na barra (`GOFE/GR2`) a gerência
+é a GOFE, sendo a regional apenas onde a equipe atua. A regra, a lista das
+10 gerências e as equipes deliberadamente fora do painel estão em
+`backend/gerencias_atf.py`; o importador (`backend/importar_equipes.py`)
+aplica a regra, cria as gerências que faltarem e grava
+`equipes_fiscais.gerencia_codigo`.
 
-**Estado da base em 01/09/2026:** os fiscais importados da planilha
-entraram sem lotação e nenhum supervisor tem equipe amarrada — o mapa
-sai vazio e todas as OS caem em "sem gerência cadastrada". O painel diz
-isso na tela, em vez de fingir um número. Assim que o admin amarrar
-supervisor → equipe (tela de Usuários), o corte se preenche sozinho.
+**Efeito medido em 22/09/2026**, sobre 4499 OS de jan–jul: o mapa passou
+de 24 para 339 matrículas, e o corte de "tudo em sem gerência" para 8
+gerências e 135 OS (3%) sem — dessas, 90 não têm fiscal designado e 45
+têm fiscal que não está em nenhuma equipe.
+
+As vias 1 e 2 continuam valendo, e são o único caminho para as gerências
+que o admin cria à mão, que não correspondem a elemento nenhum do ATF
+(`gerencias.codigo_atf` nulo). Numa base sem equipes importadas e sem
+ninguém lotado, o mapa sai vazio e todas as OS caem em "sem gerência
+cadastrada" — o painel diz isso na tela, em vez de fingir um número.
 
 ---
 
@@ -695,18 +708,24 @@ Esta é a diferença que mais importa entre os dois endpoints.
 
 Em `/admin/dashboard/os` a gerência **não existe no ATF**: a listagem não
 tem o campo, e a única ponte até a OS são as matrículas em `fiscais[]`
-cruzadas com o cadastro local. Como quase nenhum fiscal tem lotação
-amarrada, aquele corte sai quase todo em "Sem gerência cadastrada".
+cruzadas com o cadastro local — hoje, pela equipe fiscal de cada um.
 
 Aqui o próprio serviço manda `cdGerencia` / `sgGerencia` / `noGerencia` —
 preenchidos em **97% dos eventos** medidos. O corte se preenche sem
 depender de cadastro nenhum.
 
-**Falta confirmar com a SEFAZ** se a "gerência" do ATF é a mesma coisa que
-a gerência do cadastro local. Enquanto não for, os dois cortes por
-gerência não devem ser comparados linha a linha — por isso os rótulos de
-grupo vazio são diferentes: "Sem gerência **cadastrada**" (buraco nosso)
-contra "Sem gerência **informada**" (buraco do ATF).
+**As duas ficaram mais perto desde 22/09/2026**, quando o cadastro local
+passou a guardar o código do elemento organizacional em
+`gerencias.codigo_atf` — o mesmo espaço de numeração do `cdGerencia`.
+Indício de que são a mesma coisa: `cdGerencia 275` volta com
+`sgGerencia GOFSE`, e 275 é o código do elemento GOFSE, que também é o
+código do órgão executor de mesma sigla.
+
+**Ainda assim falta a confirmação por escrito da SEFAZ** de que a
+"gerência" do ATF é a mesma do cadastro local. Enquanto não vier, os dois
+cortes não devem ser comparados linha a linha — e os rótulos de grupo
+vazio seguem diferentes de propósito: "Sem gerência **cadastrada**"
+(buraco nosso) contra "Sem gerência **informada**" (buraco do ATF).
 
 ---
 

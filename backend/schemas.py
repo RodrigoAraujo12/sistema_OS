@@ -51,6 +51,10 @@ class GerenciaResponse(BaseModel):
     """Representa uma gerencia na resposta da API."""
     id: int
     name: str
+    # Codigo do elemento organizacional do ATF, quando a gerencia veio da
+    # planilha da SEFAZ. Nulo nas criadas a mao pelo admin — e o que
+    # distingue as duas origens na tela de cadastro.
+    codigo_atf: int | None = None
 
 
 # ─── Supervisoes ────────────────────────────────────────────────

@@ -562,19 +562,28 @@ export default function DashboardOS({ onError }) {
         <h2>OS por Gerencia</h2>
         {gerenciasComCadastro.length === 0 ? (
           <div className="alert info" style={{ marginTop: 12 }}>
-            <strong>Nenhuma OS tem gerencia.</strong> A gerencia nao vem do ATF — e cadastro
-            daqui, e a unica ligacao ate a OS sao as matriculas dos fiscais. As
-            {" "}{formatarNumero(visao.os_sem_gerencia)} OS do periodo ficam sem gerencia enquanto
-            os fiscais nao tiverem lotacao (tela de Usuarios) ou os supervisores nao tiverem
-            equipe fiscal amarrada. Assim que isso for feito, este corte se preenche sozinho.
+            <strong>Nenhuma OS tem gerencia.</strong> A gerencia nao vem do ATF — a unica
+            ligacao ate a OS sao as matriculas dos fiscais, e daqui elas chegam a uma
+            gerencia por tres caminhos: a equipe fiscal da planilha da SEFAZ (que ja diz a
+            gerencia no proprio nome), a lotacao do fiscal ou a equipe do supervisor dele.
+            Nenhum dos tres alcancou as {formatarNumero(visao.os_sem_gerencia)} OS do periodo.
+            O mais provavel e que a planilha de equipes ainda nao tenha sido importada
+            (<code>python -m backend.importar_equipes</code>); fora isso, e lotar os fiscais
+            na tela de Usuarios. Assim que houver qualquer um dos tres, este corte se
+            preenche sozinho.
           </div>
         ) : (
           <>
             <p className="muted" style={{ marginBottom: 16 }}>
-              Uma OS com fiscais de gerencias diferentes conta em cada uma, entao a soma pode
-              passar do total.
+              A gerencia vem da equipe fiscal do fiscal designado, pelo nome da equipe na
+              planilha da SEFAZ (GOAC - MALHAS e da GOAC), ou da lotacao cadastrada aqui,
+              que tem prioridade. Uma OS com fiscais de gerencias diferentes conta em cada
+              uma, entao a soma pode passar do total.
               {visao.os_sem_gerencia > 0 && (
-                <> {formatarNumero(visao.os_sem_gerencia)} OS ainda estao sem gerencia cadastrada.</>
+                <>
+                  {" "}{formatarNumero(visao.os_sem_gerencia)} OS ficaram sem gerencia: sao as
+                  que nao tem fiscal designado ou cujo fiscal nao esta em nenhuma equipe.
+                </>
               )}
             </p>
             <GraficoCorte linhas={dados.por_gerencia} altura={Math.max(200, dados.por_gerencia.length * 42)} />

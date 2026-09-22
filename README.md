@@ -954,6 +954,38 @@ fiscal, e foram **mantidos como estao** por decisao de 25/08/2026.
 Expandir a lista enche o filtro de opcoes que nunca retornam OS. A
 planilha serve aqui como fonte para conferir, nao para substituir.
 
+Desde 22/09/2026 essa aba tem um segundo uso: ela e a **tabela de
+gerencias**. A coluna "Tipo Elemento" traz a hierarquia (GERENCIA
+EXECUTIVA, GERENCIA OPERACIONAL, SUBGERENCIA, NUCLEO, NUCLEO REGIONAL),
+e as 10 gerencias que aparecem como donas de alguma equipe fiscal viram
+cadastro local — ver a proxima secao.
+
+#### A gerencia de cada equipe sai do nome dela
+
+A OS do ATF nao tem gerencia, e por isso o corte por gerencia do painel
+ficava vazio: dependia de o admin lotar pessoa por pessoa, e os 334
+auditores foram importados sem lotacao. Em 22/09/2026 a area fiscal
+confirmou a regra que fecha essa ponte sozinha:
+
+- **em `A - B`, o `B` e o nivel ACIMA do `A`** — a gerencia e sempre o
+  lado ESQUERDO. `GOAC - GEFTE` e equipe da GOAC, que responde a GEFTE
+  (o topo da hierarquia). Quando o lado direito e um assunto e nao uma
+  unidade (`GOFE - VAREJO`), e subdivisao interna, e a leitura e a mesma;
+- **barra e outra coisa: em `GOFE/GR2` a gerencia e a GOFE**, nao a GR2 —
+  a regional e so onde a equipe atua.
+
+A regra esta em `backend/gerencias_atf.py`, junto com as 10 gerencias e
+as equipes que a area fiscal decidiu deixar de fora do painel. O
+importador aplica a regra, cria no cadastro as gerencias que faltarem
+(casando por `gerencias.codigo_atf`, nunca apagando as locais) e grava
+`equipes_fiscais.gerencia_codigo`. Equipe cujo nome nao permita decidir
+fica sem gerencia e **avisa** na importacao, em vez de receber um chute.
+
+Efeito medido sobre 4499 OS de jan-jul/2026: o mapa matricula -> gerencia
+passou de 24 para 339 matriculas, e o corte de "tudo em sem gerencia"
+para 8 gerencias, com 3% das OS sem — as que nao tem fiscal designado ou
+cujo fiscal nao esta em equipe nenhuma.
+
 #### Quem chefia cada equipe vem na cor da celula
 
 A exportacao de 02/09/2026 respondeu a pendencia da chefia, mas **sem

@@ -1289,27 +1289,34 @@ def _gerencia_por_matricula() -> dict[str, dict[str, Any]]:
     Mapa matricula -> {id, nome} da gerencia, para o dashboard de OS.
 
     A OS do ATF nao tem gerencia: a unica ponte ate ela sao as matriculas
-    em fiscais[]. Este mapa e montado por duas vias, na ordem:
+    em fiscais[]. Este mapa e montado por tres vias, da mais especifica
+    para a mais ampla — cada uma entra por setdefault, entao nunca
+    sobrescreve o que a anterior ja disse:
 
-    1. lotacao direta (users.gerencia_id), que e a informacao mais
-       especifica — o admin disse em que gerencia aquela pessoa esta;
-    2. equipe fiscal do ATF, pelos supervisores que tem equipe amarrada:
-       todos os membros da equipe herdam a gerencia do supervisor dela.
+    1. lotacao direta (users.gerencia_id): o admin disse em que gerencia
+       aquela pessoa esta, e isso vale sobre qualquer deducao;
+    2. equipe fiscal do ATF pelos supervisores que tem equipe amarrada:
+       os membros herdam a gerencia local do supervisor. Continua valendo
+       para as gerencias que o admin criou a mao, que nao correspondem a
+       elemento nenhum do ATF;
+    3. a gerencia da propria equipe, deduzida do nome dela (GOAC - MALHAS
+       e da GOAC) e casada com o cadastro pelo codigo do elemento
+       organizacional. Ver backend/gerencias_atf.py.
 
-    A via 2 existe pelo mesmo motivo de _matriculas_visiveis: a equipe do
-    ATF alcanca fiscais que ainda nao tem login aqui, e sem ela o corte
-    por gerencia so enxergaria quem ja foi cadastrado a mao. Ela entra por
-    setdefault, entao nunca sobrescreve uma lotacao direta.
-
-    Hoje o mapa sai quase vazio de proposito: os fiscais importados da
-    planilha entraram sem lotacao e nenhum supervisor tem equipe amarrada.
-    Enquanto isso durar, o corte por gerencia mostra tudo em "sem gerencia
-    cadastrada" — e o painel diz isso na tela, em vez de fingir um numero.
+    A via 3 foi o que tirou o corte do zero em 22/09/2026. Antes dela o
+    mapa saia quase vazio — os 334 auditores vieram da planilha sem
+    lotacao, e so as 24 matriculas de exemplo tinham gerencia — e o painel
+    mostrava tudo em "sem gerencia cadastrada". Agora a cobertura nao
+    depende mais de ninguem lotar 334 pessoas a mao: a equipe ja alcanca
+    todas elas, inclusive quem nem tem login aqui.
     """
-    gerencias = [
-        (g["id"], {"id": g["id"], "nome": g["name"]})
-        for g in gerencia_repo.list_gerencias()
-    ]
+    todas = gerencia_repo.list_gerencias()
+    gerencias = [(g["id"], {"id": g["id"], "nome": g["name"]}) for g in todas]
+    por_codigo_atf = {
+        int(g["codigo_atf"]): {"id": g["id"], "nome": g["name"]}
+        for g in todas
+        if g.get("codigo_atf") is not None
+    }
     mapa: dict[str, dict[str, Any]] = {}
 
     for gerencia_id, dados in gerencias:
@@ -1323,6 +1330,14 @@ def _gerencia_por_matricula() -> dict[str, dict[str, Any]]:
     for gerencia_id, dados in gerencias:
         codigos = user_repo.get_equipe_codigos_by_gerencia(gerencia_id)
         for matricula in equipe_repo.get_matriculas_by_equipes(codigos):
+            mapa.setdefault(str(matricula), dados)
+
+    # Gerencia do ATF que nao esteja cadastrada aqui e ignorada em vez de
+    # virar linha fantasma no grafico: o corte so mostra gerencia que o
+    # admin pode abrir na tela de cadastro.
+    for matricula, codigo in equipe_repo.get_gerencia_atf_por_matricula().items():
+        dados = por_codigo_atf.get(codigo)
+        if dados:
             mapa.setdefault(str(matricula), dados)
 
     return mapa

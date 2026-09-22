@@ -1157,9 +1157,12 @@ class TestDashboardOSEndpoint(IntegrationTestBase):
     @patch("backend.main._gerencia_por_matricula", return_value={})
     def test_sem_lotacao_as_os_caem_em_sem_gerencia(self, _mock_mapa):
         """
-        Estado da base real hoje: os 349 fiscais da planilha entraram sem
-        lotacao. O corte tem que devolver as OS num grupo "sem gerencia"
-        — e nao uma lista vazia, que o painel leria como "nenhuma OS".
+        Base sem equipes importadas e sem ninguem lotado — o estado de uma
+        instalacao nova. O corte tem que devolver as OS num grupo "sem
+        gerencia", e nao uma lista vazia, que o painel leria como "nenhuma
+        OS". (Na base real isso deixou de acontecer em 22/09/2026, quando
+        a equipe fiscal virou a terceira via do mapa; ver
+        backend/gerencias_atf.py.)
         """
         corpo = self.client.get("/admin/dashboard/os", headers=self._admin_header()).json()
         por_gerencia = corpo["por_gerencia"]
