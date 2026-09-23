@@ -14,6 +14,7 @@ import zipfile
 from pathlib import Path
 
 from backend.db import Database, EquipeFiscalRepository, UserRepository
+from backend.db import GerenciaRepository
 from backend.importar_equipes import (
     COR_CABECALHO,
     COR_SUPERVISOR,
@@ -22,6 +23,7 @@ from backend.importar_equipes import (
     extrair,
     extrair_supervisores,
     planejar_amarracao,
+    planejar_lotacao,
 )
 
 _MEMORY = Path(":memory:")
@@ -334,6 +336,101 @@ class TestPlanejarAmarracao(unittest.TestCase):
         self.assertFalse(
             self.users.amarrar_equipe_por_matricula("1000", 427, promover=True)
         )
+
+
+class TestPlanejarLotacao(unittest.TestCase):
+    """
+    Preenchimento de `users.gerencia_id` pela gerencia da equipe fiscal.
+
+    E a mesma ponte que o painel usa para o corte por gerencia, mas com
+    uma exigencia a mais: aqui o resultado fica GRAVADO no cadastro,
+    entao nao ha desempate no palpite — quem esta em equipes de gerencias
+    diferentes fica para o admin resolver na tela.
+    """
+
+    # GOAC e GOFE, pelos codigos dos elementos organizacionais.
+    GOAC, GOFE = 513, 254
+
+    def setUp(self):
+        self.db = InMemoryDatabase()
+        self.db.init_schema()
+        self.users = UserRepository(self.db)
+        self.gerencias = GerenciaRepository(self.db)
+        self.equipes = EquipeFiscalRepository(self.db)
+        self.id_goac = self.gerencias.upsert_por_codigo_atf(self.GOAC, "GOAC")
+        self.equipes.substituir_tudo(
+            [(429, "GOAC - MALHAS"), (427, "GOFE - VAREJO")],
+            [(429, "1000", "FULANO"), (427, "2000", "BELTRANO")],
+            gerencias={429: self.GOAC, 427: self.GOFE},
+        )
+
+    def _criar(self, username, matricula, role="fiscal", gerencia_id=None):
+        return self.users.create_user(
+            username, "hash", "salt", role, gerencia_id, None, False, matricula, None,
+        )
+
+    def _planejar(self):
+        return planejar_lotacao(self.users, self.gerencias, self.equipes)
+
+    def test_lota_pela_gerencia_da_equipe(self):
+        self._criar("FULANO", "1000")
+        a_lotar, ja_ok, impedidos = self._planejar()
+        self.assertEqual(a_lotar, [("1000", "FULANO", self.id_goac, "GOAC")])
+        self.assertEqual((ja_ok, impedidos), ([], []))
+
+        self.assertTrue(self.users.lotar_gerencia_por_matricula("1000", self.id_goac))
+        self.assertEqual(
+            self.users.get_user_by_matricula("1000")["gerencia_id"], self.id_goac
+        )
+
+    def test_nao_sobrescreve_lotacao_feita_a_mao(self):
+        """O que o admin disse na tela manda mais do que a deducao."""
+        outra = self.gerencias.create_gerencia("Gerencia local")
+        self._criar("FULANO", "1000", gerencia_id=outra)
+        a_lotar, ja_ok, _ = self._planejar()
+        self.assertEqual(a_lotar, [])
+        self.assertEqual(len(ja_ok), 1)
+
+        self.assertFalse(self.users.lotar_gerencia_por_matricula("1000", self.id_goac))
+        self.assertEqual(self.users.get_user_by_matricula("1000")["gerencia_id"], outra)
+
+    def test_em_duas_gerencias_fica_para_o_admin(self):
+        self.equipes.substituir_tudo(
+            [(429, "GOAC - MALHAS"), (427, "GOFE - VAREJO")],
+            [(429, "1000", "FULANO"), (427, "1000", "FULANO")],
+            gerencias={429: self.GOAC, 427: self.GOFE},
+        )
+        self.gerencias.upsert_por_codigo_atf(self.GOFE, "GOFE")
+        self._criar("FULANO", "1000")
+        a_lotar, _, impedidos = self._planejar()
+        self.assertEqual(a_lotar, [])
+        self.assertTrue(any("em equipes de 2 gerencias" in m for m in impedidos))
+        self.assertIsNone(self.users.get_user_by_matricula("1000")["gerencia_id"])
+
+    def test_gerencia_fora_do_cadastro_nao_lota(self):
+        """A GOFE existe na equipe, mas nao no cadastro local."""
+        self._criar("BELTRANO", "2000")
+        a_lotar, _, impedidos = self._planejar()
+        self.assertEqual(a_lotar, [])
+        self.assertTrue(any("ainda nao esta no cadastro" in m for m in impedidos))
+
+    def test_quem_nao_tem_login_e_ignorado_em_silencio(self):
+        """
+        A planilha alcanca 334 auditores e nem todos precisam de login
+        aqui: isso nao e pendencia, entao nao vira aviso.
+        """
+        a_lotar, ja_ok, impedidos = self._planejar()
+        self.assertEqual((a_lotar, ja_ok, impedidos), ([], [], []))
+
+    def test_equipe_sem_gerencia_nao_lota(self):
+        """As duas equipes que a area fiscal deixou fora do painel."""
+        self.equipes.substituir_tudo(
+            [(613, "GEST - ALGO")], [(613, "1000", "FULANO")], gerencias={},
+        )
+        self._criar("FULANO", "1000")
+        a_lotar, _, impedidos = self._planejar()
+        self.assertEqual((a_lotar, impedidos), ([], []))
+        self.assertIsNone(self.users.get_user_by_matricula("1000")["gerencia_id"])
 
 
 class TestEquipeFiscalRepository(unittest.TestCase):

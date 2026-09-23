@@ -324,6 +324,28 @@ class UserRepository:
                 )
         return True
 
+    def lotar_gerencia_por_matricula(self, matricula: str, gerencia_id: int) -> bool:
+        """
+        Preenche a gerencia de quem esta sem lotacao. True se gravou.
+
+        So escreve em cima de NULL, e o `WHERE` garante isso no proprio
+        UPDATE: a lotacao que o admin fez na tela vale sobre a deduzida
+        pela equipe — a mesma ordem que `_gerencia_por_matricula` usa no
+        painel. Reexecutar nao mexe em quem ja esta lotado, entao rodar de
+        novo depois de cada planilha e seguro.
+
+        Nao toca em `supervisao_id`: a supervisao e recorte local, a
+        gerencia do ATF nao tem nenhuma cadastrada, e inventar uma seria
+        inventar hierarquia que ninguem confirmou.
+        """
+        with self._db.connect() as conn:
+            cur = conn.execute(
+                "UPDATE users SET gerencia_id = ? "
+                "WHERE matricula = ? AND gerencia_id IS NULL",
+                (gerencia_id, str(matricula)),
+            )
+            return cur.rowcount > 0
+
     def get_matriculas_cadastradas(self) -> set[str]:
         """
         Matriculas que ja tem usuario, para a importacao em lote saber o
@@ -659,33 +681,56 @@ class EquipeFiscalRepository:
         )
         return len(equipes), len(membros)
 
-    def get_gerencia_atf_por_matricula(self) -> dict[str, int]:
+    def get_gerencias_atf_por_matricula(self) -> dict[str, list[int]]:
         """
-        Mapa matricula -> codigo da gerencia (elemento organizacional).
+        Mapa matricula -> codigos das gerencias (elementos organizacionais)
+        das equipes de que ela participa, em ordem crescente.
 
-        E a ponte que faltava para o corte por gerencia do painel de OS:
-        a equipe vem do ATF e alcanca os 334 auditores, enquanto a lotacao
-        local (`users.gerencia_id`) so existe para quem o admin cadastrou
-        a mao — hoje, as 24 matriculas de exemplo.
+        E a ponte que faltava entre a OS do ATF e a gerencia: a equipe vem
+        do ATF e alcanca os 334 auditores, enquanto a lotacao local
+        (`users.gerencia_id`) so existe para quem o admin cadastrou a mao.
 
-        Quem esta em duas equipes de gerencias diferentes aparece uma vez
-        so, com a de MENOR codigo. E arbitrario, e de proposito: o corte
-        conta OS por gerencia, e deixar a mesma matricula em duas faria a
-        soma passar do total sem que ninguem soubesse dizer por que. O
-        caso e raro (a planilha tem 339 vinculos para 334 pessoas) e quem
-        precisa da visao completa tem o corte por equipe no filtro.
+        A lista quase sempre tem um item so. Ela e lista, e nao um valor,
+        porque quem chama precisa saber a diferenca entre "a equipe diz
+        qual e" e "as equipes discordam": o painel resolve o empate
+        sozinho (ver `get_gerencia_atf_por_matricula`) e a lotacao em
+        `users` prefere nao gravar nenhuma.
         """
         with self._db.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT m.matricula AS matricula, MIN(e.gerencia_codigo) AS gerencia
+                SELECT DISTINCT m.matricula AS matricula,
+                       e.gerencia_codigo AS gerencia
                 FROM equipe_membros m
                 JOIN equipes_fiscais e ON e.codigo = m.codigo_equipe
                 WHERE e.gerencia_codigo IS NOT NULL
-                GROUP BY m.matricula
+                ORDER BY m.matricula, e.gerencia_codigo
                 """
             ).fetchall()
-        return {str(row["matricula"]): int(row["gerencia"]) for row in rows}
+        mapa: dict[str, list[int]] = {}
+        for row in rows:
+            mapa.setdefault(str(row["matricula"]), []).append(int(row["gerencia"]))
+        return mapa
+
+    def get_gerencia_atf_por_matricula(self) -> dict[str, int]:
+        """
+        Mapa matricula -> codigo da gerencia, uma so por pessoa.
+
+        Quem esta em duas equipes de gerencias diferentes aparece uma vez
+        so, com a de MENOR codigo. E arbitrario, e de proposito: o corte
+        do painel conta OS por gerencia, e deixar a mesma matricula em
+        duas faria a soma passar do total sem que ninguem soubesse dizer
+        por que. O caso e raro (a planilha tem 339 vinculos para 334
+        pessoas) e quem precisa da visao completa tem o corte por equipe
+        no filtro.
+
+        O cadastro NAO usa este desempate: gravar `users.gerencia_id` e
+        dizer onde a pessoa esta lotada, e um chute ali fica no banco.
+        """
+        return {
+            matricula: codigos[0]
+            for matricula, codigos in self.get_gerencias_atf_por_matricula().items()
+        }
 
     def list_equipes(self) -> list[dict[str, Any]]:
         """Lista as equipes com a contagem de membros, em ordem alfabetica."""

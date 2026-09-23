@@ -268,6 +268,16 @@ Gerados em tempo real a partir das OS visiveis ao usuario:
 - Supervisoes: criar, listar, editar (com validacao de cascata gerencia-supervisao)
 - Usuarios: criar, listar, editar, reset de senha (com validacao de cargo + lotacao)
 
+A lotacao do usuario tem duas partes e nenhuma delas e obrigatoria desde
+23/09/2026: **gerencia** (do ATF ou local) e **supervisao** (so local).
+Exigir supervisao impedia cadastrar qualquer pessoa nas 10 gerencias que
+vieram do ATF, que nao tem supervisao nenhuma — e era tambem o que fazia
+a edicao de um auditor importado falhar com "Gerencia invalida" sem que o
+admin tivesse tocado na lotacao: a tela mandava `Number("")`, isto e, 0.
+Quando as duas vem preenchidas, a cascata continua sendo conferida. A
+unica exigencia que sobrou e o **gerente**, que sem gerencia nao
+enxergaria nenhuma OS alem das proprias.
+
 ### Interface
 - **Dark mode**: toggle no topbar, persistido no `localStorage`
 - **Filtro por periodo**: botoes predefinidos (7d, 30d, 90d, 6m, 1ano) + datas customizadas
@@ -986,6 +996,54 @@ passou de 24 para 339 matriculas, e o corte de "tudo em sem gerencia"
 para 8 gerencias, com 3% das OS sem — as que nao tem fiscal designado ou
 cujo fiscal nao esta em equipe nenhuma.
 
+#### A mesma regra preenche a lotacao no cadastro
+
+O painel deduz a gerencia na hora de montar o grafico e nao grava nada;
+a tela de usuarios continuava mostrando "-" na coluna Gerencia para os
+334 auditores importados. Desde 23/09/2026 a mesma deducao pode descer
+para o cadastro:
+
+```bash
+python -m backend.importar_equipes --lotar-por-equipe
+```
+
+Sem planilha mesmo: a gerencia de cada equipe ja esta em
+`equipes_fiscais.gerencia_codigo` desde a ultima carga, e o que falta e
+so leva-la ate `users.gerencia_id`. Passar a planilha junto tambem
+funciona, e ai a lotacao roda no fim da importacao. `--dry-run` lista
+nome por nome sem gravar.
+
+A regra de quem e tocado:
+
+- **so escreve em cima de NULL.** A lotacao que o admin fez na tela vale
+  sobre a deduzida — a mesma ordem que o painel usa. Reexecutar depois
+  de cada planilha e seguro;
+- **quem esta em equipes de gerencias diferentes fica de fora**, e sai
+  como aviso. O painel desempata sozinho (pega a de menor codigo) para
+  nao contar a mesma OS duas vezes, mas cadastro e outra coisa: um chute
+  ali fica gravado dizendo onde a pessoa trabalha. Na carga que esta no
+  banco hoje nao ha nenhum caso;
+- **nao toca em `supervisao_id`.** As gerencias do ATF sao elemento
+  organizacional da SEFAZ e nao tem supervisao local nenhuma; inventar
+  uma seria inventar hierarquia que ninguem confirmou.
+
+Efeito na carga de 23/09/2026: **315 dos 334 auditores lotados**. Os 19
+restantes sao os das equipes `GEST_ITCD_TECNICOS` e `GEST_ITCD_AUDITORES`,
+que a area fiscal deixou fora do painel — continuam sem gerencia de
+proposito.
+
+O painel **nao muda**: o mapa matricula -> gerencia sai identico antes e
+depois (339 matriculas, nenhuma diferenca), porque a via da lotacao
+direta passa a dizer o que a via da equipe ja dizia. O que muda e o
+cadastro — e, com ele, a visibilidade do dia em que existir um gerente
+lotado numa gerencia do ATF: ele passa a enxergar as OS de todos os
+lotados nela. Hoje os tres gerentes cadastrados estao em gerencias
+locais de exemplo, entao ninguem ve nada novo.
+
+Para desfazer: `UPDATE users SET gerencia_id = NULL WHERE ...` no banco,
+ou volte o backup — o importador nao tem flag de desfazer, porque nao
+sabe distinguir o que ele preencheu do que o admin preencheu.
+
 #### Quem chefia cada equipe vem na cor da celula
 
 A exportacao de 02/09/2026 respondeu a pendencia da chefia, mas **sem
@@ -1067,10 +1125,13 @@ python -m backend.importar_usuarios CAMINHO/DADOS_ORDEM_SERVICO.xlsx --remover-s
 
 # 3. so agora, com os usuarios criados: amarra cada supervisor a sua equipe
 python -m backend.importar_equipes CAMINHO/DADOS_ORDEM_SERVICO.xlsx --amarrar-supervisores
+
+# 4. preenche a gerencia de cada um pela equipe fiscal dele (le so o banco)
+python -m backend.importar_equipes --lotar-por-equipe
 ```
 
-A ordem importa: `--amarrar-supervisores` procura o usuario pela
-matricula, entao rodado antes do passo 2 nao encontraria ninguem.
+A ordem importa: os passos 3 e 4 procuram o usuario pela matricula,
+entao rodados antes do passo 2 nao encontrariam ninguem.
 
 Os dois aceitam `--dry-run`. O segundo:
 
@@ -1087,9 +1148,13 @@ Os dois aceitam `--dry-run`. O segundo:
   teste, `--senha "Algo@123"` usa a mesma para todos e nao gera o arquivo
   (a troca no primeiro acesso continua exigida).
 
-As gerencias e supervisoes de exemplo **nao** sao removidas: o cadastro
-de usuario ainda exige lotacao, entao elas seguem servindo ate voce criar
-as reais. Renomeie ou substitua pela tela de admin.
+As gerencias e supervisoes de exemplo **nao** sao removidas. As gerencias
+de verdade ja chegam pela importacao das equipes (as 10 do ATF, casadas
+por `codigo_atf`), e as de exemplo convivem com elas ate voce apagar ou
+renomear pela tela de admin. As supervisoes de exemplo continuam sendo as
+unicas que existem — supervisao e recorte local, e o ATF nao manda
+nenhuma —, mas desde 23/09/2026 elas nao travam mais nada: o cadastro de
+usuario aceita gerencia sem supervisao.
 
 #### O seed nao volta sozinho
 

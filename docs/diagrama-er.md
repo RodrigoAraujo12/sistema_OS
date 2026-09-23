@@ -14,6 +14,7 @@ erDiagram
     gerencias {
         INTEGER id PK
         TEXT name "UNIQUE NOT NULL"
+        INTEGER codigo_atf "elemento organizacional; NULL nas locais"
     }
 
     supervisoes {
@@ -37,6 +38,7 @@ erDiagram
 
     equipes_fiscais {
         INTEGER codigo PK "cdEquipeFisc do ATF"
+        INTEGER gerencia_codigo "gerencia deduzida do nome da equipe"
         TEXT nome "NOT NULL"
     }
 
@@ -77,12 +79,19 @@ erDiagram
 | De | Para | Tipo | Descrição |
 |---|---|---|---|
 | `gerencias` | `supervisoes` | 1:N | Uma gerência possui várias supervisões |
-| `gerencias` | `users` | 1:N | Gerentes pertencem a uma gerência |
-| `supervisoes` | `users` | 1:N | Supervisores e fiscais pertencem a uma supervisão |
+| `gerencias` | `users` | 1:N | Qualquer cargo pode ser lotado numa gerência; só o gerente é obrigado |
+| `supervisoes` | `users` | 1:N | Supervisores e fiscais podem pertencer a uma supervisão (opcional) |
 | `equipes_fiscais` | `equipe_membros` | 1:N | Uma equipe tem vários auditores (um auditor pode estar em mais de uma) |
 | `equipes_fiscais` | `users` | 1:N | Um supervisor pode ser amarrado a uma equipe do ATF |
 | `users` | `ordens_servico` | 1:N | Supervisor supervisiona OS (via `matricula` ↔ `matricula_supervisor`) |
 | `users` | `ordens_servico` | N:N | Fiscal aparece em OS (via nome no campo `fiscais`) |
+
+A lotação de `users.gerencia_id` tem duas origens: o admin, pela tela de
+usuários, e a importação das equipes, que leva até `users` a gerência
+deduzida do nome da equipe fiscal — `equipe_membros` →
+`equipes_fiscais.gerencia_codigo` → `gerencias.codigo_atf`. A importação
+só escreve em cima de NULL; o que o admin disse manda mais (ver README,
+"A mesma regra preenche a lotacao no cadastro").
 
 ## Fontes de dados por endpoint
 

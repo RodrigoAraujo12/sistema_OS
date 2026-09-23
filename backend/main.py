@@ -158,9 +158,26 @@ ALLOWED_ROLES = {"gerente", "supervisor", "fiscal"}
 
 
 def _validate_user_payload(
-    role: str, gerencia_id: int, supervisao_id: int, equipe_codigo: int | None = None,
+    role: str,
+    gerencia_id: int | None,
+    supervisao_id: int | None,
+    equipe_codigo: int | None = None,
 ) -> None:
-    """Valida campos de cargo e lotacao para criacao/edicao de usuario."""
+    """
+    Valida campos de cargo e lotacao para criacao/edicao de usuario.
+
+    A supervisao e opcional desde 23/09/2026. As gerencias que vieram do
+    ATF nao tem supervisao local nenhuma — elas sao elemento
+    organizacional da SEFAZ, e a supervisao e recorte so daqui — entao
+    exigir uma tornava impossivel cadastrar alguem em qualquer uma delas,
+    justo as que a importacao passou a preencher. Quando as duas vem, a
+    cascata continua sendo conferida.
+
+    A gerencia tambem e opcional, porque e assim que os auditores entram
+    pela planilha. A excecao e o gerente: sem gerencia ele nao enxerga
+    ninguem alem de si, e um cadastro que nao funciona e pior do que um
+    cadastro recusado.
+    """
     if equipe_codigo is not None and not equipe_repo.get_equipe(equipe_codigo):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -168,12 +185,19 @@ def _validate_user_payload(
         )
     if role not in ALLOWED_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cargo invalido")
-    if not gerencia_repo.get_gerencia(gerencia_id):
+    if gerencia_id is not None and not gerencia_repo.get_gerencia(gerencia_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Gerencia invalida")
+    if role == "gerente" and gerencia_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Gerente precisa de gerencia: sem ela nao enxerga nenhuma OS alem das proprias",
+        )
+    if supervisao_id is None:
+        return
     supervisao = supervisao_repo.get_supervisao(supervisao_id)
     if not supervisao:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Supervisao invalida")
-    if int(supervisao["gerencia_id"]) != int(gerencia_id):
+    if gerencia_id is None or int(supervisao["gerencia_id"]) != int(gerencia_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cascata invalida")
 
 

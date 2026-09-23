@@ -61,6 +61,21 @@ function equipeSugerida(item) {
   return equipes.length === 1 ? String(equipes[0].codigo) : "";
 }
 
+/**
+ * Gerencia e supervisao do formulario, no formato que a API espera.
+ *
+ * Select vazio vira `null`, e nao `Number("")` — que e 0 e o backend
+ * recusava como "Gerencia invalida". Era por isso que editar um auditor
+ * importado (que entra sem lotacao) falhava sem o admin ter mexido em
+ * nada da lotacao.
+ */
+function lotacaoDoForm(form) {
+  return {
+    gerencia_id: form.gerencia_id ? Number(form.gerencia_id) : null,
+    supervisao_id: form.supervisao_id ? Number(form.supervisao_id) : null,
+  };
+}
+
 const emptyUserForm = {
   username: "",
   role: "supervisor",
@@ -111,8 +126,7 @@ export default function UsuariosAdmin({
       const criado = await apiClient.createUser({
         username: createForm.username,
         role: createForm.role,
-        gerencia_id: Number(createForm.gerencia_id),
-        supervisao_id: Number(createForm.supervisao_id),
+        ...lotacaoDoForm(createForm),
         matricula: createForm.matricula,
         equipe_codigo: createForm.equipe_codigo ? Number(createForm.equipe_codigo) : null,
       });
@@ -135,8 +149,7 @@ export default function UsuariosAdmin({
       await apiClient.updateUser(userId, {
         username: editForm.username,
         role: editForm.role,
-        gerencia_id: Number(editForm.gerencia_id),
-        supervisao_id: Number(editForm.supervisao_id),
+        ...lotacaoDoForm(editForm),
         matricula: editForm.matricula,
         equipe_codigo: editForm.equipe_codigo ? Number(editForm.equipe_codigo) : null,
       });
@@ -245,17 +258,25 @@ export default function UsuariosAdmin({
             </select>
           </label>
           <label>
-            Supervisao
+            Supervisao <span className="muted">(opcional)</span>
             <select
               value={createForm.supervisao_id}
               onChange={(e) => setCreateForm({ ...createForm, supervisao_id: e.target.value })}
-              required
             >
-              <option value="">Selecione</option>
+              <option value="">Sem supervisao</option>
               {createSupervisoesFiltradas.map((s) => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </select>
+            {/* As gerencias vindas do ATF nao tem supervisao local: elas
+                sao elemento organizacional da SEFAZ, e a supervisao e
+                recorte so daqui. Sem esta linha, o select vazio parecia
+                tela quebrada. */}
+            {createForm.gerencia_id && createSupervisoesFiltradas.length === 0 && (
+              <span className="muted" style={{ fontSize: 12 }}>
+                Esta gerencia nao tem supervisao cadastrada.
+              </span>
+            )}
           </label>
         </div>
         {/* So supervisor usa a equipe: e ela que define o que ele enxerga.

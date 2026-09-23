@@ -5,6 +5,8 @@ planilha que a SEFAZ envia (aba "Grupos de Auditores").
 Uso:
     python -m backend.importar_equipes CAMINHO/DADOS_ORDEM_SERVICO.xlsx
     python -m backend.importar_equipes ... --dry-run   # so relata
+    python -m backend.importar_equipes ... --amarrar-supervisores
+    python -m backend.importar_equipes ... --lotar-por-equipe
 
 A planilha NAO deve ser versionada: ela tem nome e matricula de
 servidores reais. Guarde-a fora do repositorio (ver NOTAS-INTERNAS.md).
@@ -351,9 +353,118 @@ def planejar_amarracao(
     return a_amarrar, ja_ok, impedidos
 
 
+def planejar_lotacao(
+    user_repo: UserRepository,
+    gerencia_repo: GerenciaRepository,
+    equipe_repo: EquipeFiscalRepository,
+) -> tuple[list[tuple[str, str, int, str]], list[str], list[str]]:
+    """
+    Cruza a gerencia deduzida da equipe com os usuarios, sem gravar nada.
+
+    Devolve (a_lotar, ja_ok, impedidos). Cada item de `a_lotar` e
+    (matricula, nome_do_usuario, gerencia_id, nome_da_gerencia).
+
+    Le do BANCO, nao da planilha: a gerencia da equipe ja foi gravada em
+    `equipes_fiscais.gerencia_codigo` pela importacao, e o que falta aqui
+    e so levar a informacao de `equipe_membros` ate `users.gerencia_id`.
+    Por isso o plano so faz sentido depois de a carga ter rodado.
+
+    Fica de fora, e cada caso vira uma linha em `impedidos`:
+
+    - quem nao tem usuario no sistema (a planilha alcanca 334 auditores;
+      nem todos precisam ter login aqui);
+    - quem esta em equipes de gerencias DIFERENTES. O painel desempata
+      sozinho para nao contar a OS duas vezes, mas cadastro e outra
+      coisa: gravar um dos dois seria registrar uma lotacao que ninguem
+      confirmou. Fica para o admin dizer na tela;
+    - gerencia do ATF que ainda nao esteja no cadastro local — no
+      caminho normal ela acabou de ser criada pela propria importacao.
+
+    Quem ja tem lotacao entra em `ja_ok` sem ser tocado, mesmo que a
+    equipe aponte para outra gerencia: o que o admin disse na tela manda
+    mais do que a deducao.
+    """
+    por_codigo_atf = {
+        int(g["codigo_atf"]): g
+        for g in gerencia_repo.list_gerencias()
+        if g.get("codigo_atf") is not None
+    }
+
+    a_lotar: list[tuple[str, str, int, str]] = []
+    ja_ok: list[str] = []
+    impedidos: list[str] = []
+
+    por_matricula = equipe_repo.get_gerencias_atf_por_matricula()
+    for matricula, codigos in sorted(por_matricula.items()):
+        usuario = user_repo.get_user_by_matricula(matricula)
+        if usuario is None:
+            continue
+        nome = usuario["username"]
+        if usuario.get("gerencia_id"):
+            ja_ok.append(f"{matricula} {nome}")
+            continue
+        if len(codigos) > 1:
+            siglas = ", ".join(SIGLA_POR_CODIGO.get(c, str(c)) for c in codigos)
+            impedidos.append(
+                f"{matricula} {nome}: em equipes de {len(codigos)} gerencias "
+                f"({siglas}); lote a mao na tela de usuarios"
+            )
+            continue
+        gerencia = por_codigo_atf.get(codigos[0])
+        if gerencia is None:
+            sigla = SIGLA_POR_CODIGO.get(codigos[0], str(codigos[0]))
+            impedidos.append(
+                f"{matricula} {nome}: gerencia {sigla} ainda nao esta no cadastro local"
+            )
+            continue
+        a_lotar.append((matricula, nome, int(gerencia["id"]), gerencia["name"]))
+    return a_lotar, ja_ok, impedidos
+
+
+def _lotar_por_equipe(database: Database, dry_run: bool) -> None:
+    """
+    Relata a lotacao deduzida da equipe e, fora do dry-run, grava.
+
+    Le so o banco, entao roda sem planilha nenhuma: a gerencia da equipe
+    ja esta em `equipes_fiscais.gerencia_codigo` desde a ultima carga.
+    """
+    user_repo = UserRepository(database)
+    a_lotar, ja_ok, impedidos = planejar_lotacao(
+        user_repo, GerenciaRepository(database), EquipeFiscalRepository(database)
+    )
+    print(
+        f"\n{len(a_lotar)} usuario(s) a lotar, {len(ja_ok)} ja lotados, "
+        f"{len(impedidos)} fora do alcance"
+    )
+    for matricula, nome, _, gerencia in a_lotar[:15]:
+        print(f"  {matricula:>9}  {nome:<42} -> {gerencia}")
+    if len(a_lotar) > 15:
+        print(f"  ... e mais {len(a_lotar) - 15}")
+    for motivo in impedidos:
+        print(f"  fora: {motivo}")
+
+    if dry_run:
+        return
+    lotados = sum(
+        1
+        for matricula, _, gerencia_id, _ in a_lotar
+        if user_repo.lotar_gerencia_por_matricula(matricula, gerencia_id)
+    )
+    print(
+        f"{lotados} usuario(s) lotados pela gerencia da equipe "
+        f"({len(ja_ok)} ja tinham lotacao e nao foram tocados)."
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Importa equipes fiscais do ATF.")
-    parser.add_argument("planilha", type=Path, help="caminho do .xlsx da SEFAZ")
+    # Opcional porque --lotar-por-equipe nao precisa de planilha nenhuma:
+    # ele so leva ate `users` a gerencia que a carga anterior ja gravou em
+    # `equipes_fiscais`. Exigir o arquivo ali obrigaria a reimportar tudo —
+    # e com a planilha errada em maos isso seria um retrocesso de dados.
+    parser.add_argument(
+        "planilha", type=Path, nargs="?", help="caminho do .xlsx da SEFAZ"
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -366,10 +477,31 @@ def main(argv: list[str] | None = None) -> int:
              "cada supervisor marcado chefia, promovendo-o de fiscal a "
              "supervisor (sem isso a chefia fica so no espelho da planilha)",
     )
+    parser.add_argument(
+        "--lotar-por-equipe",
+        action="store_true",
+        help="preenche users.gerencia_id de quem esta SEM lotacao com a "
+             "gerencia da equipe fiscal dele, a mesma que o painel deduz "
+             "do nome da equipe (nunca sobrescreve lotacao ja feita)",
+    )
     parser.add_argument("--db", type=Path, default=DB_PATH, help="banco alvo")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    if args.planilha is None:
+        if args.amarrar_supervisores or not args.lotar_por_equipe:
+            parser.error(
+                "informe a planilha; so --lotar-por-equipe roda sem ela, "
+                "lendo as equipes que ja estao no banco"
+            )
+        if not args.db.is_file():
+            print(f"Banco nao encontrado: {args.db}", file=sys.stderr)
+            return 1
+        _lotar_por_equipe(Database(args.db), dry_run=args.dry_run)
+        if args.dry_run:
+            print("\n--dry-run: nada foi gravado.")
+        return 0
 
     if not args.planilha.is_file():
         print(f"Planilha nao encontrada: {args.planilha}", file=sys.stderr)
@@ -454,6 +586,14 @@ def main(argv: list[str] | None = None) -> int:
         for motivo in impedidos:
             print(f"  fora: {motivo}")
 
+    if args.dry_run and args.lotar_por_equipe:
+        if not args.db.is_file():
+            print(f"\nBanco nao encontrado: {args.db}", file=sys.stderr)
+            return 1
+        # O plano sai do banco COMO ELE ESTA: a gerencia que esta carga
+        # ainda vai criar aparece aqui como "fora do cadastro local".
+        _lotar_por_equipe(Database(args.db), dry_run=True)
+
     if args.dry_run:
         print("\n--dry-run: nada foi gravado.")
         return 0
@@ -498,6 +638,13 @@ def main(argv: list[str] | None = None) -> int:
             if user_repo.amarrar_equipe_por_matricula(matricula, codigo, promover=True)
         )
         print(f"{alterados} usuario(s) atualizados (promovidos e/ou amarrados a equipe).")
+
+    # Depois da amarracao, e nao antes: promover alguem a supervisor nao
+    # mexe na lotacao, mas a ordem inversa faria o relatorio falar de um
+    # cadastro que a linha seguinte ainda ia mudar.
+    if args.lotar_por_equipe:
+        _lotar_por_equipe(database, dry_run=False)
+
     return 0
 
 

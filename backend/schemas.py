@@ -118,8 +118,12 @@ class UserCreateRequest(BaseModel):
     """Dados para criar um usuario (a senha padrao e atribuida pelo backend)."""
     username: str
     role: str
-    gerencia_id: int
-    supervisao_id: int
+    gerencia_id: int | None = None
+    # Opcional desde 23/09/2026: as 10 gerencias que vieram do ATF nao tem
+    # supervisao local nenhuma, e exigir uma impedia cadastrar qualquer
+    # pessoa nelas. Quem so tem gerencia continua visivel pela gerencia;
+    # a supervisao segue valendo para o cadastro local, onde ela existe.
+    supervisao_id: int | None = None
     matricula: str = Field(min_length=3)
     equipe_codigo: int | None = None
 
@@ -128,8 +132,8 @@ class UserUpdateRequest(BaseModel):
     """Dados para editar um usuario existente."""
     username: str
     role: str
-    gerencia_id: int
-    supervisao_id: int
+    gerencia_id: int | None = None
+    supervisao_id: int | None = None
     matricula: str = Field(min_length=3)
     equipe_codigo: int | None = None
 

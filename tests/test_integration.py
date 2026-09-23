@@ -555,6 +555,91 @@ class TestUsersEndpoints(IntegrationTestBase):
         )
         self.assertEqual(r.status_code, 400)
 
+    def test_create_user_sem_supervisao(self):
+        """
+        As 10 gerencias vindas do ATF nao tem supervisao local nenhuma.
+        Exigir uma tornava impossivel cadastrar alguem justo nelas.
+        """
+        h = self._admin_header()
+        gid, _ = self._get_valid_ids(h)
+        r = self.client.post(
+            "/admin/users",
+            json={
+                "username": "So Gerencia",
+                "role": "fiscal",
+                "gerencia_id": gid,
+                "matricula": "95001",
+            },
+            headers=h,
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["gerencia_id"], gid)
+        self.assertIsNone(r.json()["supervisao_id"])
+
+    def test_create_user_sem_lotacao_nenhuma(self):
+        """E como os 334 auditores entram pela planilha."""
+        h = self._admin_header()
+        r = self.client.post(
+            "/admin/users",
+            json={"username": "Sem Lotacao", "role": "fiscal", "matricula": "95002"},
+            headers=h,
+        )
+        self.assertEqual(r.status_code, 200)
+
+    def test_create_gerente_sem_gerencia_recusado(self):
+        """Gerente sem gerencia nao enxerga ninguem: cadastro que nao funciona."""
+        h = self._admin_header()
+        r = self.client.post(
+            "/admin/users",
+            json={"username": "Gerente Solto", "role": "gerente", "matricula": "95003"},
+            headers=h,
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Gerente precisa de gerencia", r.json()["detail"])
+
+    def test_create_user_supervisao_sem_gerencia_recusada(self):
+        """Supervisao sempre pertence a uma gerencia; sozinha e cascata quebrada."""
+        h = self._admin_header()
+        _, sid = self._get_valid_ids(h)
+        r = self.client.post(
+            "/admin/users",
+            json={
+                "username": "So Supervisao",
+                "role": "fiscal",
+                "supervisao_id": sid,
+                "matricula": "95004",
+            },
+            headers=h,
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Cascata invalida", r.json()["detail"])
+
+    def test_update_user_sem_lotacao_nao_e_recusado(self):
+        """
+        A tela mandava `Number("")` — isto e, 0 — para quem estava sem
+        lotacao, e o backend recusava como "Gerencia invalida": editar
+        qualquer auditor importado falhava sem o admin ter tocado na
+        lotacao. Agora o campo vazio vai como null e a edicao passa.
+        """
+        h = self._admin_header()
+        criado = self.client.post(
+            "/admin/users",
+            json={"username": "Importado", "role": "fiscal", "matricula": "95005"},
+            headers=h,
+        ).json()
+        r = self.client.put(
+            f"/admin/users/{criado['id']}",
+            json={
+                "username": "Importado Renomeado",
+                "role": "fiscal",
+                "gerencia_id": None,
+                "supervisao_id": None,
+                "matricula": "95005",
+            },
+            headers=h,
+        )
+        self.assertEqual(r.status_code, 200)
+
     def test_create_user_cascata_invalida(self):
         """Supervisao de outra gerencia deve dar erro de cascata."""
         h = self._admin_header()
