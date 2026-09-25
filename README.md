@@ -71,8 +71,8 @@ O Sistema SEFAZ PB permite que auditores fiscais, supervisores, gerentes e admin
 
 - **Painel de OS** com filtros por status, tipo, periodo e busca textual
 - **Dashboard com KPIs em tempo real**, graficos interativos e comparativo mensal
-- **Termometro da Fiscalizacao** – ranking de saude por gerencia baseado em formula proporcional
-- **Alertas automaticos** para OS urgentes, paradas e sem ciencia
+- **Termometro da Fiscalizacao** – ranking de saude por gerencia, sobre a taxa de encerramento e a ciencia das OS do ATF
+- **Alertas automaticos** para OS sem evento de acompanhamento e fiscal sem ciencia (incluindo OS bloqueada)
 - **Relatorios exportaveis** em CSV e PDF (OS e Dashboard)
 - **Controle de acesso hierarquico** – cada perfil ve apenas o que lhe compete
 - **Dark mode** com toggle e persistencia no localStorage
@@ -255,13 +255,24 @@ Admin (acesso total)
 - Download de PDF individual de cada OS
 
 ### Alertas Automaticos
-Gerados em tempo real a partir das OS visiveis ao usuario:
+Gerados sobre as OS do ATF visiveis ao usuario (mesma hierarquia da
+listagem), **abertas nos ultimos 12 meses** — o maior periodo que o ATF
+aceita numa busca so por periodo. OS aberta antes disso e ainda em
+execucao nao entra.
 
-| Tipo             | Severidade | Condicao                                |
-| ---------------- | ---------- | --------------------------------------- |
-| `os_urgente`     | Alta       | Prioridade "urgente" + status ativo     |
-| `os_parada`      | Alta       | Parada > 15 dias sem movimentacao       |
-| `os_sem_ciencia` | Media      | Status "aberta" sem data de ciencia     |
+| Tipo             | Severidade | Condicao                                                                 |
+| ---------------- | ---------- | ------------------------------------------------------------------------ |
+| `os_parada`      | Alta       | OS **autorizada** sem evento de acompanhamento ha mais de 15 dias (`DIAS_SEM_EVENTO_ALERTA`); sem evento, conta do inicio da fiscalizacao ou da abertura |
+| `os_sem_ciencia` | Alta       | Fiscal designado sem ciencia numa OS que o ATF ja **bloqueou** — o desbloqueio e do supervisor, no ATF |
+| `os_sem_ciencia` | Media      | Fiscal designado, e nao cancelado, sem ciencia numa OS que nao terminou |
+
+Cada consulta e uma listagem do ATF (~15 s em homologacao para 6.879 OS),
+entao os alertas **nao carregam no login**: saem ao abrir a aba, e o
+botao Atualizar refaz. A tela mostra 100 por vez.
+
+Ate 25/09/2026 os alertas vinham de uma lista fixa de OS de exemplo, e
+havia um `os_urgente` por prioridade. O ATF nao tem prioridade, e esse
+alerta saiu junto com o mock.
 
 ### CRUD Administrativo (somente Admin)
 - Gerencias: criar, listar, editar
@@ -280,7 +291,7 @@ enxergaria nenhuma OS alem das proprias.
 
 ### Interface
 - **Dark mode**: toggle no topbar, persistido no `localStorage`
-- **Filtro por periodo**: botoes predefinidos (7d, 30d, 90d, 6m, 1ano) + datas customizadas
+- **Filtro por periodo** (abas do Dashboard): atalhos (30d, 90d, 6m, ano atual, 12m) que so preenchem as datas; periodo de abertura obrigatorio, no maximo um ano, e a consulta sai no botao
 - **Comparativo mensal**: deltas nos KPIs com setas coloridas (verde = melhoria, vermelho = piora)
 - **Responsivo**: cards e tabelas adaptam-se a telas menores
 
@@ -288,29 +299,34 @@ enxergaria nenhuma OS alem das proprias.
 
 Acessivel apenas pelo perfil **admin**. Contem:
 
-### KPIs (Indicadores-Chave)
-8 cards com metricas em tempo real + **deltas mensais** (com setas coloridas):
-- Total de OS
-- Em Andamento (seta vermelha = aumento e ruim)
-- Tempo Medio de Conclusao (dias)
-- OS Criticas (>15 dias paradas)
-- Media de Dias Parado
-- OS Sem Ciencia
-- Fiscais Ativos
-- Supervisores
+Todas as abas leem o ATF. Ordens de Servico e Eventos tem cada uma a
+propria consulta; Visao Geral, Gerencias, Supervisoes e Fiscais dividem
+uma so (`GET /admin/dashboard`), com periodo de abertura obrigatorio e
+filtros de gerencia e equipe aplicados no navegador. Contrato em
+[`docs/dashboard-api-spec.md`](docs/dashboard-api-spec.md).
 
-O **comparativo mensal** compara o mes mais recente com o anterior e exibe indicadores:
-- Seta verde para cima = melhoria (ex: mais concluidas)
-- Seta vermelha para cima = piora (ex: mais criticas)
+### KPIs (Indicadores-Chave)
+8 cards nas abas de desempenho, com **deltas mensais** (setas coloridas):
+- Total de OS
+- Em andamento (seta vermelha = aumento e ruim)
+- Taxa de encerramento
+- OS sem ciencia
+- Encerradas
+- Bloqueadas
+- Fiscais com OS ativa
+- Equipes com OS
+
+O **comparativo mensal** compara as OS abertas no ultimo mes do periodo
+com as do mes anterior, e so aparece sem filtro de gerencia ou equipe.
 
 ### Abas do Dashboard
 
 | Aba          | Conteudo                                                                |
 | ------------ | ----------------------------------------------------------------------- |
-| Visao Geral  | Grafico pizza (status), evolucao mensal (linha), Termometro             |
-| Gerencias    | Tabela + grafico comparativo por gerencia (barras agrupadas)            |
-| Supervisoes  | Tabela + grafico comparativo por supervisao                             |
-| Fiscais      | Tabela de carga de trabalho por fiscal                                  |
+| Visao Geral  | Termometro, pizza por situacao do ATF, evolucao mensal por safra, comparativo por gerencia |
+| Gerencias    | Taxa de encerramento + tabela por gerencia do cadastro                 |
+| Supervisoes  | Uma linha por **equipe fiscal** do ATF, com os supervisores da planilha |
+| Fiscais      | Carga de trabalho (OS ativas) por fiscal                                |
 
 ### Termometro da Fiscalizacao
 
@@ -325,33 +341,31 @@ Ranking visual de saude por gerencia, com cards coloridos por nivel:
 
 ## Formula do Indice de Saude
 
-O score e calculado de forma **proporcional** para escalar com qualquer volume de OS (a SEFAZ PB fiscaliza o estado inteiro):
+O score e **proporcional**, para escalar com qualquer volume de OS, e
+sai das OS do ATF abertas no periodo:
 
 ```
 Score = 100
-      - (% OS criticas)           x 0.40   // Ate -40 pts
-      - (dias parado medio)       x 0.5    // Cada dia = -0.5 pt
-      - (100 - taxa conclusao%)   x 0.20   // Ate -20 pts
-      - (% OS sem ciencia)        x 0.20   // Ate -20 pts
+      - (100 - taxa de encerramento%)  x 0.50   // Ate -50 pts
+      - (% OS sem ciencia)             x 0.50   // Ate -50 pts
 ```
 
 Onde:
-- **OS critica** = OS ativa (aberta/em_andamento) parada ha mais de 15 dias
-- **Taxa de conclusao** = (concluidas / total) x 100
-- **OS sem ciencia** = status "aberta" sem `data_ciencia` preenchida
-- Score final limitado entre 0 e 100 (clamped)
+- **Taxa de encerramento** = encerradas / (total - canceladas e substituidas) x 100
+- **OS sem ciencia** = OS que nao terminou com fiscal designado, e nao cancelado, sem `dataCiencia`
+- Score final limitado entre 0 e 100
+- Gerencia sem OS no periodo fica fora do Termometro (sairia com 100 sem ter sido medida)
 
-**Exemplo**: Gerencia com 20 OS, 4 criticas (20%), media 25 dias parado, taxa 40%, 3 sem ciencia (15%):
+Numa janela recente a taxa e baixa por calendario, e nao por desempenho:
+as OS ainda nao tiveram tempo de encerrar.
+
+**Exemplo**: gerencia com 11 OS, taxa de encerramento 10%, 9 sem ciencia (81,8%):
 ```
-Score = 100 - (20 x 0.4) - (25 x 0.5) - (60 x 0.2) - (15 x 0.2) = 100 - 8 - 12.5 - 12 - 3 = 64.5 -> Atencao
+Score = 100 - (90 x 0.5) - (81.8 x 0.5) = 100 - 45 - 40.9 = 14.1 -> Emergencia
 ```
 
-As constantes da formula estao definidas em `backend/external_api.py`:
-- `PESO_CRITICAS = 0.40`
-- `PESO_DIAS_PARADO = 0.5`
-- `PESO_TAXA_CONCLUSAO = 0.20`
-- `PESO_SEM_CIENCIA = 0.20`
-- `DIAS_CRITICO_THRESHOLD = 15`
+As constantes estao em `backend/external_api.py`: `PESO_TAXA_ENCERRAMENTO = 0.50`
+e `PESO_SEM_CIENCIA = 0.50`.
 
 ## Arquitetura
 
@@ -383,8 +397,8 @@ As constantes da formula estao definidas em `backend/external_api.py`:
 - **Separacao de responsabilidades**: auth, db, schemas, external_api, config em modulos independentes
 - **Fallback gracioso**: Informix indisponivel -> dados MOCK automaticamente
 - **Validacao dupla**: Pydantic (schemas) + regras de negocio (endpoints)
-- **Constantes nomeadas**: magic numbers extraidos para constantes (`DIAS_CRITICO_THRESHOLD`, `PESO_*`, `PBKDF2_ITERATIONS`)
-- **Helpers reutilizaveis**: `_calcular_metricas_os()` usado por visao geral, gerencias, supervisoes e comparativo
+- **Constantes nomeadas**: magic numbers extraidos para constantes (`DIAS_SEM_EVENTO_ALERTA`, `PESO_*`, `PBKDF2_ITERATIONS`)
+- **Helpers reutilizaveis**: `_metricas_desempenho()` usado por visao geral, gerencias, equipes e comparativo
 - **Exception chaining**: `raise ... from exc` em todos os handlers de `IntegrityError`
 - **DRY**: funcoes helper como `_get_user_by()`, `_validate_user_payload()` eliminam duplicacao
 
@@ -431,7 +445,7 @@ sistema_sefaz/
 |   |-- test_auth.py                # Hash, tokens, login, registro, troca de senha (18 testes)
 |   |-- test_db.py                  # CRUD usuarios, gerencias, supervisoes – SQLite in-memory (23 testes)
 |   |-- test_schemas.py             # Validacao Pydantic, campos obrigatorios/opcionais (19 testes)
-|   |-- test_external_api.py        # Alertas, dashboard, filtros hierarquicos, dias parado (84 testes)
+|   |-- test_external_api.py        # SOAP, caches, alertas e dashboards sobre o ATF (90 testes)
 |   |-- test_equipes_fiscais.py     # Importacao da planilha de equipes e visibilidade (25 testes)
 |   |-- test_eventos_os.py          # Servico de eventos e cortes do bloco 2 (24 testes)
 |   |-- test_seed_e_importacao_usuarios.py  # Seed e importacao dos auditores reais (12 testes)
@@ -537,15 +551,14 @@ Authorization: Bearer <token>
 | ------ | ------------------------------- | ---------------------------------- | ----- |
 | GET    | `/relatorios/ordens`            | Exporta OS em CSV (com filtros)    | Token |
 | GET    | `/relatorios/ordens/pdf`        | Exporta OS em PDF (com filtros)    | Token |
-| GET    | `/relatorios/dashboard`         | Exporta dashboard em CSV           | Admin |
-| GET    | `/relatorios/dashboard/pdf`     | Exporta dashboard em PDF           | Admin |
+| GET    | `/relatorios/dashboard`         | Exporta desempenho (ATF) em CSV; periodo obrigatorio | Admin |
+| GET    | `/relatorios/dashboard/pdf`     | Exporta desempenho (ATF) em PDF; periodo obrigatorio | Admin |
 
 ### Administracao (somente Admin)
 
 | Metodo | Rota                                              | Descricao                          |
 | ------ | ------------------------------------------------- | ---------------------------------- |
-| GET    | `/admin/dashboard`                                | Dashboard com KPIs e graficos      |
-| GET    | `/admin/dashboard?data_inicio=...&data_fim=...`   | Dashboard filtrado por periodo     |
+| GET    | `/admin/dashboard?data_inicio=...&data_fim=...`   | Desempenho sobre o ATF (periodo de abertura obrigatorio) |
 | GET    | `/admin/dashboard/os`                             | Cortes de qtd de OS (dados do ATF) |
 | GET    | `/admin/dashboard/eventos`                        | Cortes de qtd de EVENTOS (doc dos eventos) |
 | POST   | `/admin/gerencias`                                | Criar gerencia                     |
@@ -628,83 +641,12 @@ possiveis para a visibilidade em
 
 ### Resposta do Dashboard (`GET /admin/dashboard`)
 
-```json
-{
-  "visao_geral": {
-    "total_os": 30,
-    "os_abertas": 14,
-    "os_em_andamento": 8,
-    "os_concluidas": 7,
-    "os_canceladas": 1,
-    "dias_parado_medio": 23.5,
-    "os_criticas": 18,
-    "os_sem_ciencia": 6,
-    "tempo_medio_conclusao": 12.3,
-    "total_fiscais": 15,
-    "total_supervisores": 6
-  },
-  "comparativo_mensal": {
-    "total_os": { "atual": 9, "anterior": 9, "delta": 0 },
-    "em_andamento": { "atual": 3, "anterior": 5, "delta": -2 },
-    "os_criticas": { "atual": 5, "anterior": 8, "delta": -3 },
-    "os_sem_ciencia": { "atual": 2, "anterior": 4, "delta": -2 },
-    "tempo_medio_conclusao": { "atual": 10.0, "anterior": 14.0, "delta": -4.0 },
-    "dias_parado_medio": { "atual": 22.0, "anterior": 28.0, "delta": -6.0 },
-    "_labels": { "mes_atual": "2026-02", "mes_anterior": "2026-01" }
-  },
-  "distribuicao_status": {
-    "aberta": 14,
-    "em_andamento": 8,
-    "concluida": 7,
-    "cancelada": 1
-  },
-  "evolucao_mensal": [
-    { "mes": "2025-09", "abertas": 1, "concluidas": 0 }
-  ],
-  "desempenho_gerencias": [
-    {
-      "id": 1,
-      "nome": "Gerencia de Fiscalizacao",
-      "total_os": 10,
-      "os_abertas": 5,
-      "os_em_andamento": 3,
-      "os_concluidas": 2,
-      "os_canceladas": 0,
-      "taxa_conclusao": 20.0,
-      "os_criticas": 6,
-      "os_sem_ciencia": 3,
-      "tempo_medio_conclusao": 15.0
-    }
-  ],
-  "ranking_criticidade": [
-    {
-      "id": 1,
-      "nome": "Gerencia de Fiscalizacao",
-      "indice_saude": 37.1,
-      "nivel": "critico",
-      "total_os": 10,
-      "os_criticas": 6,
-      "pct_criticas": 60.0,
-      "os_sem_ciencia": 3,
-      "pct_sem_ciencia": 30.0,
-      "dias_parado_medio": 28.0,
-      "taxa_conclusao": 20.0,
-      "problemas": [
-        "6 OS parada(s) >5 dias (60%)",
-        "3 OS sem ciencia (30%)",
-        "Media 28.0 dias parado",
-        "Taxa de conclusao 20.0%"
-      ]
-    }
-  ],
-  "desempenho_supervisoes": [
-    { "id": 1, "nome": "Supervisao Fiscal A", "gerencia": "...", "total_os": 5 }
-  ],
-  "carga_fiscais": [
-    { "nome": "Carlos Mendes", "os_ativas": 4, "os_criticas": 3, "os_sem_ciencia": 1 }
-  ]
-}
-```
+Visao geral (grupos de situacao, OS sem ciencia, taxa de encerramento),
+comparativo mensal, pizza por situacao, evolucao mensal por safra,
+desempenho por gerencia e por equipe fiscal, Termometro e carga por
+fiscal. O JSON completo, a tabela de grupos de situacao e como cada corte
+e montado estao em
+[`docs/dashboard-api-spec.md`](docs/dashboard-api-spec.md).
 
 ## Testes
 
@@ -715,7 +657,7 @@ O projeto possui **329 testes** (unitarios + integracao) com cobertura dos modul
 | Autenticacao   | `tests/test_auth.py`         | 18     | Hash PBKDF2, criacao/validacao de token, login, registro, troca/reset de senha |
 | Banco de Dados | `tests/test_db.py`           | 23     | CRUD de users, gerencias, supervisoes (SQLite in-memory)     |
 | Schemas        | `tests/test_schemas.py`      | 19     | Validacao Pydantic, campos obrigatorios/opcionais            |
-| API Externa    | `tests/test_external_api.py` | 84     | Alertas, dashboard, filtros hierarquicos, dias parado, metricas |
+| API Externa    | `tests/test_external_api.py` | 90     | Envelopes e parse SOAP, caches, alertas e dashboards sobre o ATF |
 | Equipes fiscais| `tests/test_equipes_fiscais.py` | 25  | Importacao da planilha, vinculo equipe/membros, visibilidade |
 | Eventos de OS  | `tests/test_eventos_os.py`   | 24     | Servico de eventos: envelope, parse, regras de periodo, cortes do bloco 2 |
 | Seed/usuarios  | `tests/test_seed_e_importacao_usuarios.py` | 12 | Seed de exemplo e importacao dos auditores reais |
@@ -885,10 +827,10 @@ O que isso significa para este sistema: uma OS bloqueada e uma
 detectar isso ja chegam — situacao 5 na listagem, e a justificativa com
 `dsTipoJustifAtraso` no detalhe.
 
-Hoje o painel apenas exibe a situacao; nao ha alerta nem filtro que trate
-o bloqueio como fila de trabalho do supervisor. **Nao foi implementado
-porque nao foi pedido** — mas e o candidato mais obvio a virar alerta,
-agora que o supervisor enxerga a propria equipe.
+Desde 25/09/2026 a OS bloqueada aparece nos **Alertas** (`os_sem_ciencia`
+com severidade alta, dizendo que o desbloqueio e do supervisor) e no KPI
+**Bloqueadas** do Dashboard. Filtro ou fila de trabalho dedicada do
+supervisor ainda nao existe: **nao foi pedido**.
 
 Cuidado ao desenhar isso: o desbloqueio acontece **no ATF**, nao aqui.
 Este sistema e somente leitura sobre a OS, entao o maximo que cabe e

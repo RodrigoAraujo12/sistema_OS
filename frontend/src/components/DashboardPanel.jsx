@@ -1,23 +1,28 @@
 /**
  * DashboardPanel.jsx – Painel principal do Dashboard (admin).
  *
- * Gerencia filtros (gerencia, supervisao, periodo), KPIs computados
- * e roteia para as abas: OS, Eventos, Geral, Gerencias, Supervisoes,
- * Fiscais.
- *
- * Duas fontes convivem aqui, e a diferenca importa:
+ * Roteia as abas: OS, Eventos, Geral, Gerencias, Supervisoes, Fiscais.
+ * Todas leem dados REAIS do ATF, por tres consultas diferentes:
  *
  * - "Ordens de Servico" (DashboardOS) e "Eventos" (DashboardEventos)
- *   leem os dados REAIS do ATF, cada uma por um endpoint e um filtro de
- *   periodo proprios — e contam unidades diferentes, OS numa e eventos
- *   na outra;
- * - as outras quatro abas leem `dashboardData`, do formato interno
- *   legado, que hoje e mock — e por isso a barra de filtros (gerencia,
- *   supervisao, periodo) e os KPI cards so aparecem nelas.
+ *   tem cada uma o proprio endpoint e o proprio filtro de periodo — e
+ *   contam unidades diferentes, OS numa e eventos na outra;
+ * - as outras quatro dividem UMA consulta, GET /admin/dashboard, que
+ *   mede situacao, ciencia e carga sobre a listagem do ATF. Por isso o
+ *   periodo, os filtros de gerencia e equipe e os KPI cards daqui valem
+ *   para as quatro juntas, e trocar entre elas nao consulta nada.
+ *
+ * Ate 25/09/2026 essas quatro liam uma lista fixa de OS de exemplo
+ * (mock) e carregavam sozinhas no login. Agora seguem o contrato da aba
+ * de OS: nada e consultado ate o clique em "Gerar dashboard", com
+ * periodo de abertura obrigatorio de no maximo um ano.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import apiClient from "../api.js";
+import {
+  PERIODOS_ABERTURA, intervaloDe, validarPeriodoAbertura, formatarNumero,
+} from "../dashboardShared.js";
 import DashboardOS from "./DashboardOS.jsx";
 import DashboardEventos from "./DashboardEventos.jsx";
 import DashboardGeral from "./DashboardGeral.jsx";
@@ -25,154 +30,142 @@ import DashboardGerencias from "./DashboardGerencias.jsx";
 import DashboardSupervisoes from "./DashboardSupervisoes.jsx";
 import DashboardFiscais from "./DashboardFiscais.jsx";
 
-const PERIODO_OPTIONS = [
-  { value: "todos", label: "Todos" },
-  { value: "7", label: "7 dias" },
-  { value: "30", label: "30 dias" },
-  { value: "90", label: "90 dias" },
-  { value: "180", label: "6 meses" },
-  { value: "365", label: "1 ano" },
-  { value: "custom", label: "Personalizado" },
+const ABAS = [
+  { value: "os", label: "Ordens de Servico" },
+  { value: "eventos", label: "Eventos" },
+  { value: "geral", label: "Visao Geral" },
+  { value: "gerencias", label: "Gerencias" },
+  { value: "supervisoes", label: "Supervisoes" },
+  { value: "fiscais", label: "Fiscais" },
 ];
 
-export default function DashboardPanel({ dashboardData, onDashboardDataChange, onError }) {
-  // ─── Filtros ────────────────────────────────────────
-  const [gerenciaFilter, setGerenciaFilter] = useState("");
-  const [supervisaoFilter, setSupervisaoFilter] = useState("");
-  // Abre na aba de dados reais do ATF, e nao na Visao Geral: entre um
-  // painel verdadeiro e um mock, o primeiro que se ve tem que ser o
-  // verdadeiro.
+export default function DashboardPanel({ onError }) {
+  // Abre na aba de OS: e a que o dia a dia mais usa, e nenhuma aba
+  // consulta nada sozinha — entao abrir o Dashboard nao custa uma ida ao
+  // ATF, em nenhuma delas.
   const [view, setView] = useState("os");
 
-  // ─── Periodo ────────────────────────────────────────
-  const [periodo, setPeriodo] = useState("todos");
+  // ─── Consulta de desempenho (as quatro abas) ────────
+  const [dados, setDados] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [periodo, setPeriodo] = useState("");
   const [dataInicio, setDataInicio] = useState("");
   const [dataFim, setDataFim] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState("");
+  // O periodo da consulta que esta na tela (null = nenhuma ainda).
+  const [consulta, setConsulta] = useState(null);
+  const emVoo = useRef(null);
+
+  // ─── Filtros (recortam o que ja veio, sem consultar) ─
+  const [gerenciaFilter, setGerenciaFilter] = useState("");
+  const [equipeFilter, setEquipeFilter] = useState("");
+
+  const carregar = useCallback(async (inicio, fim) => {
+    const problema = validarPeriodoAbertura(inicio, fim);
+    if (problema) {
+      setErro(problema);
+      return;
+    }
+    setErro("");
+    // Dois cliques seguidos sairiam antes de a primeira resposta popular
+    // o cache do backend — seriam duas idas de verdade ao ATF.
+    const chave = `${inicio}|${fim}`;
+    if (emVoo.current === chave) return;
+    emVoo.current = chave;
+    setLoading(true);
+    try {
+      setDados(await apiClient.getDashboard({ dataInicio: inicio, dataFim: fim }));
+      setConsulta({ inicio, fim });
+      // Os filtros apontam para linhas da consulta anterior; uma gerencia
+      // ou equipe sem OS no periodo novo continuaria filtrando o vazio.
+      setGerenciaFilter("");
+      setEquipeFilter("");
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setLoading(false);
+      emVoo.current = null;
+    }
+  }, [onError]);
+
+  function handlePeriodoChange(novo) {
+    setPeriodo(novo);
+    const { inicio, fim } = intervaloDe(novo);
+    setDataInicio(inicio);
+    setDataFim(fim);
+    setErro("");
+  }
+
+  function handleDataChange(qual, valor) {
+    if (qual === "inicio") setDataInicio(valor);
+    else setDataFim(valor);
+    setPeriodo("");
+    setErro("");
+  }
+
+  const pendente = !consulta || consulta.inicio !== dataInicio || consulta.fim !== dataFim;
 
   // ─── Dados filtrados (computados) ───────────────────
-  const supervisoesPorGerencia = useMemo(() => {
-    if (!gerenciaFilter) return dashboardData.desempenho_supervisoes;
-    return dashboardData.desempenho_supervisoes.filter(
-      (s) => String(s.gerencia_id) === String(gerenciaFilter)
-    );
-  }, [dashboardData, gerenciaFilter]);
+  const gerencias = dados?.desempenho_gerencias || [];
+  const equipes = dados?.desempenho_equipes || [];
+  const carga = dados?.carga_fiscais || [];
 
-  const gerenciasFiltradas = useMemo(() => {
-    if (!gerenciaFilter) return dashboardData.desempenho_gerencias;
-    return dashboardData.desempenho_gerencias.filter(
-      (g) => String(g.id) === String(gerenciaFilter)
-    );
-  }, [dashboardData, gerenciaFilter]);
+  const gerenciasFiltradas = useMemo(
+    () => (gerenciaFilter ? gerencias.filter((g) => String(g.id) === gerenciaFilter) : gerencias),
+    [gerencias, gerenciaFilter],
+  );
 
-  const supervisoesFiltradas = useMemo(() => {
-    let sups = supervisoesPorGerencia;
-    if (supervisaoFilter) {
-      sups = sups.filter((s) => String(s.id) === String(supervisaoFilter));
-    }
-    return sups;
-  }, [supervisoesPorGerencia, supervisaoFilter]);
+  const equipesDaGerencia = useMemo(
+    () => (gerenciaFilter ? equipes.filter((e) => String(e.gerencia_id) === gerenciaFilter) : equipes),
+    [equipes, gerenciaFilter],
+  );
+
+  const equipesFiltradas = useMemo(
+    () => (equipeFilter ? equipesDaGerencia.filter((e) => String(e.id) === equipeFilter) : equipesDaGerencia),
+    [equipesDaGerencia, equipeFilter],
+  );
 
   const fiscaisFiltrados = useMemo(() => {
-    let fiscais = dashboardData.carga_fiscais;
-    if (gerenciaFilter) {
-      const supIds = supervisoesPorGerencia.map((s) => String(s.id));
-      fiscais = fiscais.filter((f) => supIds.includes(String(f.supervisao_id)));
-    }
-    if (supervisaoFilter) {
-      fiscais = fiscais.filter((f) => String(f.supervisao_id) === String(supervisaoFilter));
-    }
-    return fiscais;
-  }, [dashboardData, gerenciaFilter, supervisaoFilter, supervisoesPorGerencia]);
+    if (equipeFilter) return carga.filter((f) => f.equipes.map(String).includes(equipeFilter));
+    if (gerenciaFilter) return carga.filter((f) => String(f.gerencia_id) === gerenciaFilter);
+    return carga;
+  }, [carga, gerenciaFilter, equipeFilter]);
 
-  // ─── KPIs recalculados ──────────────────────────────
+  // ─── KPIs: os da linha filtrada, ou os gerais ───────
+  // Nao se soma linha nenhuma: uma OS conta em cada gerencia e equipe
+  // que seus fiscais alcancam, e somar contaria a mesma OS duas vezes.
   const kpis = useMemo(() => {
-    if (!gerenciaFilter && !supervisaoFilter) return dashboardData.visao_geral;
-    const gList = gerenciasFiltradas;
-    const sList = supervisoesFiltradas;
-    const fList = fiscaisFiltrados;
-    const totalOS = gList.reduce((s, g) => s + g.total_os, 0);
-    const abertas = gList.reduce((s, g) => s + g.abertas, 0);
-    const emAndamento = gList.reduce((s, g) => s + g.em_andamento, 0);
-    const concluidas = gList.reduce((s, g) => s + g.concluidas, 0);
-    const osSemCiencia = gList.reduce((s, g) => s + (g.os_sem_ciencia || 0), 0);
-    const taxaConclusao = totalOS > 0 ? Math.round(concluidas / totalOS * 100) : 0;
+    if (!dados) return null;
+    const linha = equipeFilter
+      ? equipesFiltradas[0]
+      : gerenciaFilter
+        ? gerenciasFiltradas[0]
+        : null;
+    if (!linha) return dados.visao_geral;
     return {
-      total_os: totalOS,
-      os_abertas: abertas,
-      os_em_andamento: emAndamento,
-      os_concluidas: concluidas,
-      os_sem_ciencia: osSemCiencia,
-      taxa_conclusao: taxaConclusao,
-      total_fiscais: fList.length,
-      total_supervisores: sList.length,
+      ...linha,
+      total_fiscais: fiscaisFiltrados.length,
+      total_equipes: equipesFiltradas.filter((e) => e.total_os > 0).length,
     };
-  }, [dashboardData, gerenciaFilter, supervisaoFilter, gerenciasFiltradas, supervisoesFiltradas, fiscaisFiltrados]);
-
-  // ─── Handlers de periodo ────────────────────────────
-  async function handlePeriodoChange(novoPeriodo) {
-    setPeriodo(novoPeriodo);
-    if (novoPeriodo === "custom") return;
-    setLoading(true);
-    let di = "", df = "";
-    if (novoPeriodo !== "todos") {
-      const hoje = new Date();
-      const inicio = new Date(hoje);
-      inicio.setDate(hoje.getDate() - parseInt(novoPeriodo, 10));
-      di = inicio.toISOString().slice(0, 10);
-      df = hoje.toISOString().slice(0, 10);
-    }
-    setDataInicio(di);
-    setDataFim(df);
-    try {
-      const dashData = await apiClient.getDashboard({ dataInicio: di || undefined, dataFim: df || undefined });
-      onDashboardDataChange(dashData);
-    } catch (err) {
-      onError(err.message);
-    }
-    setLoading(false);
-  }
-
-  async function handleCustomPeriodoApply() {
-    if (!dataInicio && !dataFim) return;
-    setLoading(true);
-    try {
-      const dashData = await apiClient.getDashboard({
-        dataInicio: dataInicio || undefined,
-        dataFim: dataFim || undefined,
-      });
-      onDashboardDataChange(dashData);
-    } catch (err) {
-      onError(err.message);
-    }
-    setLoading(false);
-  }
-
-  // ─── Gerencia toggle (para aba Gerencias) ───────────
-  function handleGerenciaToggle(id) {
-    if (String(gerenciaFilter) === String(id)) {
-      setGerenciaFilter("");
-      setSupervisaoFilter("");
-    } else {
-      setGerenciaFilter(String(id));
-      setSupervisaoFilter("");
-    }
-  }
+  }, [dados, gerenciaFilter, equipeFilter, gerenciasFiltradas, equipesFiltradas, fiscaisFiltrados]);
 
   // ─── Comparativo mensal (deltas) ────────────────────
-  const comp = dashboardData.comparativo_mensal || {};
+  // So sem filtro: o comparativo e do universo inteiro, e ao lado do
+  // numero de uma gerencia pareceria ser dela.
+  const comp = (!gerenciaFilter && !equipeFilter && dados?.comparativo_mensal) || {};
+  const rotulosComp = comp._labels;
 
   function renderDelta(key, invertColor) {
     const item = comp[key];
     if (!item || item.delta === 0) return null;
     const isUp = item.delta > 0;
     const isGood = invertColor ? !isUp : isUp;
-    const arrow = isUp ? "\u25B2" : "\u25BC";
+    const arrow = isUp ? "▲" : "▼";
     const sign = isUp ? "+" : "";
     return (
       <span
         className={`kpi-delta ${isGood ? "kpi-delta-good" : "kpi-delta-bad"}`}
-        title={`Mes anterior: ${item.anterior}`}
+        title={`Abertas em ${mesBr(rotulosComp.mes_atual)}: ${item.atual} · em ${mesBr(rotulosComp.mes_anterior)}: ${item.anterior}`}
       >
         {arrow} {sign}{item.delta}
       </span>
@@ -180,213 +173,206 @@ export default function DashboardPanel({ dashboardData, onDashboardDataChange, o
   }
 
   // ─── Render ─────────────────────────────────────────
-  return (
-    <>
-      {/* ===== ABAS DE VISUALIZACAO ===== */}
-      <div className="card dash-filter-bar">
-        <div className="dash-view-tabs">
+  const abas = (
+    <div className="card dash-filter-bar">
+      <div className="dash-view-tabs">
+        {ABAS.map((a) => (
           <button
-            className={`dash-view-tab ${view === "os" ? "active" : ""}`}
-            onClick={() => setView("os")}
+            key={a.value}
+            className={`dash-view-tab ${view === a.value ? "active" : ""}`}
+            onClick={() => setView(a.value)}
           >
-            Ordens de Servico
+            {a.label}
           </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  if (view === "os") return <>{abas}<DashboardOS onError={onError} /></>;
+  if (view === "eventos") return <>{abas}<DashboardEventos onError={onError} /></>;
+
+  const barraPeriodo = (
+    <div className="card dash-filter-bar">
+      <div className="dash-periodo-row" style={{ borderTop: "none", paddingTop: 0 }}>
+        <label className="dash-filter-label">Abertura em:</label>
+        <div className="dash-periodo-btns">
+          {PERIODOS_ABERTURA.map((p) => (
+            <button
+              key={p.value}
+              className={`dash-periodo-btn ${periodo === p.value ? "active" : ""}`}
+              onClick={() => handlePeriodoChange(p.value)}
+              disabled={loading}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <div className="dash-periodo-custom">
+          <input
+            type="date"
+            value={dataInicio}
+            onChange={(e) => handleDataChange("inicio", e.target.value)}
+            className="dash-periodo-date"
+            disabled={loading}
+            aria-label="Abertura de"
+          />
+          <span className="dash-periodo-sep">ate</span>
+          <input
+            type="date"
+            value={dataFim}
+            onChange={(e) => handleDataChange("fim", e.target.value)}
+            className="dash-periodo-date"
+            disabled={loading}
+            aria-label="Abertura ate"
+          />
           <button
-            className={`dash-view-tab ${view === "eventos" ? "active" : ""}`}
-            onClick={() => setView("eventos")}
+            className="btn btn-primary dash-periodo-apply"
+            onClick={() => carregar(dataInicio, dataFim)}
+            disabled={loading || !pendente}
           >
-            Eventos
-          </button>
-          <button
-            className={`dash-view-tab ${view === "geral" ? "active" : ""}`}
-            onClick={() => setView("geral")}
-          >
-            Visao Geral
-          </button>
-          <button
-            className={`dash-view-tab ${view === "gerencias" ? "active" : ""}`}
-            onClick={() => setView("gerencias")}
-          >
-            Gerencias
-          </button>
-          <button
-            className={`dash-view-tab ${view === "supervisoes" ? "active" : ""}`}
-            onClick={() => setView("supervisoes")}
-          >
-            Supervisoes
-          </button>
-          <button
-            className={`dash-view-tab ${view === "fiscais" ? "active" : ""}`}
-            onClick={() => setView("fiscais")}
-          >
-            Fiscais
+            Gerar dashboard
           </button>
         </div>
+        {loading && <span className="dash-periodo-loading">Consultando o ATF...</span>}
       </div>
 
-      {/* ===== ABA "ORDENS DE SERVICO": dados reais do ATF ===== */}
-      {view === "os" && <DashboardOS onError={onError} />}
+      {erro && <div className="alert error" style={{ marginBottom: 12 }}>{erro}</div>}
 
-      {/* ===== ABA "EVENTOS": dados reais do ATF (doc dos eventos) ===== */}
-      {view === "eventos" && <DashboardEventos onError={onError} />}
-
-      {/* ===== DEMAIS ABAS: formato interno legado ===== */}
-      {/* A lista e por exclusao das abas de dados reais, e nao um
-          `!== "os"`: cada aba nova do ATF traz o proprio filtro de
-          periodo, e a barra legada abaixo apareceria em cima dela
-          filtrando outra coisa. */}
-      {view !== "os" && view !== "eventos" && (
-      <>
-      {/* ===== BARRA DE FILTROS ===== */}
-      <div className="card dash-filter-bar">
-        <div className="dash-filter-row">
+      {dados && (
+        <div className="dash-filter-row" style={{ marginTop: 12 }}>
           <div className="dash-filter-group">
             <label className="dash-filter-label">Gerencia:</label>
             <select
               value={gerenciaFilter}
-              onChange={(e) => { setGerenciaFilter(e.target.value); setSupervisaoFilter(""); }}
+              onChange={(e) => { setGerenciaFilter(e.target.value); setEquipeFilter(""); }}
               className="dash-filter-select"
             >
-              <option value="">Todas as Gerencias</option>
-              {dashboardData.desempenho_gerencias.map((g) => (
+              <option value="">Todas as gerencias</option>
+              {gerencias.map((g) => (
                 <option key={g.id} value={g.id}>{g.nome}</option>
               ))}
             </select>
           </div>
 
           <div className="dash-filter-group">
-            <label className="dash-filter-label">Supervisao:</label>
+            <label className="dash-filter-label">Equipe:</label>
             <select
-              value={supervisaoFilter}
-              onChange={(e) => setSupervisaoFilter(e.target.value)}
+              value={equipeFilter}
+              onChange={(e) => setEquipeFilter(e.target.value)}
               className="dash-filter-select"
-              disabled={!gerenciaFilter}
             >
-              <option value="">Todas as Supervisoes</option>
-              {supervisoesPorGerencia.map((s) => (
-                <option key={s.id} value={s.id}>{s.nome}</option>
+              <option value="">Todas as equipes</option>
+              {equipesDaGerencia.map((e) => (
+                <option key={e.id} value={e.id}>{e.nome}</option>
               ))}
             </select>
           </div>
 
-          {(gerenciaFilter || supervisaoFilter) && (
+          {(gerenciaFilter || equipeFilter) && (
             <button
               className="btn btn-outline dash-filter-clear"
-              onClick={() => { setGerenciaFilter(""); setSupervisaoFilter(""); }}
+              onClick={() => { setGerenciaFilter(""); setEquipeFilter(""); }}
             >
-              Limpar Filtros
+              Limpar filtros
             </button>
           )}
         </div>
+      )}
 
-        {/* Filtro por periodo */}
-        <div className="dash-periodo-row">
-          <label className="dash-filter-label">Periodo:</label>
-          <div className="dash-periodo-btns">
-            {PERIODO_OPTIONS.map((p) => (
-              <button
-                key={p.value}
-                className={`dash-periodo-btn ${periodo === p.value ? "active" : ""}`}
-                onClick={() => handlePeriodoChange(p.value)}
-                disabled={loading}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-          {periodo === "custom" && (
-            <div className="dash-periodo-custom">
-              <input
-                type="date"
-                value={dataInicio}
-                onChange={(e) => setDataInicio(e.target.value)}
-                className="dash-periodo-date"
-              />
-              <span className="dash-periodo-sep">ate</span>
-              <input
-                type="date"
-                value={dataFim}
-                onChange={(e) => setDataFim(e.target.value)}
-                className="dash-periodo-date"
-              />
-              <button
-                className="btn btn-primary dash-periodo-apply"
-                onClick={handleCustomPeriodoApply}
-                disabled={loading || (!dataInicio && !dataFim)}
-              >
-                Aplicar
-              </button>
-            </div>
+      <p className="muted" style={{ marginTop: 8, marginBottom: 4 }}>
+        Dados da listagem do ATF. O periodo de abertura e <strong>obrigatorio</strong>, com no
+        maximo um ano, e os botoes acima so preenchem as datas: a consulta sai no clique em
+        {" "}<strong>Gerar dashboard</strong> e vale para as abas Visao Geral, Gerencias,
+        Supervisoes e Fiscais. Gerencia e equipe recortam o que ja veio, sem consultar de novo.
+      </p>
+    </div>
+  );
+
+  if (!dados) {
+    return (
+      <>
+        {abas}
+        {barraPeriodo}
+        <div className="card">
+          {loading ? (
+            <p className="muted">Consultando o ATF...</p>
+          ) : (
+            <>
+              <h2>Escolha o periodo</h2>
+              <p className="muted">
+                Estas quatro abas nao consultam nada sozinhas. Informe o periodo de abertura
+                (inicio e fim, no maximo um ano) e clique em <strong>Gerar dashboard</strong>.
+                Cada consulta desce ate o ATF e leva de 5 a 16 segundos.
+              </p>
+            </>
           )}
-          {loading && <span className="dash-periodo-loading">Carregando...</span>}
         </div>
+      </>
+    );
+  }
 
-        {/* Filter tags */}
-        {(gerenciaFilter || supervisaoFilter) && (
-          <div className="dash-filter-tags">
-            {gerenciaFilter && (
-              <span className="filter-tag">
-                Gerencia: {dashboardData.desempenho_gerencias.find((g) => String(g.id) === String(gerenciaFilter))?.nome || gerenciaFilter}
-                <button onClick={() => { setGerenciaFilter(""); setSupervisaoFilter(""); }}>&times;</button>
-              </span>
-            )}
-            {supervisaoFilter && (
-              <span className="filter-tag">
-                Supervisao: {dashboardData.desempenho_supervisoes.find((s) => String(s.id) === String(supervisaoFilter))?.nome || supervisaoFilter}
-                <button onClick={() => setSupervisaoFilter("")}>&times;</button>
-              </span>
-            )}
-          </div>
-        )}
+  const visao = dados.visao_geral;
 
-      </div>
+  return (
+    <>
+      {abas}
+      {barraPeriodo}
 
       {/* ===== KPI CARDS ===== */}
       <div className="stats-row">
         <div className="stat-card normal">
-          <div className="stat-value">{kpis.total_os} {renderDelta("total_os", false)}</div>
+          <div className="stat-value">{formatarNumero(kpis.total_os)} {renderDelta("total_os", false)}</div>
           <div className="stat-label">Total de OS</div>
         </div>
         <div className="stat-card alta">
-          <div className="stat-value">{kpis.os_em_andamento} {renderDelta("em_andamento", true)}</div>
-          <div className="stat-label">Em Andamento</div>
+          <div className="stat-value">{formatarNumero(kpis.em_andamento)} {renderDelta("em_andamento", true)}</div>
+          <div className="stat-label">Em andamento</div>
         </div>
         <div className="stat-card concluida">
-          <div className="stat-value">{kpis.taxa_conclusao}%</div>
-          <div className="stat-label">Taxa de Conclusao</div>
+          <div className="stat-value">{kpis.taxa_encerramento}%</div>
+          <div className="stat-label">Taxa de encerramento</div>
         </div>
         <div className="stat-card alta">
-          <div className="stat-value">{kpis.os_sem_ciencia} {renderDelta("os_sem_ciencia", true)}</div>
-          <div className="stat-label">OS Sem Ciencia</div>
+          <div className="stat-value">{formatarNumero(kpis.os_sem_ciencia)} {renderDelta("os_sem_ciencia", true)}</div>
+          <div className="stat-label">OS sem ciencia</div>
         </div>
       </div>
 
       <div className="stats-row">
         <div className="stat-card normal">
-          <div className="stat-value">{kpis.os_concluidas} {renderDelta("concluidas", false)}</div>
-          <div className="stat-label">Concluidas</div>
+          <div className="stat-value">{formatarNumero(kpis.encerradas)} {renderDelta("encerradas", false)}</div>
+          <div className="stat-label">Encerradas</div>
         </div>
         <div className="stat-card normal">
-          <div className="stat-value">{kpis.os_abertas} {renderDelta("abertas", true)}</div>
-          <div className="stat-label">Abertas</div>
+          <div className="stat-value">{formatarNumero(kpis.bloqueadas)} {renderDelta("bloqueadas", true)}</div>
+          <div className="stat-label">Bloqueadas</div>
         </div>
         <div className="stat-card normal">
-          <div className="stat-value">{kpis.total_fiscais}</div>
-          <div className="stat-label">Fiscais Ativos</div>
+          <div className="stat-value">{formatarNumero(kpis.total_fiscais)}</div>
+          <div className="stat-label">Fiscais com OS ativa</div>
         </div>
         <div className="stat-card normal">
-          <div className="stat-value">{kpis.total_supervisores}</div>
-          <div className="stat-label">Supervisores</div>
+          <div className="stat-value">{formatarNumero(kpis.total_equipes)}</div>
+          <div className="stat-label">Equipes com OS</div>
         </div>
       </div>
+
+      {!gerenciaFilter && !equipeFilter && (visao.os_sem_gerencia > 0 || visao.os_sem_equipe > 0) && (
+        <p className="muted" style={{ marginTop: 0 }}>
+          {formatarNumero(visao.os_sem_gerencia)} OS nao alcancam nenhuma gerencia do cadastro e
+          {" "}{formatarNumero(visao.os_sem_equipe)} nenhuma equipe fiscal: entram no total, mas
+          ficam fora dos cortes. Uma OS conta em cada gerencia e equipe que seus fiscais alcancam.
+        </p>
+      )}
 
       {/* ===== TAB CONTENT ===== */}
       {view === "geral" && (
         <DashboardGeral
-          dashboardData={dashboardData}
+          dados={dados}
           gerenciaFilter={gerenciaFilter}
           gerenciasFiltradas={gerenciasFiltradas}
-          onGerenciaSelect={(id) => { setGerenciaFilter(String(id)); setView("gerencias"); }}
+          onGerenciaSelect={(id) => { setGerenciaFilter(String(id)); setEquipeFilter(""); setView("gerencias"); }}
         />
       )}
 
@@ -394,17 +380,19 @@ export default function DashboardPanel({ dashboardData, onDashboardDataChange, o
         <DashboardGerencias
           gerenciasFiltradas={gerenciasFiltradas}
           gerenciaFilter={gerenciaFilter}
-          onGerenciaToggle={handleGerenciaToggle}
+          onGerenciaToggle={(id) => {
+            setGerenciaFilter(String(gerenciaFilter) === String(id) ? "" : String(id));
+            setEquipeFilter("");
+          }}
         />
       )}
 
       {view === "supervisoes" && (
         <DashboardSupervisoes
-          supervisoesFiltradas={supervisoesFiltradas}
+          equipesFiltradas={equipesFiltradas}
           gerenciaFilter={gerenciaFilter}
-          supervisaoFilter={supervisaoFilter}
-          onGerenciaFilterChange={setGerenciaFilter}
-          onSupervisaoSelect={(id) => { setSupervisaoFilter(String(id)); setView("fiscais"); }}
+          equipeFilter={equipeFilter}
+          onEquipeSelect={(id) => { setEquipeFilter(String(id)); setView("fiscais"); }}
         />
       )}
 
@@ -412,11 +400,16 @@ export default function DashboardPanel({ dashboardData, onDashboardDataChange, o
         <DashboardFiscais
           fiscaisFiltrados={fiscaisFiltrados}
           gerenciaFilter={gerenciaFilter}
-          supervisaoFilter={supervisaoFilter}
+          equipeFilter={equipeFilter}
         />
-      )}
-      </>
       )}
     </>
   );
+}
+
+/** "2026-02" -> "02/2026". */
+function mesBr(mes) {
+  if (!mes) return "";
+  const [ano, numero] = mes.split("-");
+  return `${numero}/${ano}`;
 }

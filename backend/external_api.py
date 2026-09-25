@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from datetime import date, datetime, timezone
 from threading import Lock
@@ -25,198 +25,6 @@ from . import config
 from .config import ATF_CACHE_TTL
 
 logger = logging.getLogger("sefaz.external_api")
-
-# ─── Constantes de negocio ──────────────────────────────────────
-
-STATUSES_ATIVOS = ("aberta", "em_andamento")
-DIAS_CRITICO_THRESHOLD = 15  # Reservado para uso futuro em alertas
-
-# Pesos da formula de indice de saude (score 0-100 por gerencia)
-PESO_TAXA_CONCLUSAO = 0.50 # (100 - taxa%) * 0.50 → ate -50 pts
-PESO_SEM_CIENCIA = 0.50    # % sem ciencia * 0.50 → ate -50 pts
-
-
-# ─── MOCK: Ordens de Servico ────────────────────────────────────
-# Formato interno legado, usado por alertas e dashboard.
-
-_MOCK_ORDENS: list[dict[str, Any]] = [
-    {
-        "numero": "OS-2026-001",
-        "tipo": "Normal",
-        "ie": "12.345.678-9",
-        "razao_social": "Distribuidora ABC Ltda",
-        "matricula_supervisor": "23456",
-        "fiscais": ["Carlos Mendes"],
-        "status": "em_andamento",
-        "prioridade": "alta",
-        "data_abertura": "2026-01-10",
-        "data_ciencia": "2026-01-12",
-        "data_ultima_movimentacao": "2026-01-25",
-    },
-    {
-        "numero": "OS-2026-002",
-        "tipo": "Especifico",
-        "ie": "98.765.432-1",
-        "razao_social": "Industria Delta S/A",
-        "matricula_supervisor": "23457",
-        "fiscais": ["Ana Ribeiro"],
-        "status": "aberta",
-        "prioridade": "urgente",
-        "data_abertura": "2026-02-01",
-        "data_ciencia": "2026-02-03",
-        "data_ultima_movimentacao": "2026-02-03",
-    },
-    {
-        "numero": "OS-2026-003",
-        "tipo": "Simplificado",
-        "ie": "55.667.778-3",
-        "razao_social": "Transportes Rapido Ltda",
-        "matricula_supervisor": "23456",
-        "fiscais": ["Carlos Mendes"],
-        "status": "em_andamento",
-        "prioridade": "normal",
-        "data_abertura": "2026-01-05",
-        "data_ciencia": "2026-01-08",
-        "data_ultima_movimentacao": "2026-01-20",
-    },
-    {
-        "numero": "OS-2026-004",
-        "tipo": "Normal",
-        "ie": "33.445.556-4",
-        "razao_social": "Supermercado Central Ltda",
-        "matricula_supervisor": "23457",
-        "fiscais": ["Ana Ribeiro"],
-        "status": "aberta",
-        "prioridade": "alta",
-        "data_abertura": "2026-02-05",
-        "data_ciencia": None,
-        "data_ultima_movimentacao": "2026-02-05",
-    },
-    {
-        "numero": "OS-2026-005",
-        "tipo": "Simplificado",
-        "ie": "77.889.900-5",
-        "razao_social": "Farmacia Popular Ltda",
-        "matricula_supervisor": "23457",
-        "fiscais": ["Ana Ribeiro"],
-        "status": "concluida",
-        "prioridade": "normal",
-        "data_abertura": "2025-12-15",
-        "data_ciencia": "2025-12-18",
-        "data_ultima_movimentacao": "2026-01-30",
-    },
-    {
-        "numero": "OS-2026-006",
-        "tipo": "Especifico",
-        "ie": "12.345.678-9",
-        "razao_social": "Distribuidora ABC Ltda",
-        "matricula_supervisor": "23456",
-        "fiscais": ["Carlos Mendes"],
-        "status": "aberta",
-        "prioridade": "alta",
-        "data_abertura": "2026-02-07",
-        "data_ciencia": "2026-02-09",
-        "data_ultima_movimentacao": "2026-02-09",
-    },
-    {
-        "numero": "OS-2026-007",
-        "tipo": "Normal",
-        "ie": "98.765.432-1",
-        "razao_social": "Industria Delta S/A",
-        "matricula_supervisor": "23456",
-        "fiscais": ["Carlos Mendes"],
-        "status": "em_andamento",
-        "prioridade": "normal",
-        "data_abertura": "2026-01-15",
-        "data_ciencia": "2026-01-18",
-        "data_ultima_movimentacao": "2026-02-01",
-    },
-    {
-        "numero": "OS-2026-008",
-        "tipo": "Simplificado",
-        "ie": "33.445.556-4",
-        "razao_social": "Supermercado Central Ltda",
-        "matricula_supervisor": "23457",
-        "fiscais": ["Ana Ribeiro"],
-        "status": "aberta",
-        "prioridade": "baixa",
-        "data_abertura": "2025-12-01",
-        "data_ciencia": "2025-12-05",
-        "data_ultima_movimentacao": "2025-12-10",
-    },
-    {
-        "numero": "OS-2026-009",
-        "tipo": "Especifico",
-        "ie": "55.667.778-3",
-        "razao_social": "Transportes Rapido Ltda",
-        "matricula_supervisor": "23457",
-        "fiscais": ["Ana Ribeiro"],
-        "status": "aberta",
-        "prioridade": "urgente",
-        "data_abertura": "2026-02-08",
-        "data_ciencia": None,
-        "data_ultima_movimentacao": "2026-02-08",
-    },
-    {
-        "numero": "OS-2026-010",
-        "tipo": "Normal",
-        "ie": "77.889.900-5",
-        "razao_social": "Farmacia Popular Ltda",
-        "matricula_supervisor": "23456",
-        "fiscais": ["Carlos Mendes"],
-        "status": "cancelada",
-        "prioridade": "alta",
-        "data_abertura": "2026-01-20",
-        "data_ciencia": "2026-01-22",
-        "data_ultima_movimentacao": "2026-02-05",
-    },
-]
-
-
-
-
-
-
-def _filtrar_por_hierarquia(
-    ordens: list[dict[str, Any]],
-    user_role: str | None = None,
-    user_matricula: str | None = None,
-    user_name: str | None = None,
-    supervisor_matriculas: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Filtra OS de acordo com a hierarquia do usuario.
-
-    - admin: ve tudo
-    - fiscal: ve OS onde seu nome aparece em 'fiscais'
-    - supervisor: ve OS onde 'matricula_supervisor' bate com sua matricula
-    - gerente: ve OS de todos os supervisores da sua gerencia
-    """
-    if not user_role or user_role == "admin":
-        return ordens
-
-    if user_role == "fiscal":
-        return [
-            os for os in ordens
-            if user_name and user_name in os.get("fiscais", [])
-        ]
-
-    if user_role == "supervisor":
-        return [
-            os for os in ordens
-            if os.get("matricula_supervisor") == user_matricula
-        ]
-
-    if user_role == "gerente":
-        if not supervisor_matriculas:
-            return []
-        matriculas_set = set(supervisor_matriculas)
-        return [
-            os for os in ordens
-            if os.get("matricula_supervisor") in matriculas_set
-        ]
-
-    return ordens
 
 
 def filtrar_atf_por_matriculas(
@@ -230,9 +38,8 @@ def filtrar_atf_por_matriculas(
     resultado correto para quem nao tem matricula ou equipe, e nao "ve
     tudo": este filtro falha fechado de proposito.
 
-    O formato ATF nao tem 'matricula_supervisor', que e do formato legado
-    usado por alertas e dashboard. A unica ligacao entre a OS e as pessoas
-    e a lista fiscais[].matricula, entao a hierarquia inteira e resolvida
+    A unica ligacao entre a OS do ATF e as pessoas e a lista
+    fiscais[].matricula, entao a hierarquia inteira e resolvida
     como um conjunto de matriculas montado no banco local (ver
     _matriculas_visiveis, em main.py).
     """
@@ -244,390 +51,6 @@ def filtrar_atf_por_matriculas(
         o for o in ordens
         if any(f.get("matricula") in matriculas_visiveis for f in o.get("fiscais", []))
     ]
-
-
-def listar_ordens_servico(
-    situacao_filter: str | None = None,
-    tipo: str | None = None,
-    user_role: str | None = None,
-    user_matricula: str | None = None,
-    user_name: str | None = None,
-    supervisor_matriculas: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Lista Ordens de Servico com filtros opcionais e filtragem hierarquica.
-
-    Usado apenas por alertas e dashboard, que ainda consomem o formato
-    interno legado. A consulta de OS do painel usa listar_ordens_atf().
-    """
-    results = list(_MOCK_ORDENS)
-    if situacao_filter is not None:
-        codigo = int(situacao_filter)
-        results = [o for o in results if o.get("situacao", {}).get("codigo") == codigo]
-    if tipo:
-        results = [os for os in results if os["tipo"] == tipo]
-    return _filtrar_por_hierarquia(results, user_role, user_matricula, user_name, supervisor_matriculas)
-
-
-def gerar_alertas(
-    user_role: str | None = None,
-    user_matricula: str | None = None,
-    user_name: str | None = None,
-    supervisor_matriculas: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Gera alertas baseados em regras de negocio sobre as OS visiveis ao usuario.
-
-    Usa o formato interno legado (MOCK).
-    Respeita a filtragem hierarquica.
-    """
-    # Buscar OS filtradas pela hierarquia do usuario
-    todas_os = listar_ordens_servico(
-        user_role=user_role,
-        user_matricula=user_matricula,
-        user_name=user_name,
-        supervisor_matriculas=supervisor_matriculas,
-    )
-    
-    now = datetime.now(timezone.utc)
-    alertas: list[dict[str, Any]] = []
-
-    # Passo unico: classifica alertas em uma iteracao sobre todas as OS
-    for os_item in todas_os:
-        is_ativa = os_item["status"] in STATUSES_ATIVOS
-        dias = os_item.get("dias_parado", 0)
-
-        # Alerta 1: OS urgentes ativas
-        if is_ativa and os_item["prioridade"] == "urgente":
-            alertas.append({
-                "tipo": "os_urgente",
-                "severidade": "alta",
-                "titulo": f"OS urgente - {os_item['razao_social']}",
-                "descricao": (
-                    f"A OS {os_item['numero']} (IE: {os_item['ie']}) esta com prioridade URGENTE "
-                    f"e status '{os_item['status']}'."
-                ),
-                "referencia": os_item["numero"],
-                "data": now.isoformat(),
-            })
-
-        # Alerta 2: OS paradas ha mais de N dias
-        if is_ativa and dias > DIAS_CRITICO_THRESHOLD:
-            alertas.append({
-                "tipo": "os_parada",
-                "severidade": "alta",
-                "titulo": f"OS parada ha {dias} dias - {os_item['razao_social']}",
-                "descricao": (
-                    f"A OS {os_item['numero']} (IE: {os_item['ie']}) nao possui movimentacao "
-                    f"ha {dias} dias. Ultima movimentacao: {os_item.get('data_ultima_movimentacao', '-')}."
-                ),
-                "referencia": os_item["numero"],
-                "data": now.isoformat(),
-            })
-
-        # Alerta 3: OS abertas sem ciencia
-        if os_item["status"] == "aberta" and not os_item.get("data_ciencia"):
-            alertas.append({
-                "tipo": "os_sem_ciencia",
-                "severidade": "media",
-                "titulo": f"OS sem ciencia - {os_item['razao_social']}",
-                "descricao": (
-                    f"A OS {os_item['numero']} (IE: {os_item['ie']}) foi aberta em {os_item['data_abertura']} "
-                    f"e ainda nao possui data de ciencia."
-                ),
-                "referencia": os_item["numero"],
-                "data": now.isoformat(),
-            })
-
-    # Ordenar por severidade (alta primeiro)
-    ordem_severidade = {"critica": 0, "alta": 1, "media": 2, "baixa": 3}
-    alertas.sort(key=lambda a: ordem_severidade.get(a["severidade"], 9))
-
-    return alertas
-
-
-# ─── Dashboard – helpers reutilizaveis ───────────────────────────
-
-
-def _calcular_metricas_os(os_list: list[dict[str, Any]]) -> dict[str, Any]:
-    """
-    Calcula metricas de uma lista de OS.
-
-    Reutilizado por visao geral, gerencias, supervisoes e fiscais.
-    """
-    total = len(os_list)
-    abertas = sum(1 for o in os_list if o["status"] == "aberta")
-    andamento = sum(1 for o in os_list if o["status"] == "em_andamento")
-    concluidas = sum(1 for o in os_list if o["status"] == "concluida")
-    canceladas = sum(1 for o in os_list if o["status"] == "cancelada")
-    sem_ciencia = sum(
-        1 for o in os_list
-        if o["status"] == "aberta" and not o.get("data_ciencia")
-    )
-    taxa_conclusao = round((concluidas / total * 100), 1) if total > 0 else 0
-
-    return {
-        "total_os": total,
-        "abertas": abertas,
-        "em_andamento": andamento,
-        "concluidas": concluidas,
-        "canceladas": canceladas,
-        "os_sem_ciencia": sem_ciencia,
-        "taxa_conclusao": taxa_conclusao,
-    }
-
-
-# ─── Dashboard (consolidacao de metricas para admin) ─────────────
-
-
-def gerar_dashboard(
-    todas_os: list[dict[str, Any]],
-    gerencias: list[dict[str, Any]],
-    supervisoes: list[dict[str, Any]],
-    users: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """
-    Gera dados consolidados do dashboard administrativo.
-
-    Calcula metricas de desempenho por gerencia, supervisao e fiscal,
-    alem de indicadores gerais para o panorama da fiscalizacao.
-    """
-    now = datetime.now(timezone.utc)
-
-    # ── Mapas auxiliares ──────────────────────────────────────
-    sup_matricula_to_supervisao: dict[str, int] = {}
-    sup_to_gerencia: dict[int, int] = {}
-    gerencia_names: dict[int, str] = {g["id"]: g["name"] for g in gerencias}
-    supervisao_names: dict[int, str] = {}
-
-    for s in supervisoes:
-        sup_to_gerencia[s["id"]] = s["gerencia_id"]
-        supervisao_names[s["id"]] = s["name"]
-
-    for u in users:
-        if u.get("role") == "supervisor" and u.get("matricula") and u.get("supervisao_id"):
-            sup_matricula_to_supervisao[u["matricula"]] = u["supervisao_id"]
-
-    # ── Visao geral (usando helper centralizado) ──────────────
-    metricas_gerais = _calcular_metricas_os(todas_os)
-    total_fiscais = sum(1 for u in users if u.get("role") == "fiscal")
-    total_supervisores = sum(1 for u in users if u.get("role") == "supervisor")
-
-    # ── Agrupar OS por gerencia e supervisao ──────────────────
-    ger_os: dict[int, list[dict]] = defaultdict(list)
-    sup_os: dict[int, list[dict]] = defaultdict(list)
-    for o in todas_os:
-        mat_sup = o.get("matricula_supervisor", "")
-        sup_id = sup_matricula_to_supervisao.get(mat_sup)
-        if sup_id:
-            sup_os[sup_id].append(o)
-            ger_id = sup_to_gerencia.get(sup_id)
-            if ger_id:
-                ger_os[ger_id].append(o)
-
-    # ── Desempenho por gerencia ───────────────────────────────
-    desempenho_gerencias = _calcular_desempenho_gerencias(
-        gerencia_names, ger_os,
-    )
-
-    # ── Ranking de criticidade (indice de saude) ──────────────
-    ranking_criticidade = _calcular_ranking_criticidade(
-        desempenho_gerencias, ger_os,
-    )
-
-    # ── Desempenho por supervisao ─────────────────────────────
-    desempenho_supervisoes = _calcular_desempenho_supervisoes(
-        supervisao_names, sup_os, sup_to_gerencia, gerencia_names,
-    )
-
-    # ── Carga por fiscal ──────────────────────────────────────
-    carga_fiscais = _calcular_carga_fiscais(todas_os, users)
-
-    # ── Distribuicao por status (grafico pizza) ───────────────
-    distribuicao_status = {
-        "aberta": metricas_gerais["abertas"],
-        "em_andamento": metricas_gerais["em_andamento"],
-        "concluida": metricas_gerais["concluidas"],
-        "cancelada": metricas_gerais["canceladas"],
-    }
-
-    # ── Evolucao mensal ───────────────────────────────────────
-    evolucao_mensal = _calcular_evolucao_mensal(todas_os)
-
-    # ── Comparativo mensal (mes atual vs mes anterior) ────────
-    comparativo_mensal = _calcular_comparativo_mensal(todas_os, now)
-
-    return {
-        "visao_geral": {
-            "total_os": metricas_gerais["total_os"],
-            "os_abertas": metricas_gerais["abertas"],
-            "os_em_andamento": metricas_gerais["em_andamento"],
-            "os_concluidas": metricas_gerais["concluidas"],
-            "os_canceladas": metricas_gerais["canceladas"],
-            "os_sem_ciencia": metricas_gerais["os_sem_ciencia"],
-            "taxa_conclusao": metricas_gerais["taxa_conclusao"],
-            "total_fiscais": total_fiscais,
-            "total_supervisores": total_supervisores,
-        },
-        "comparativo_mensal": comparativo_mensal,
-        "distribuicao_status": distribuicao_status,
-        "evolucao_mensal": evolucao_mensal,
-        "desempenho_gerencias": desempenho_gerencias,
-        "ranking_criticidade": ranking_criticidade,
-        "desempenho_supervisoes": desempenho_supervisoes,
-        "carga_fiscais": carga_fiscais,
-    }
-
-
-def _calcular_desempenho_gerencias(
-    gerencia_names: dict[int, str],
-    ger_os: dict[int, list[dict]],
-) -> list[dict[str, Any]]:
-    """Calcula metricas de desempenho por gerencia."""
-    desempenho = []
-    for gid, nome in gerencia_names.items():
-        os_list = ger_os.get(gid, [])
-        metricas = _calcular_metricas_os(os_list)
-        desempenho.append({
-            "id": gid,
-            "nome": nome,
-            "total_os": metricas["total_os"],
-            "abertas": metricas["abertas"],
-            "em_andamento": metricas["em_andamento"],
-            "concluidas": metricas["concluidas"],
-            "canceladas": metricas["canceladas"],
-            "os_sem_ciencia": metricas["os_sem_ciencia"],
-            "taxa_conclusao": metricas["taxa_conclusao"],
-        })
-    desempenho.sort(key=lambda g: g["taxa_conclusao"])
-    return desempenho
-
-
-def _calcular_ranking_criticidade(
-    desempenho_gerencias: list[dict[str, Any]],
-    ger_os: dict[int, list[dict]],
-) -> list[dict[str, Any]]:
-    """
-    Calcula o indice de saude (0-100) para cada gerencia.
-
-    Formula:
-      - Taxa de conclusao baixa: (100 - taxa%) * 0.50 → ate -50 pts
-      - % de OS sem ciencia: pct_sem_ciencia * 0.50 → ate -50 pts
-    """
-    ranking = []
-    for g in desempenho_gerencias:
-        if g["total_os"] == 0:
-            ranking.append({
-                "id": g["id"], "nome": g["nome"],
-                "indice_saude": 100, "nivel": "saudavel",
-                "total_os": 0, "os_sem_ciencia": 0,
-                "pct_sem_ciencia": 0, "taxa_conclusao": 0,
-                "problemas": [],
-            })
-            continue
-
-        total = g["total_os"]
-        os_sem_ciencia_ger = g["os_sem_ciencia"]
-        pct_sem_ciencia = (os_sem_ciencia_ger / total) * 100 if total else 0
-
-        score = 100.0
-        score -= (100 - g["taxa_conclusao"]) * PESO_TAXA_CONCLUSAO
-        score -= pct_sem_ciencia * PESO_SEM_CIENCIA
-        score = max(0, min(100, round(score, 1)))
-
-        if score >= 75:
-            nivel = "saudavel"
-        elif score >= 50:
-            nivel = "atencao"
-        elif score >= 25:
-            nivel = "critico"
-        else:
-            nivel = "emergencia"
-
-        problemas = _detectar_problemas(g, os_sem_ciencia_ger, pct_sem_ciencia)
-
-        ranking.append({
-            "id": g["id"], "nome": g["nome"],
-            "indice_saude": score, "nivel": nivel,
-            "total_os": g["total_os"],
-            "os_sem_ciencia": os_sem_ciencia_ger,
-            "pct_sem_ciencia": round(pct_sem_ciencia, 1),
-            "taxa_conclusao": g["taxa_conclusao"],
-            "problemas": problemas,
-        })
-
-    ranking.sort(key=lambda r: r["indice_saude"])
-    return ranking
-
-
-def _detectar_problemas(
-    g: dict[str, Any],
-    os_sem_ciencia_ger: int,
-    pct_sem_ciencia: float,
-) -> list[str]:
-    """Monta lista de problemas detectados para uma gerencia (ranking)."""
-    problemas: list[str] = []
-    if pct_sem_ciencia > 10:
-        problemas.append(f'{os_sem_ciencia_ger} OS sem ciencia ({round(pct_sem_ciencia)}%)')
-    elif os_sem_ciencia_ger > 0:
-        problemas.append(f'{os_sem_ciencia_ger} OS sem ciencia')
-    if g["taxa_conclusao"] < 30:
-        problemas.append(f'Taxa de conclusao {g["taxa_conclusao"]}%')
-    return problemas
-
-
-def _calcular_desempenho_supervisoes(
-    supervisao_names: dict[int, str],
-    sup_os: dict[int, list[dict]],
-    sup_to_gerencia: dict[int, int],
-    gerencia_names: dict[int, str],
-) -> list[dict[str, Any]]:
-    """Calcula metricas de desempenho por supervisao."""
-    desempenho = []
-    for sid, nome in supervisao_names.items():
-        os_list = sup_os.get(sid, [])
-        metricas = _calcular_metricas_os(os_list)
-        ger_id = sup_to_gerencia.get(sid)
-        ger_nome = gerencia_names.get(ger_id, "-") if ger_id else "-"
-        desempenho.append({
-            "id": sid, "nome": nome,
-            "gerencia_id": ger_id, "gerencia_nome": ger_nome,
-            "total_os": metricas["total_os"],
-            "abertas": metricas["abertas"],
-            "em_andamento": metricas["em_andamento"],
-            "concluidas": metricas["concluidas"],
-            "os_sem_ciencia": metricas["os_sem_ciencia"],
-            "taxa_conclusao": metricas["taxa_conclusao"],
-        })
-    desempenho.sort(key=lambda s: s["taxa_conclusao"])
-    return desempenho
-
-
-def _calcular_carga_fiscais(
-    todas_os: list[dict[str, Any]],
-    users: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Calcula carga de trabalho por fiscal (apenas OS ativas)."""
-    fiscal_name_to_sup: dict[str, int | None] = {
-        u["username"]: u.get("supervisao_id")
-        for u in users if u.get("role") == "fiscal"
-    }
-
-    fiscal_os: dict[str, list[dict]] = defaultdict(list)
-    for o in todas_os:
-        if o["status"] in STATUSES_ATIVOS:
-            for fiscal in o.get("fiscais", []):
-                fiscal_os[fiscal].append(o)
-
-    carga = []
-    for fiscal_name, os_list in fiscal_os.items():
-        carga.append({
-            "nome": fiscal_name,
-            "supervisao_id": fiscal_name_to_sup.get(fiscal_name),
-            "os_ativas": len(os_list),
-        })
-    carga.sort(key=lambda f: f["os_ativas"], reverse=True)
-    return carga
 
 
 # ─── ATF API Integration ─────────────────────────────────────────
@@ -2688,75 +2111,11 @@ def buscar_os_em_cache(numero_os: str) -> dict[str, Any] | None:
     return ordem
 
 
-def _calcular_evolucao_mensal(todas_os: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Calcula evolucao mensal de OS abertas por mes de abertura."""
-    os_por_mes: dict[str, int] = defaultdict(int)
-    for o in todas_os:
-        if o.get("data_abertura"):
-            try:
-                mes = o["data_abertura"][:7]
-                os_por_mes[mes] += 1
-            except (ValueError, TypeError):
-                pass
-
-    meses_ordenados = sorted(os_por_mes.keys())
-    return [{"mes": m, "abertas": os_por_mes[m]} for m in meses_ordenados]
-
-
-def _calcular_comparativo_mensal(
-    todas_os: list[dict[str, Any]], now: datetime,
-) -> dict[str, Any]:
-    """
-    Compara KPIs do mes mais recente com o mes anterior.
-
-    Usa os dois meses mais recentes com dados (fallback para calendario atual).
-    """
-    meses_com_dados = sorted(set(
-        (o.get("data_abertura") or "")[:7]
-        for o in todas_os
-        if (o.get("data_abertura") or "")[:7] > ""
-    ))
-
-    if len(meses_com_dados) >= 2:
-        mes_atual = meses_com_dados[-1]
-        mes_anterior = meses_com_dados[-2]
-    elif len(meses_com_dados) == 1:
-        mes_atual = meses_com_dados[0]
-        mes_anterior = ""
-    else:
-        mes_atual = now.strftime("%Y-%m")
-        primeiro_dia = now.replace(day=1)
-        if primeiro_dia.month == 1:
-            mes_ant_dt = primeiro_dia.replace(year=primeiro_dia.year - 1, month=12)
-        else:
-            mes_ant_dt = primeiro_dia.replace(month=primeiro_dia.month - 1)
-        mes_anterior = mes_ant_dt.strftime("%Y-%m")
-
-    os_atual = [o for o in todas_os if (o.get("data_abertura") or "")[:7] == mes_atual]
-    os_ant = [o for o in todas_os if (o.get("data_abertura") or "")[:7] == mes_anterior]
-
-    kpi_atual = _calcular_metricas_os(os_atual)
-    kpi_ant = _calcular_metricas_os(os_ant)
-
-    comparativo: dict[str, Any] = {}
-    chaves_comparativo = (
-        "total_os", "abertas", "em_andamento", "concluidas", "os_sem_ciencia",
-    )
-    for k in chaves_comparativo:
-        val_atual = kpi_atual[k]
-        val_ant = kpi_ant[k]
-        delta = round(val_atual - val_ant, 1) if isinstance(val_atual, (int, float)) else 0
-        comparativo[k] = {"atual": val_atual, "anterior": val_ant, "delta": delta}
-    comparativo["_labels"] = {"mes_atual": mes_atual, "mes_anterior": mes_anterior}
-
-    return comparativo
-
-
 # ─── Dashboard de OS (dados reais do ATF) ───────────────────────
 #
-# Separado de gerar_dashboard(), que roda sobre o formato interno legado
-# (_MOCK_ORDENS) e mede status e ciencia. Aqui a fonte e a listagem do
-# ATF e o que se mede sao os cortes pedidos pela area fiscal em
+# Irmao de gerar_dashboard_desempenho(), mais abaixo, que mede situacao
+# e ciencia sobre o mesmo universo. Aqui o que se mede sao os cortes
+# pedidos pela area fiscal em
 # 31/08/2026: quantidade de OS por gerencia, orgao executor, fiscal,
 # motivo, tipo (modelo) e mes de abertura — cada um com o tempo medio de
 # execucao.
@@ -3045,6 +2404,503 @@ def universo_ordens_atf(
         matriculas_visiveis=matriculas_visiveis,
     )
     return resultado.get("ordens", [])
+
+
+# ─── Desempenho e alertas (dados reais do ATF) ──────────────────
+#
+# Substituem o formato interno legado, retirado em 25/09/2026. As abas
+# Visao Geral, Gerencias, Supervisoes e Fiscais do Dashboard, o
+# relatorio de desempenho e os alertas liam uma lista fixa de OS de
+# exemplo (_MOCK_ORDENS), com status e prioridade que o ATF nao tem — e
+# liam mesmo com o ATF configurado, porque nao havia caminho nenhum ate
+# ele. Agora leem a listagem real, e cada conceito antigo virou o campo
+# do ATF que responde a mesma pergunta:
+#
+# - status (aberta/andamento/concluida/cancelada) -> situacao da OS
+#   (statusOS), agrupada por _grupo_situacao;
+# - "sem ciencia" -> fiscal designado, e nao cancelado, sem dataCiencia;
+# - "ultima movimentacao" -> dataUltimoEventoOS;
+# - supervisao -> equipe fiscal do ATF, com quem a planilha marca como
+#   supervisor. O cadastro local de supervisoes so tem as de exemplo, e
+#   os supervisores reais chefiam equipes (decisao do Rodrigo, 25/09/2026);
+# - prioridade -> nao existe no ATF, e o alerta de "OS urgente" saiu.
+
+_SITUACAO_AUTORIZADA = 1
+_SITUACAO_ENCERRADA = 4
+_SITUACAO_BLOQUEADA = 5
+# Cancelada (2) e substituida (3) sairam da execucao sem encerrar, e por
+# isso ficam fora do denominador da taxa de encerramento: a substituida
+# foi trocada por outra OS, que ja conta por si.
+_SITUACOES_CANCELADAS = frozenset({2, 3})
+
+# Pesos do indice de saude (0-100) por gerencia — a formula do painel
+# antigo, agora sobre a taxa de encerramento real.
+PESO_TAXA_ENCERRAMENTO = 0.50  # (100 - taxa%) * 0.50 -> ate -50 pts
+PESO_SEM_CIENCIA = 0.50        # % sem ciencia * 0.50 -> ate -50 pts
+
+# Dias sem evento de acompanhamento a partir dos quais uma OS autorizada
+# vira alerta de "parada".
+DIAS_SEM_EVENTO_ALERTA = 15
+
+# Janela dos alertas: OS abertas nos ultimos 12 meses, o maior periodo
+# que o ATF aceita numa busca so por periodo. OS aberta antes disso e
+# ainda em execucao nao entra — a tela de alertas diz isso.
+JANELA_ALERTAS_DIAS = 365
+
+# Teto do periodo de abertura: um ano, com folga para o bissexto. Mesmo
+# numero da aba de Ordens de Servico e de atfFilters.js.
+_MAX_DIAS_PERIODO_ABERTURA = 366
+
+_SEM_SITUACAO = "Sem situacao informada"
+
+
+def validar_periodo_abertura(inicio: str | None, fim: str | None) -> None:
+    """
+    Exige periodo de abertura completo e de no maximo um ano.
+
+    E o contrato da aba de Ordens de Servico, que ja valida na tela. Aqui
+    ele e checado tambem no servidor porque estas consultas nao tem outro
+    filtro: sem periodo, a listagem do ATF varreria a base inteira. As
+    mensagens sao as mesmas da tela.
+    """
+    if not inicio or not fim:
+        raise ValueError("Informe o periodo de abertura: inicio e fim.")
+    try:
+        d_ini = datetime.strptime(inicio, "%Y-%m-%d").date()
+        d_fim = datetime.strptime(fim, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        raise ValueError("Periodo de abertura invalido: use datas em YYYY-MM-DD.")
+    if d_ini > d_fim:
+        raise ValueError("Periodo de abertura: o inicio nao pode ser depois do fim.")
+    if (d_fim - d_ini).days > _MAX_DIAS_PERIODO_ABERTURA:
+        raise ValueError("Periodo de abertura: no maximo um ano entre inicio e fim.")
+
+
+def _grupo_situacao(o: dict[str, Any]) -> str:
+    """
+    Situacao da OS no ATF reduzida aos quatro grupos do painel.
+
+    Bloqueada fica a parte por ser a unica situacao que depende de uma
+    pessoa: o ATF bloqueia a OS quando o fiscal nao registra ciencia no
+    prazo, e so o supervisor desbloqueia — no ATF, nao aqui. Aguardando
+    autorizacao, autorizada, em analise para encerramento e execucao
+    suspensa (e a situacao ausente) sao "em andamento": a OS existe e
+    ainda nao terminou.
+    """
+    codigo = (o.get("situacao") or {}).get("codigo")
+    if codigo == _SITUACAO_ENCERRADA:
+        return "encerrada"
+    if codigo in _SITUACOES_CANCELADAS:
+        return "cancelada"
+    if codigo == _SITUACAO_BLOQUEADA:
+        return "bloqueada"
+    return "em_andamento"
+
+
+def _fiscais_ativos(o: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Designacoes que valem. O ATF mantem na lista o fiscal cuja designacao
+    foi cancelada, com dataCancelamento: ele nao deve ciencia nem carrega
+    a OS.
+    """
+    return [f for f in o.get("fiscais") or [] if not f.get("data_cancelamento")]
+
+
+def _fiscais_sem_ciencia(o: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fiscais que ainda devem ciencia numa OS que nao terminou."""
+    if _grupo_situacao(o) in ("encerrada", "cancelada"):
+        return []
+    return [f for f in _fiscais_ativos(o) if not f.get("data_ciencia")]
+
+
+def _metricas_desempenho(os_list: list[dict[str, Any]]) -> dict[str, Any]:
+    """Contagem por grupo de situacao, OS sem ciencia e taxa de encerramento."""
+    grupos = Counter(_grupo_situacao(o) for o in os_list)
+    total = len(os_list)
+    validas = total - grupos["cancelada"]
+    return {
+        "total_os": total,
+        "em_andamento": grupos["em_andamento"],
+        "bloqueadas": grupos["bloqueada"],
+        "encerradas": grupos["encerrada"],
+        "canceladas": grupos["cancelada"],
+        "os_sem_ciencia": sum(1 for o in os_list if _fiscais_sem_ciencia(o)),
+        "taxa_encerramento": round(grupos["encerrada"] / validas * 100, 1) if validas else 0,
+    }
+
+
+def _indice_saude(linha: dict[str, Any]) -> dict[str, Any]:
+    """
+    Indice de saude (0-100) de uma gerencia, com o nivel e os problemas
+    que o explicam:
+
+      - taxa de encerramento baixa: (100 - taxa%) * 0.50 -> ate -50 pts
+      - OS sem ciencia: % do total * 0.50 -> ate -50 pts
+
+    Numa janela recente quase nada teve tempo de encerrar: ali a taxa
+    baixa e calendario, nao desempenho. A tela lembra disso.
+    """
+    total = linha["total_os"]
+    sem_ciencia = linha["os_sem_ciencia"]
+    pct_sem_ciencia = sem_ciencia / total * 100 if total else 0
+
+    score = 100.0
+    score -= (100 - linha["taxa_encerramento"]) * PESO_TAXA_ENCERRAMENTO
+    score -= pct_sem_ciencia * PESO_SEM_CIENCIA
+    score = max(0, min(100, round(score, 1)))
+
+    if score >= 75:
+        nivel = "saudavel"
+    elif score >= 50:
+        nivel = "atencao"
+    elif score >= 25:
+        nivel = "critico"
+    else:
+        nivel = "emergencia"
+
+    problemas: list[str] = []
+    if pct_sem_ciencia > 10:
+        problemas.append(f"{sem_ciencia} OS sem ciencia ({round(pct_sem_ciencia)}%)")
+    elif sem_ciencia > 0:
+        problemas.append(f"{sem_ciencia} OS sem ciencia")
+    if linha["taxa_encerramento"] < 30:
+        problemas.append(f"Taxa de encerramento {linha['taxa_encerramento']}%")
+
+    return {
+        "indice_saude": score,
+        "nivel": nivel,
+        "pct_sem_ciencia": round(pct_sem_ciencia, 1),
+        "problemas": problemas,
+    }
+
+
+def _ordem_desempenho(linha: dict[str, Any]) -> tuple[Any, ...]:
+    """Pior taxa primeiro; quem nao teve OS no periodo vai para o fim."""
+    return (linha["total_os"] == 0, linha["taxa_encerramento"], linha["nome"])
+
+
+def _por_situacao(ordens: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Quantidade por situacao do ATF, uma linha por codigo.
+
+    O rotulo e o que o servico manda (noStatusOS), e nao a tabela da doc:
+    as duas divergem ("EM ANALISE DE ENCERRAMENTO" x "PARA"), e na tela
+    vale o nome que o usuario ve no proprio ATF.
+    """
+    linhas: dict[Any, dict[str, Any]] = {}
+    for o in ordens:
+        situacao = o.get("situacao") or {}
+        codigo = situacao.get("codigo")
+        linha = linhas.setdefault(codigo, {
+            "codigo": codigo,
+            "descricao": (
+                (situacao.get("descricao") or "").strip()
+                or _STATUS_ATF.get(codigo, "")
+                or _SEM_SITUACAO
+            ),
+            "grupo": _grupo_situacao(o),
+            "total": 0,
+        })
+        linha["total"] += 1
+    return sorted(
+        linhas.values(),
+        key=lambda l: (l["codigo"] is None, l["codigo"] if l["codigo"] is not None else 0),
+    )
+
+
+def _mes_abertura(o: dict[str, Any]) -> str:
+    """YYYY-MM da abertura, ou "" se a data nao vier."""
+    mes = (o.get("data_abertura") or "")[:7]
+    return mes if len(mes) == 7 else ""
+
+
+def _evolucao_mensal(ordens: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    OS abertas em cada mes do periodo e quantas delas ja estao encerradas.
+
+    E uma leitura por safra: "encerradas" conta as OS ABERTAS naquele mes
+    que hoje estao encerradas, e nao o que encerrou no mes. O periodo do
+    painel e de abertura, entao e a unica serie que ele sustenta sem
+    deixar OS de fora.
+    """
+    por_mes: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for o in ordens:
+        mes = _mes_abertura(o)
+        if mes:
+            por_mes[mes].append(o)
+    return [
+        {
+            "mes": mes,
+            "abertas": len(os_mes),
+            "encerradas": sum(1 for o in os_mes if _grupo_situacao(o) == "encerrada"),
+        }
+        for mes, os_mes in sorted(por_mes.items())
+    ]
+
+
+def _comparativo_mensal(ordens: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Os indicadores das OS abertas no ultimo mes do periodo contra as do
+    mes anterior. Vazio com menos de dois meses: nao ha o que comparar.
+    """
+    meses = sorted({_mes_abertura(o) for o in ordens} - {""})
+    if len(meses) < 2:
+        return {}
+    mes_anterior, mes_atual = meses[-2], meses[-1]
+    atual = _metricas_desempenho([o for o in ordens if _mes_abertura(o) == mes_atual])
+    anterior = _metricas_desempenho([o for o in ordens if _mes_abertura(o) == mes_anterior])
+
+    comparativo: dict[str, Any] = {
+        chave: {
+            "atual": atual[chave],
+            "anterior": anterior[chave],
+            "delta": atual[chave] - anterior[chave],
+        }
+        for chave in ("total_os", "em_andamento", "bloqueadas", "encerradas", "os_sem_ciencia")
+    }
+    comparativo["_labels"] = {"mes_atual": mes_atual, "mes_anterior": mes_anterior}
+    return comparativo
+
+
+def _carga_fiscais(
+    ordens: list[dict[str, Any]],
+    gerencia_por_matricula: dict[str, dict[str, Any]],
+    equipes_por_matricula: dict[str, list[int]],
+) -> list[dict[str, Any]]:
+    """
+    OS ativas (em andamento ou bloqueadas) por fiscal, os mais carregados
+    primeiro. So entra quem tem pelo menos uma, e so pela designacao que
+    vale: o fiscal cancelado na OS nao carrega ela.
+
+    Cada linha leva a gerencia e as equipes da matricula, para a tela
+    recortar a carga pelos mesmos filtros das outras abas.
+    """
+    carga: dict[str, dict[str, Any]] = {}
+    for o in ordens:
+        if _grupo_situacao(o) not in ("em_andamento", "bloqueada"):
+            continue
+        vistos: set[str] = set()
+        for f in _fiscais_ativos(o):
+            matricula = (f.get("matricula") or "").strip()
+            nome = (f.get("nome") or "").strip()
+            chave = matricula or nome
+            # A mesma pessoa pode aparecer duas vezes na lista (designada,
+            # cancelada e designada de novo): conta a OS uma vez so.
+            if not chave or chave in vistos:
+                continue
+            vistos.add(chave)
+            linha = carga.setdefault(chave, {
+                "matricula": matricula or None,
+                "nome": nome or matricula,
+                "os_ativas": 0,
+                "gerencia_id": (gerencia_por_matricula.get(matricula) or {}).get("id"),
+                "equipes": equipes_por_matricula.get(matricula, []),
+            })
+            linha["os_ativas"] += 1
+    return sorted(carga.values(), key=lambda l: (-l["os_ativas"], l["nome"]))
+
+
+def gerar_dashboard_desempenho(
+    ordens: list[dict[str, Any]],
+    gerencias: list[dict[str, Any]],
+    gerencia_por_matricula: dict[str, dict[str, Any]],
+    equipes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Visao geral, gerencias, equipes e carga por fiscal sobre a listagem
+    do ATF: o que alimenta as abas Visao Geral, Gerencias, Supervisoes e
+    Fiscais do Dashboard e o relatorio de desempenho.
+
+    `ordens` e o universo do periodo, ja filtrado pela hierarquia de quem
+    pediu. `gerencias` e o cadastro local ([{id, nome}]) e
+    `gerencia_por_matricula` a ponte ate ele (ver _gerencia_por_matricula,
+    em main.py) — a mesma do corte por gerencia da aba de OS, para os dois
+    paineis contarem igual. `equipes` sao as equipes fiscais do painel,
+    cada uma com gerencia, supervisores e as matriculas dos membros.
+
+    Uma OS conta em cada gerencia e em cada equipe que os seus fiscais
+    alcancam: a soma das linhas pode passar do total, de proposito.
+    """
+    geral = _metricas_desempenho(ordens)
+
+    # ── Gerencias: todas as do cadastro, mesmo sem OS no periodo ──
+    os_por_gerencia: dict[Any, list[dict[str, Any]]] = defaultdict(list)
+    sem_gerencia = 0
+    for o in ordens:
+        chaves = _chaves_gerencia(o, gerencia_por_matricula)
+        if chaves == [(None, _SEM_GERENCIA)]:
+            sem_gerencia += 1
+            continue
+        for gerencia_id, _ in chaves:
+            os_por_gerencia[gerencia_id].append(o)
+
+    desempenho_gerencias = sorted(
+        (
+            {"id": g["id"], "nome": g["nome"], **_metricas_desempenho(os_por_gerencia.get(g["id"], []))}
+            for g in gerencias
+        ),
+        key=_ordem_desempenho,
+    )
+
+    # Termometro so com quem teve OS: gerencia sem OS no periodo sairia
+    # com 100 e "saudavel", que e dizer bem de quem nao foi medido.
+    ranking_criticidade = sorted(
+        (
+            {"id": g["id"], "nome": g["nome"], "total_os": g["total_os"],
+             "os_sem_ciencia": g["os_sem_ciencia"],
+             "taxa_encerramento": g["taxa_encerramento"], **_indice_saude(g)}
+            for g in desempenho_gerencias if g["total_os"]
+        ),
+        key=lambda r: r["indice_saude"],
+    )
+
+    # ── Equipes: pelas matriculas dos membros, como o supervisor ve ──
+    equipes_por_matricula: dict[str, list[int]] = defaultdict(list)
+    for e in equipes:
+        for matricula in e["matriculas"]:
+            equipes_por_matricula[str(matricula)].append(e["codigo"])
+
+    os_por_equipe: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    sem_equipe = 0
+    for o in ordens:
+        alcancadas = {
+            codigo
+            for f in o.get("fiscais") or []
+            for codigo in equipes_por_matricula.get((f.get("matricula") or "").strip(), ())
+        }
+        if not alcancadas:
+            sem_equipe += 1
+        for codigo in alcancadas:
+            os_por_equipe[codigo].append(o)
+
+    desempenho_equipes = sorted(
+        (
+            {
+                "id": e["codigo"], "nome": e["nome"],
+                "gerencia_id": e.get("gerencia_id"), "gerencia_nome": e.get("gerencia_nome"),
+                "supervisores": e.get("supervisores", []),
+                **_metricas_desempenho(os_por_equipe.get(e["codigo"], [])),
+            }
+            for e in equipes
+        ),
+        key=_ordem_desempenho,
+    )
+
+    carga_fiscais = _carga_fiscais(ordens, gerencia_por_matricula, equipes_por_matricula)
+
+    return {
+        "visao_geral": {
+            **geral,
+            "total_fiscais": len(carga_fiscais),
+            "total_equipes": sum(1 for e in desempenho_equipes if e["total_os"]),
+            # Os buracos que mudam a leitura dos cortes: OS que nenhuma
+            # gerencia ou equipe do cadastro alcanca.
+            "os_sem_gerencia": sem_gerencia,
+            "os_sem_equipe": sem_equipe,
+        },
+        "comparativo_mensal": _comparativo_mensal(ordens),
+        "por_situacao": _por_situacao(ordens),
+        "evolucao_mensal": _evolucao_mensal(ordens),
+        "desempenho_gerencias": desempenho_gerencias,
+        "ranking_criticidade": ranking_criticidade,
+        "desempenho_equipes": desempenho_equipes,
+        "carga_fiscais": carga_fiscais,
+    }
+
+
+def _data_br(valor: str | None) -> str:
+    """YYYY-MM-DD -> DD/MM/AAAA, para o texto dos alertas."""
+    if not valor or len(valor) < 10:
+        return "-"
+    return f"{valor[8:10]}/{valor[5:7]}/{valor[:4]}"
+
+
+def gerar_alertas(ordens: list[dict[str, Any]], hoje: date) -> list[dict[str, Any]]:
+    """
+    Alertas sobre as OS do ATF que o usuario enxerga.
+
+    Duas regras, as duas sobre dado que o ATF de fato manda:
+
+    - os_parada: OS AUTORIZADA — a unica situacao em que se espera o
+      fiscal trabalhando — sem evento de acompanhamento ha mais de
+      DIAS_SEM_EVENTO_ALERTA dias. Sem evento nenhum, conta do inicio da
+      fiscalizacao, ou da abertura. Suspensa, em analise para
+      encerramento e aguardando autorizacao ficam de fora: nelas nao se
+      espera evento.
+    - os_sem_ciencia: fiscal designado, e nao cancelado, sem ciencia numa
+      OS que nao terminou. Severidade alta quando o ATF ja bloqueou a OS;
+      o desbloqueio e do supervisor, no ATF.
+
+    `data` e quando o problema comecou (o ultimo evento, ou a designacao
+    mais antiga ainda sem ciencia): dentro de cada severidade, o mais
+    antigo vem primeiro.
+    """
+    alertas: list[dict[str, Any]] = []
+
+    for o in ordens:
+        numero = o.get("numero_os") or ""
+        razao = o.get("razao_social") or "Contribuinte nao informado"
+        ie = o.get("ie") or "-"
+        situacao = (o.get("situacao") or {}).get("codigo")
+
+        if situacao == _SITUACAO_AUTORIZADA:
+            referencia = (
+                o.get("data_ultimo_evento")
+                or o.get("data_inicio_fiscalizacao")
+                or o.get("data_abertura")
+            )
+            try:
+                dias = (hoje - datetime.strptime(referencia, "%Y-%m-%d").date()).days
+            except (TypeError, ValueError):
+                dias = None
+            if dias is not None and dias > DIAS_SEM_EVENTO_ALERTA:
+                if o.get("data_ultimo_evento"):
+                    desde = f"Ultimo evento em {_data_br(referencia)}."
+                elif o.get("data_inicio_fiscalizacao"):
+                    desde = f"Nenhum evento desde o inicio da fiscalizacao, em {_data_br(referencia)}."
+                else:
+                    desde = f"Nenhum evento desde a abertura, em {_data_br(referencia)}."
+                alertas.append({
+                    "tipo": "os_parada",
+                    "severidade": "alta",
+                    "titulo": f"OS sem evento ha {dias} dias - {razao}",
+                    "descricao": (
+                        f"A OS {numero} (IE: {ie}) esta autorizada e sem evento de "
+                        f"acompanhamento ha {dias} dias. {desde}"
+                    ),
+                    "referencia": numero,
+                    "data": referencia,
+                })
+
+        pendentes = _fiscais_sem_ciencia(o)
+        if pendentes:
+            nomes = ", ".join(
+                f.get("nome") or f.get("matricula") or "fiscal sem nome" for f in pendentes
+            )
+            designacoes = sorted(f["data_designacao"] for f in pendentes if f.get("data_designacao"))
+            inicio = designacoes[0] if designacoes else o.get("data_abertura") or ""
+            bloqueada = _grupo_situacao(o) == "bloqueada"
+            descricao = (
+                f"A OS {numero} (IE: {ie}) aguarda a ciencia de {nomes}, "
+                f"designado(s) desde {_data_br(inicio)}."
+            )
+            if bloqueada:
+                descricao += (
+                    " O ATF bloqueou a OS pelo atraso: o desbloqueio e feito pelo "
+                    "supervisor, no ATF, depois da justificativa de atraso na cientificacao."
+                )
+            alertas.append({
+                "tipo": "os_sem_ciencia",
+                "severidade": "alta" if bloqueada else "media",
+                "titulo": f"OS {'bloqueada ' if bloqueada else ''}sem ciencia - {razao}",
+                "descricao": descricao,
+                "referencia": numero,
+                "data": inicio,
+            })
+
+    ordem_severidade = {"critica": 0, "alta": 1, "media": 2, "baixa": 3}
+    alertas.sort(key=lambda a: (ordem_severidade.get(a["severidade"], 9), a["data"] or ""))
+    return alertas
 
 
 # ─── Eventos de acompanhamento em lote (doc dos eventos) ────────

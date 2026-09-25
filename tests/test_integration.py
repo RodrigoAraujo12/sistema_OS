@@ -781,38 +781,6 @@ class TestDeleteUser(IntegrationTestBase):
 # ═══════════════════════════════════════════════════════════════
 
 
-_MOCK_OS_LIST = [
-    {
-        "numero": "OS-001",
-        "tipo": "Fiscalizacao",
-        "ie": "123456789",
-        "razao_social": "Empresa Teste LTDA",
-        "matricula_supervisor": "23456",
-        "fiscais": ["Carlos Mendes"],
-        "status": "Em andamento",
-        "prioridade": "Urgente",
-        "data_abertura": "2025-06-01",
-        "data_ciencia": "2025-06-02",
-        "data_ultima_movimentacao": "2025-06-10",
-        "dias_parado": 5,
-    },
-    {
-        "numero": "OS-002",
-        "tipo": "Diligencia",
-        "ie": "987654321",
-        "razao_social": "Outra Empresa SA",
-        "matricula_supervisor": "23458",
-        "fiscais": ["Maria Santos"],
-        "status": "Aberta",
-        "prioridade": "",
-        "data_abertura": "2025-07-01",
-        "data_ciencia": None,
-        "data_ultima_movimentacao": None,
-        "dias_parado": 0,
-    },
-]
-
-
 class TestOrdensEndpoints(IntegrationTestBase):
     """
     Testa /ordens contra o MOCK ATF (25 OS), cujas matriculas de fiscais
@@ -1102,14 +1070,17 @@ class TestTrocaDeSenhaObrigatoria(IntegrationTestBase):
 
 
 class TestAlertasEndpoints(IntegrationTestBase):
-    """Testa endpoint de alertas com mock."""
+    """
+    GET /alertas sobre as OS do ATF (aqui, o MOCK: ATF_BASE_URL vazio no
+    setUp) abertas nos ultimos 12 meses.
+    """
 
     _MOCK_ALERTAS = [
         {
-            "tipo": "os_urgente",
+            "tipo": "os_parada",
             "severidade": "alta",
-            "titulo": "OS Urgente Parada",
-            "descricao": "A OS OS-001 esta urgente e parada.",
+            "titulo": "OS sem evento ha 20 dias",
+            "descricao": "A OS OS-001 esta autorizada e sem evento.",
             "referencia": "OS-001",
             "data": "2025-06-01",
         }
@@ -1121,7 +1092,36 @@ class TestAlertasEndpoints(IntegrationTestBase):
         r = self.client.get("/alertas", headers=self._auth_header(token))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(r.json()), 1)
-        self.assertEqual(r.json()[0]["tipo"], "os_urgente")
+        self.assertEqual(r.json()[0]["tipo"], "os_parada")
+
+    def test_alertas_saem_das_os_do_atf(self):
+        r = self.client.get("/alertas", headers=self._admin_header())
+        self.assertEqual(r.status_code, 200, r.text)
+        tipos = {a["tipo"] for a in r.json()}
+        self.assertTrue(tipos)
+        # O alerta de OS urgente saiu: o ATF nao tem prioridade.
+        self.assertLessEqual(tipos, {"os_parada", "os_sem_ciencia"})
+
+    def test_fiscal_so_recebe_alerta_das_proprias_os(self):
+        do_admin = {
+            a["referencia"]
+            for a in self.client.get("/alertas", headers=self._admin_header()).json()
+        }
+        token = self._login_como("Carlos Mendes")
+        do_fiscal = {
+            a["referencia"]
+            for a in self.client.get("/alertas", headers=self._auth_header(token)).json()
+        }
+        self.assertTrue(do_fiscal)
+        self.assertLess(do_fiscal, do_admin)
+
+    def test_quem_nao_enxerga_ninguem_nao_consulta_o_atf(self):
+        token = self._login_como("Carlos Mendes")
+        with patch("backend.main._matriculas_visiveis", return_value=set()):
+            with patch("backend.main.universo_ordens_atf") as universo:
+                r = self.client.get("/alertas", headers=self._auth_header(token))
+        self.assertEqual(r.json(), [])
+        universo.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1129,23 +1129,70 @@ class TestAlertasEndpoints(IntegrationTestBase):
 # ═══════════════════════════════════════════════════════════════
 
 
+_PERIODO_MOCK = "data_inicio=2025-10-01&data_fim=2026-09-30"
+
+
 class TestDashboardEndpoints(IntegrationTestBase):
-    """Testa o endpoint de dashboard admin."""
+    """
+    GET /admin/dashboard — desempenho sobre o ATF (aqui, o MOCK) para as
+    abas Visao Geral, Gerencias, Supervisoes e Fiscais.
+    """
 
-    @patch("backend.main.listar_ordens_servico", return_value=_MOCK_OS_LIST)
-    @patch("backend.main.gerar_dashboard", return_value={"total_os": 2, "resumo": {}})
-    def test_dashboard_admin(self, _mock_dash, _mock_os):
+    def test_dashboard_admin(self):
+        r = self.client.get(f"/admin/dashboard?{_PERIODO_MOCK}", headers=self._admin_header())
+        self.assertEqual(r.status_code, 200, r.text)
+        corpo = r.json()
+        for chave in (
+            "visao_geral", "por_situacao", "evolucao_mensal", "desempenho_gerencias",
+            "ranking_criticidade", "desempenho_equipes", "carga_fiscais",
+        ):
+            self.assertIn(chave, corpo)
+        self.assertGreater(corpo["visao_geral"]["total_os"], 0)
+        self.assertEqual(corpo["periodo"], {"inicio": "2025-10-01", "fim": "2026-09-30"})
+
+    def test_grupos_de_situacao_fecham_com_o_total(self):
+        corpo = self.client.get(
+            f"/admin/dashboard?{_PERIODO_MOCK}", headers=self._admin_header(),
+        ).json()
+        v = corpo["visao_geral"]
+        self.assertEqual(
+            v["em_andamento"] + v["bloqueadas"] + v["encerradas"] + v["canceladas"], v["total_os"],
+        )
+        self.assertEqual(sum(l["total"] for l in corpo["por_situacao"]), v["total_os"])
+
+    def test_periodo_e_obrigatorio_e_de_no_maximo_um_ano(self):
         h = self._admin_header()
-        r = self.client.get("/admin/dashboard", headers=h)
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["total_os"], 2)
+        for query in ("", "?data_inicio=2026-01-01", "?data_inicio=2024-01-01&data_fim=2026-01-01"):
+            with self.subTest(query=query):
+                r = self.client.get(f"/admin/dashboard{query}", headers=h)
+                self.assertEqual(r.status_code, 400, r.text)
 
-    @patch("backend.main.listar_ordens_servico", return_value=_MOCK_OS_LIST)
-    @patch("backend.main.gerar_dashboard", return_value={"total_os": 2})
-    def test_dashboard_non_admin_forbidden(self, _mock_dash, _mock_os):
+    def test_dashboard_non_admin_forbidden(self):
         token = self._login_como("Carlos Mendes")
-        r = self.client.get("/admin/dashboard", headers=self._auth_header(token))
+        r = self.client.get(f"/admin/dashboard?{_PERIODO_MOCK}", headers=self._auth_header(token))
         self.assertEqual(r.status_code, 403)
+
+
+class TestRelatorioDesempenho(IntegrationTestBase):
+    """/relatorios/dashboard (CSV e PDF) sobre o mesmo desempenho do ATF."""
+
+    def test_csv(self):
+        r = self.client.get(f"/relatorios/dashboard?{_PERIODO_MOCK}", headers=self._admin_header())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("dados do ATF", r.text)
+        for secao in ("RESUMO GERAL", "POR GERENCIA", "POR EQUIPE FISCAL", "CARGA POR FISCAL"):
+            self.assertIn(secao, r.text)
+
+    def test_pdf(self):
+        r = self.client.get(f"/relatorios/dashboard/pdf?{_PERIODO_MOCK}", headers=self._admin_header())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.content.startswith(b"%PDF"))
+
+    def test_sem_periodo_recusa(self):
+        h = self._admin_header()
+        for rota in ("/relatorios/dashboard", "/relatorios/dashboard/pdf"):
+            with self.subTest(rota=rota):
+                self.assertEqual(self.client.get(rota, headers=h).status_code, 400)
 
 
 class TestDashboardOSEndpoint(IntegrationTestBase):

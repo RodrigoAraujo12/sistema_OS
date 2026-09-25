@@ -50,8 +50,11 @@ export default function App() {
   const [supervisoes, setSupervisoes] = useState([]);
   const [equipes, setEquipes] = useState([]);
   const [users, setUsers] = useState([]);
-  const [alertas, setAlertas] = useState([]);
-  const [dashboardData, setDashboardData] = useState(null);
+  // null = ainda nao carregados. Os alertas descem ate o ATF (uma
+  // listagem de 12 meses), entao so saem quando a aba e aberta ou no
+  // botao de atualizar — nunca no login.
+  const [alertas, setAlertas] = useState(null);
+  const [alertasCarregando, setAlertasCarregando] = useState(false);
 
   // ─── Navigation ─────────────────────────────────────
   const [activeMenu, setActiveMenu] = useState("ordens");
@@ -103,27 +106,42 @@ export default function App() {
     if (!authData) return;
     setError("");
     try {
-      const alertasData = await apiClient.listarAlertas();
-      setAlertas(alertasData);
-
+      // Nada aqui vai ao ATF: dashboard e alertas consultam sob demanda,
+      // cada um na propria tela.
       if (authData.role === "admin") {
-        const [gerenciasData, supervisoesData, usersData, dashData, equipesData] = await Promise.all([
+        const [gerenciasData, supervisoesData, usersData, equipesData] = await Promise.all([
           apiClient.listGerencias(),
           apiClient.listSupervisoes(),
           apiClient.listUsers(),
-          apiClient.getDashboard(),
           apiClient.listEquipesFiscais()
         ]);
         setGerencias(gerenciasData);
         setSupervisoes(supervisoesData);
         setUsers(usersData);
-        setDashboardData(dashData);
         setEquipes(equipesData);
       }
     } catch (err) {
       setError(err.message);
     }
   }
+
+  /** Consulta os alertas no ATF (aba de alertas e botao de atualizar). */
+  async function carregarAlertas() {
+    setAlertasCarregando(true);
+    try {
+      setAlertas(await apiClient.listarAlertas());
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setAlertasCarregando(false);
+    }
+  }
+
+  // Primeira abertura da aba de alertas na sessao. As seguintes reusam o
+  // que ja veio; quem quiser o estado de agora usa o botao de atualizar.
+  useEffect(() => {
+    if (activeMenu === "alertas" && alertas === null && !alertasCarregando) carregarAlertas();
+  }, [activeMenu, alertas]);
 
   /** Recarrega apenas listas administrativas (apos CRUD). */
   async function refreshAdminLists() {
@@ -164,8 +182,7 @@ export default function App() {
     setGerencias([]);
     setSupervisoes([]);
     setUsers([]);
-    setAlertas([]);
-    setDashboardData(null);
+    setAlertas(null);
     setResetInfo("");
     setMessage("");
     setError("");
@@ -187,7 +204,7 @@ export default function App() {
         authData={authData}
         activeMenu={activeMenu}
         onMenuChange={setActiveMenu}
-        alertCount={alertas.length}
+        alertCount={alertas ? alertas.length : 0}
         darkMode={darkMode}
         onDarkModeToggle={() => setDarkMode(!darkMode)}
         onLogout={handleLogout}
@@ -198,12 +215,8 @@ export default function App() {
         {error && <div className="alert error">{error}</div>}
         {resetInfo && <div className="alert info">{resetInfo}</div>}
 
-        {authData.role === "admin" && activeMenu === "dashboard" && dashboardData && (
-          <DashboardPanel
-            dashboardData={dashboardData}
-            onDashboardDataChange={setDashboardData}
-            onError={setError}
-          />
+        {authData.role === "admin" && activeMenu === "dashboard" && (
+          <DashboardPanel onError={setError} />
         )}
 
         {activeMenu === "ordens" && (
@@ -211,7 +224,11 @@ export default function App() {
         )}
 
         {activeMenu === "alertas" && (
-          <AlertasPanel alertas={alertas} />
+          <AlertasPanel
+            alertas={alertas}
+            carregando={alertasCarregando}
+            onAtualizar={carregarAlertas}
+          />
         )}
 
         {authData.role === "admin" && activeMenu === "gerencias" && (

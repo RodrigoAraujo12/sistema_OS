@@ -1,46 +1,47 @@
 /**
  * DashboardGeral.jsx – Aba "Visao Geral" do Dashboard.
  *
- * Contem: Termometro da Fiscalizacao, grafico de pizza (status),
- * evolucao mensal (linha) e comparativo por gerencia (barras agrupadas).
+ * Contem: Termometro da Fiscalizacao, grafico de pizza (situacao da OS
+ * no ATF), evolucao mensal (linha) e comparativo por gerencia (barras
+ * agrupadas). Dados de GET /admin/dashboard, sobre a listagem do ATF.
  */
 
 import React from "react";
 import { Bar, Doughnut, Line } from "react-chartjs-2";
+import { COR_GRUPO, COR_SITUACAO, COR_VAZIO } from "../dashboardShared.js";
 
-const CHART_COLORS = {
-  aberta: "#3b82f6",
-  em_andamento: "#f59e0b",
-  concluida: "#22c55e",
-  cancelada: "#ef4444",
+const ROTULO_NIVEL = {
+  saudavel: "Saudavel", atencao: "Atencao", critico: "Critico", emergencia: "Emergencia",
 };
 
 export default function DashboardGeral({
-  dashboardData,
+  dados,
   gerenciaFilter,
   gerenciasFiltradas,
   onGerenciaSelect,
 }) {
-  const ranking = dashboardData.ranking_criticidade || [];
+  const ranking = dados.ranking_criticidade || [];
 
-  // Dados do doughnut: filtrados ou totais
-  const doughnutData = gerenciaFilter
-    ? [
-        gerenciasFiltradas.reduce((s, g) => s + g.abertas, 0),
-        gerenciasFiltradas.reduce((s, g) => s + g.em_andamento, 0),
-        gerenciasFiltradas.reduce((s, g) => s + g.concluidas, 0),
-        gerenciasFiltradas.reduce((s, g) => s + (g.total_os - g.abertas - g.em_andamento - g.concluidas), 0),
-      ]
-    : [
-        dashboardData.distribuicao_status.aberta,
-        dashboardData.distribuicao_status.em_andamento,
-        dashboardData.distribuicao_status.concluida,
-        dashboardData.distribuicao_status.cancelada,
-      ];
+  // Pizza: sem filtro, uma fatia por situacao do ATF. Com gerencia, a
+  // linha dela so tem os quatro grupos — o backend nao abre situacao por
+  // gerencia —, entao a pizza passa a ser dos grupos.
+  const pizza = gerenciaFilter
+    ? (() => {
+        const g = gerenciasFiltradas[0] || {};
+        return {
+          labels: ["Em andamento", "Bloqueadas", "Encerradas", "Canceladas"],
+          valores: [g.em_andamento, g.bloqueadas, g.encerradas, g.canceladas],
+          cores: [COR_GRUPO.em_andamento, COR_GRUPO.bloqueada, COR_GRUPO.encerrada, COR_GRUPO.cancelada],
+        };
+      })()
+    : {
+        labels: dados.por_situacao.map((s) => s.descricao),
+        valores: dados.por_situacao.map((s) => s.total),
+        cores: dados.por_situacao.map((s) => COR_SITUACAO[s.codigo] || COR_VAZIO),
+      };
 
-  const gerenciasParaChart = gerenciasFiltradas.length > 0
-    ? gerenciasFiltradas
-    : dashboardData.desempenho_gerencias;
+  // Gerencia sem OS no periodo nao tem barra a mostrar.
+  const gerenciasParaChart = gerenciasFiltradas.filter((g) => g.total_os > 0);
 
   return (
     <>
@@ -50,8 +51,9 @@ export default function DashboardGeral({
           <div className="termometro-header">
             <h2>Termometro da Fiscalizacao</h2>
             <p className="muted">
-              Indice de Saude por gerencia — identifique rapidamente onde atuar.
-              Clique para detalhar.
+              Indice de Saude por gerencia, sobre a taxa de encerramento e as OS sem ciencia.
+              Clique para detalhar. Em periodos recentes a taxa e baixa por natureza: as OS
+              ainda nao tiveram tempo de encerrar.
             </p>
           </div>
 
@@ -62,13 +64,13 @@ export default function DashboardGeral({
             return (
               <div className={`termometro-destaque termometro-destaque-${pior.nivel}`}>
                 <div className="termometro-destaque-icon">
-                  {pior.nivel === "emergencia" ? "\uD83D\uDEA8" : pior.nivel === "critico" ? "\u26A0\uFE0F" : "\uD83D\uDCCB"}
+                  {pior.nivel === "emergencia" ? "🚨" : pior.nivel === "critico" ? "⚠️" : "📋"}
                 </div>
                 <div className="termometro-destaque-info">
                   <strong>{pior.nome}</strong> precisa de atencao
                   {pior.nivel === "emergencia" ? " URGENTE" : pior.nivel === "critico" ? " imediata" : ""}
                   <div className="termometro-destaque-problemas">
-                    {pior.problemas.join(" \u00B7 ")}
+                    {pior.problemas.join(" · ")}
                   </div>
                 </div>
                 <div className="termometro-destaque-score">
@@ -91,10 +93,8 @@ export default function DashboardGeral({
                 title={`Clique para detalhar ${g.nome}`}
               >
                 <div className="termometro-card-top">
-                  <span className="termometro-card-nome">{g.nome.replace("Gerencia de ", "")}</span>
-                  <span className={`termometro-badge nivel-${g.nivel}`}>
-                    {g.nivel === "saudavel" ? "Saudavel" : g.nivel === "atencao" ? "Atencao" : g.nivel === "critico" ? "Critico" : "Emergencia"}
-                  </span>
+                  <span className="termometro-card-nome">{g.nome}</span>
+                  <span className={`termometro-badge nivel-${g.nivel}`}>{ROTULO_NIVEL[g.nivel]}</span>
                 </div>
 
                 <div className="termometro-barra-container">
@@ -118,8 +118,8 @@ export default function DashboardGeral({
                     <span className="termometro-metrica-label">Sem Ciencia ({g.os_sem_ciencia})</span>
                   </div>
                   <div className="termometro-metrica">
-                    <span className={`termometro-metrica-valor ${g.taxa_conclusao < 25 ? "text-danger" : g.taxa_conclusao < 50 ? "text-warning" : ""}`}>{g.taxa_conclusao}%</span>
-                    <span className="termometro-metrica-label">Concluido</span>
+                    <span className={`termometro-metrica-valor ${g.taxa_encerramento < 25 ? "text-danger" : g.taxa_encerramento < 50 ? "text-warning" : ""}`}>{g.taxa_encerramento}%</span>
+                    <span className="termometro-metrica-label">Encerrado</span>
                   </div>
                 </div>
 
@@ -138,16 +138,16 @@ export default function DashboardGeral({
 
       {/* ─── Graficos lado a lado ─── */}
       <div className="dashboard-charts-row">
-        {/* Grafico Pizza - Distribuicao por Status */}
+        {/* Grafico Pizza - Distribuicao por situacao */}
         <div className="card dashboard-chart-card">
-          <h2>Distribuicao por Status</h2>
+          <h2>{gerenciaFilter ? "Distribuicao por grupo de situacao" : "Distribuicao por situacao"}</h2>
           <div className="chart-container-sm">
             <Doughnut
               data={{
-                labels: ["Abertas", "Em Andamento", "Concluidas", "Canceladas"],
+                labels: pizza.labels,
                 datasets: [{
-                  data: doughnutData,
-                  backgroundColor: [CHART_COLORS.aberta, CHART_COLORS.em_andamento, CHART_COLORS.concluida, CHART_COLORS.cancelada],
+                  data: pizza.valores,
+                  backgroundColor: pizza.cores,
                   borderWidth: 2,
                   borderColor: "#fff",
                 }],
@@ -175,18 +175,21 @@ export default function DashboardGeral({
         {/* Grafico Linha - Evolucao Mensal */}
         <div className="card dashboard-chart-card">
           <h2>Evolucao Mensal</h2>
+          <p className="muted" style={{ marginBottom: 8 }}>
+            OS abertas em cada mes e quantas delas ja estao encerradas.
+          </p>
           <div className="chart-container-sm">
             <Line
               data={{
-                labels: dashboardData.evolucao_mensal.map((m) => {
+                labels: dados.evolucao_mensal.map((m) => {
                   const [ano, mes] = m.mes.split("-");
                   return `${mes}/${ano}`;
                 }),
                 datasets: [
                   {
                     label: "Abertas",
-                    data: dashboardData.evolucao_mensal.map((m) => m.abertas),
-                    borderColor: CHART_COLORS.aberta,
+                    data: dados.evolucao_mensal.map((m) => m.abertas),
+                    borderColor: "#3b82f6",
                     backgroundColor: "rgba(59,130,246,0.1)",
                     fill: true,
                     tension: 0.3,
@@ -194,9 +197,9 @@ export default function DashboardGeral({
                     pointHoverRadius: 7,
                   },
                   {
-                    label: "Concluidas",
-                    data: dashboardData.evolucao_mensal.map((m) => m.concluidas),
-                    borderColor: CHART_COLORS.concluida,
+                    label: "Ja encerradas",
+                    data: dados.evolucao_mensal.map((m) => m.encerradas),
+                    borderColor: COR_GRUPO.encerrada,
                     backgroundColor: "rgba(34,197,94,0.1)",
                     fill: true,
                     tension: 0.3,
@@ -214,7 +217,7 @@ export default function DashboardGeral({
                   tooltip: { mode: "index", intersect: false },
                 },
                 scales: {
-                  y: { beginAtZero: true, ticks: { stepSize: 1 } },
+                  y: { beginAtZero: true, ticks: { precision: 0 } },
                 },
               }}
             />
@@ -223,33 +226,33 @@ export default function DashboardGeral({
       </div>
 
       {/* ─── Comparativo por Gerencia (barras agrupadas) ─── */}
-      {dashboardData.desempenho_gerencias.length > 0 && (
+      {gerenciasParaChart.length > 0 && (
         <div className="card">
-          <h2>Comparativo por Gerencia (Status)</h2>
+          <h2>Comparativo por Gerencia (Situacao)</h2>
           <p className="muted" style={{ marginBottom: 16 }}>
-            Distribuicao de OS por status em cada gerencia. Clique em uma barra para filtrar.
+            OS de cada gerencia por grupo de situacao. Clique em uma barra para filtrar.
           </p>
           <div className="chart-container-md">
             <Bar
               data={{
-                labels: gerenciasParaChart.map((g) => g.nome.replace("Gerencia de ", "")),
+                labels: gerenciasParaChart.map((g) => g.nome),
                 datasets: [
                   {
-                    label: "Abertas",
-                    data: gerenciasParaChart.map((g) => g.abertas),
-                    backgroundColor: CHART_COLORS.aberta,
-                    borderRadius: 4,
-                  },
-                  {
-                    label: "Em Andamento",
+                    label: "Em andamento",
                     data: gerenciasParaChart.map((g) => g.em_andamento),
-                    backgroundColor: CHART_COLORS.em_andamento,
+                    backgroundColor: COR_GRUPO.em_andamento,
                     borderRadius: 4,
                   },
                   {
-                    label: "Concluidas",
-                    data: gerenciasParaChart.map((g) => g.concluidas),
-                    backgroundColor: CHART_COLORS.concluida,
+                    label: "Bloqueadas",
+                    data: gerenciasParaChart.map((g) => g.bloqueadas),
+                    backgroundColor: COR_GRUPO.bloqueada,
+                    borderRadius: 4,
+                  },
+                  {
+                    label: "Encerradas",
+                    data: gerenciasParaChart.map((g) => g.encerradas),
+                    backgroundColor: COR_GRUPO.encerrada,
                     borderRadius: 4,
                   },
                 ],
@@ -262,22 +265,20 @@ export default function DashboardGeral({
                   tooltip: {
                     callbacks: {
                       afterBody: function (ctx) {
-                        const idx = ctx[0].dataIndex;
-                        const g = gerenciasParaChart[idx];
+                        const g = gerenciasParaChart[ctx[0].dataIndex];
                         if (!g) return "";
-                        return `Total: ${g.total_os} | Taxa: ${g.taxa_conclusao}%\nSem ciencia: ${g.os_sem_ciencia}`;
+                        return `Total: ${g.total_os} | Taxa de encerramento: ${g.taxa_encerramento}%\nSem ciencia: ${g.os_sem_ciencia}`;
                       },
                     },
                   },
                 },
                 scales: {
                   x: { stacked: false },
-                  y: { stacked: false, beginAtZero: true, ticks: { stepSize: 1 } },
+                  y: { stacked: false, beginAtZero: true, ticks: { precision: 0 } },
                 },
                 onClick: (evt, elements) => {
                   if (elements.length > 0 && !gerenciaFilter) {
-                    const idx = elements[0].index;
-                    const g = dashboardData.desempenho_gerencias[idx];
+                    const g = gerenciasParaChart[elements[0].index];
                     if (g) onGerenciaSelect(g.id);
                   }
                 },

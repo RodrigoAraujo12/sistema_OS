@@ -2,15 +2,15 @@
 Testes unitarios para o modulo external_api.py – logica de OS e dashboard.
 
 Cobre: montagem dos envelopes SOAP (listagem e detalhe), parse do
-detalhe da OS, caches das respostas do ATF, filtragem hierarquica,
-geracao de alertas e dashboard.
+detalhe da OS, caches das respostas do ATF, alertas e dashboards sobre
+a listagem do ATF.
 """
 
 from __future__ import annotations
 
 import unittest
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
 from xml.sax.saxutils import escape
 
@@ -18,7 +18,6 @@ from backend.external_api import (
     _chamar_atf_https,
     _chamar_detalhe_atf_https,
     _float_ou_none,
-    _filtrar_por_hierarquia,
     _montar_envelope_detalhe_soap,
     _montar_envelope_soap,
     _montar_parametros_atf,
@@ -27,12 +26,12 @@ from backend.external_api import (
     detalhe_em_outro_ambiente,
     filtrar_atf_por_matriculas,
     gerar_alertas,
-    gerar_dashboard,
+    gerar_dashboard_desempenho,
     gerar_dashboard_os,
     limpar_cache_atf,
-    listar_ordens_servico,
     mesclar_detalhe_os,
     url_base_detalhe_atf,
+    validar_periodo_abertura,
 )
 
 
@@ -665,228 +664,240 @@ class TestAmbienteDoDetalheATF(unittest.TestCase):
         self.assertEqual(post.call_args.args[0], "https://dev.local:8443/ws/Recurso")
 
 
-class TestFiltrarPorHierarquia(unittest.TestCase):
-    """Testes para _filtrar_por_hierarquia."""
+def _os_atf(numero: str, situacao: int, fiscais=(), **campos) -> dict:
+    """OS no formato da listagem do ATF, so com o que desempenho e alertas leem."""
+    return {
+        "numero_os": numero,
+        "razao_social": f"Empresa {numero}",
+        "ie": "123",
+        "situacao": {"codigo": situacao, "descricao": ""},
+        "fiscais": list(fiscais),
+        **campos,
+    }
 
-    def setUp(self):
-        self.ordens = [
-            {"numero": "OS-001", "matricula_supervisor": "111", "fiscais": ["Carlos"]},
-            {"numero": "OS-002", "matricula_supervisor": "222", "fiscais": ["Ana"]},
-            {"numero": "OS-003", "matricula_supervisor": "111", "fiscais": ["Carlos", "Ana"]},
-        ]
 
-    def test_admin_ve_tudo(self):
-        result = _filtrar_por_hierarquia(self.ordens, user_role="admin")
-        self.assertEqual(len(result), 3)
+def _fiscal(matricula: str, ciencia="2026-01-02", cancelamento=None, designacao="2026-01-01") -> dict:
+    return {
+        "matricula": matricula,
+        "nome": f"Fiscal {matricula}",
+        "data_designacao": designacao,
+        "data_ciencia": ciencia,
+        "data_cancelamento": cancelamento,
+    }
 
-    def test_none_role_ve_tudo(self):
-        result = _filtrar_por_hierarquia(self.ordens, user_role=None)
-        self.assertEqual(len(result), 3)
 
-    def test_fiscal_filtra_por_nome(self):
-        result = _filtrar_por_hierarquia(self.ordens, user_role="fiscal", user_name="Ana")
-        self.assertEqual(len(result), 2)
-        numeros = {r["numero"] for r in result}
-        self.assertIn("OS-002", numeros)
-        self.assertIn("OS-003", numeros)
+class TestValidarPeriodoAbertura(unittest.TestCase):
+    """
+    Sem periodo, desempenho e relatorio varreriam a base inteira do ATF:
+    o servidor recusa antes de sair do processo.
+    """
 
-    def test_supervisor_filtra_por_matricula(self):
-        result = _filtrar_por_hierarquia(
-            self.ordens, user_role="supervisor", user_matricula="222"
-        )
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["numero"], "OS-002")
+    def test_exige_inicio_e_fim(self):
+        for inicio, fim in ((None, None), ("2026-01-01", None), (None, "2026-01-31")):
+            with self.subTest(inicio=inicio, fim=fim):
+                with self.assertRaises(ValueError):
+                    validar_periodo_abertura(inicio, fim)
 
-    def test_gerente_filtra_por_matriculas(self):
-        result = _filtrar_por_hierarquia(
-            self.ordens, user_role="gerente", supervisor_matriculas=["111"]
-        )
-        self.assertEqual(len(result), 2)
+    def test_aceita_um_ano_inteiro_mesmo_bissexto(self):
+        validar_periodo_abertura("2024-01-01", "2025-01-01")
 
-    def test_gerente_sem_matriculas_retorna_vazio(self):
-        result = _filtrar_por_hierarquia(
-            self.ordens, user_role="gerente", supervisor_matriculas=None
-        )
-        self.assertEqual(len(result), 0)
+    def test_recusa_mais_de_um_ano(self):
+        with self.assertRaisesRegex(ValueError, "um ano"):
+            validar_periodo_abertura("2025-01-01", "2026-01-03")
 
-    def test_fiscal_sem_nome_retorna_vazio(self):
-        result = _filtrar_por_hierarquia(
-            self.ordens, user_role="fiscal", user_name=None
-        )
-        self.assertEqual(len(result), 0)
+    def test_recusa_inicio_depois_do_fim(self):
+        with self.assertRaisesRegex(ValueError, "depois do fim"):
+            validar_periodo_abertura("2026-02-01", "2026-01-01")
+
+    def test_recusa_data_mal_formada(self):
+        with self.assertRaisesRegex(ValueError, "YYYY-MM-DD"):
+            validar_periodo_abertura("01/01/2026", "2026-01-31")
 
 
 class TestGerarAlertas(unittest.TestCase):
-    """Testes para gerar_alertas."""
+    """Alertas sobre a listagem do ATF: OS parada e fiscal sem ciencia."""
 
-    @patch("backend.external_api.listar_ordens_servico")
-    def test_alerta_os_urgente(self, mock_listar):
-        mock_listar.return_value = [
-            {
-                "numero": "OS-001",
-                "prioridade": "urgente",
-                "status": "aberta",
-                "razao_social": "Empresa X",
-                "ie": "123",
-                "dias_parado": 5,
-                "data_ciencia": "2026-01-01",
-                "data_abertura": "2026-01-01",
-                "data_ultima_movimentacao": "2026-01-01",
-            }
-        ]
-        alertas = gerar_alertas(user_role="admin")
-        tipos = [a["tipo"] for a in alertas]
-        self.assertIn("os_urgente", tipos)
+    HOJE = date(2026, 9, 25)
 
-    @patch("backend.external_api.listar_ordens_servico")
-    def test_alerta_os_parada(self, mock_listar):
-        mock_listar.return_value = [
-            {
-                "numero": "OS-002",
-                "prioridade": "normal",
-                "status": "em_andamento",
-                "razao_social": "Empresa Y",
-                "ie": "456",
-                "dias_parado": 20,
-                "data_ciencia": "2026-01-01",
-                "data_abertura": "2026-01-01",
-                "data_ultima_movimentacao": "2025-12-01",
-            }
-        ]
-        alertas = gerar_alertas(user_role="admin")
-        tipos = [a["tipo"] for a in alertas]
-        self.assertIn("os_parada", tipos)
+    def _tipos(self, *ordens):
+        return [a["tipo"] for a in gerar_alertas(list(ordens), self.HOJE)]
 
-    @patch("backend.external_api.listar_ordens_servico")
-    def test_alerta_os_sem_ciencia(self, mock_listar):
-        mock_listar.return_value = [
-            {
-                "numero": "OS-003",
-                "prioridade": "normal",
-                "status": "aberta",
-                "razao_social": "Empresa Z",
-                "ie": "789",
-                "dias_parado": 2,
-                "data_ciencia": None,
-                "data_abertura": "2026-02-01",
-                "data_ultima_movimentacao": "2026-02-01",
-            }
-        ]
-        alertas = gerar_alertas(user_role="admin")
-        tipos = [a["tipo"] for a in alertas]
-        self.assertIn("os_sem_ciencia", tipos)
+    def test_autorizada_sem_evento_ha_mais_de_15_dias_vira_parada(self):
+        alertas = gerar_alertas(
+            [_os_atf("OS-1", 1, [_fiscal("1")], data_ultimo_evento="2026-09-01")], self.HOJE,
+        )
+        self.assertEqual([a["tipo"] for a in alertas], ["os_parada"])
+        self.assertIn("24 dias", alertas[0]["titulo"])
+        self.assertEqual(alertas[0]["data"], "2026-09-01")
+        self.assertIn("01/09/2026", alertas[0]["descricao"])
 
-    @patch("backend.external_api.listar_ordens_servico")
-    def test_sem_alertas_os_normal(self, mock_listar):
-        mock_listar.return_value = [
-            {
-                "numero": "OS-004",
-                "prioridade": "normal",
-                "status": "concluida",
-                "razao_social": "Empresa W",
-                "ie": "000",
-                "dias_parado": 0,
-                "data_ciencia": "2026-01-01",
-                "data_abertura": "2026-01-01",
-                "data_ultima_movimentacao": "2026-01-10",
-            }
-        ]
-        alertas = gerar_alertas(user_role="admin")
-        self.assertEqual(len(alertas), 0)
+    def test_evento_recente_nao_alerta(self):
+        self.assertEqual(
+            self._tipos(_os_atf("OS-1", 1, [_fiscal("1")], data_ultimo_evento="2026-09-20")), [],
+        )
+
+    def test_sem_evento_conta_do_inicio_da_fiscalizacao(self):
+        alertas = gerar_alertas(
+            [_os_atf("OS-1", 1, [_fiscal("1")], data_inicio_fiscalizacao="2026-08-01")], self.HOJE,
+        )
+        self.assertEqual([a["tipo"] for a in alertas], ["os_parada"])
+        self.assertIn("inicio da fiscalizacao", alertas[0]["descricao"])
+
+    def test_so_a_autorizada_vira_parada(self):
+        """Suspensa, em analise e aguardando autorizacao nao esperam evento."""
+        for situacao in (0, 6, 7):
+            with self.subTest(situacao=situacao):
+                self.assertEqual(
+                    self._tipos(_os_atf("OS-1", situacao, [_fiscal("1")], data_ultimo_evento="2026-01-01")),
+                    [],
+                )
+
+    def test_fiscal_sem_ciencia_vira_alerta_medio(self):
+        alertas = gerar_alertas(
+            [_os_atf("OS-1", 1, [_fiscal("1", ciencia=None)], data_ultimo_evento="2026-09-20")],
+            self.HOJE,
+        )
+        self.assertEqual([(a["tipo"], a["severidade"]) for a in alertas], [("os_sem_ciencia", "media")])
+        self.assertIn("Fiscal 1", alertas[0]["descricao"])
+
+    def test_bloqueada_sem_ciencia_e_alta_e_aponta_o_supervisor(self):
+        alertas = gerar_alertas([_os_atf("OS-1", 5, [_fiscal("1", ciencia=None)])], self.HOJE)
+        self.assertEqual([(a["tipo"], a["severidade"]) for a in alertas], [("os_sem_ciencia", "alta")])
+        self.assertIn("bloqueada", alertas[0]["titulo"])
+        self.assertIn("supervisor", alertas[0]["descricao"])
+
+    def test_designacao_cancelada_nao_deve_ciencia(self):
+        self.assertEqual(
+            self._tipos(_os_atf(
+                "OS-1", 7, [_fiscal("1", ciencia=None, cancelamento="2026-01-05")],
+            )),
+            [],
+        )
+
+    def test_encerrada_e_cancelada_nao_alertam(self):
+        for situacao in (2, 3, 4):
+            with self.subTest(situacao=situacao):
+                self.assertEqual(
+                    self._tipos(_os_atf("OS-1", situacao, [_fiscal("1", ciencia=None)])), [],
+                )
+
+    def test_ordena_por_severidade_e_depois_pelo_mais_antigo(self):
+        alertas = gerar_alertas([
+            _os_atf("MEDIA", 1, [_fiscal("1", ciencia=None, designacao="2026-01-01")],
+                    data_ultimo_evento="2026-09-24"),
+            _os_atf("PARADA-NOVA", 1, [_fiscal("2")], data_ultimo_evento="2026-09-01"),
+            _os_atf("PARADA-VELHA", 1, [_fiscal("3")], data_ultimo_evento="2026-05-01"),
+        ], self.HOJE)
+        self.assertEqual(
+            [a["referencia"] for a in alertas], ["PARADA-VELHA", "PARADA-NOVA", "MEDIA"],
+        )
 
 
-class TestGerarDashboard(unittest.TestCase):
-    """Testes para gerar_dashboard."""
+class TestGerarDashboardDesempenho(unittest.TestCase):
+    """
+    Abas Visao Geral, Gerencias, Supervisoes (equipes) e Fiscais sobre a
+    listagem do ATF.
+    """
 
     def setUp(self):
+        self.gerencias = [
+            {"id": 1, "nome": "GOFE"}, {"id": 2, "nome": "GOAC"}, {"id": 3, "nome": "GECOF"},
+        ]
+        self.gerencia_por_matricula = {
+            "10": {"id": 1, "nome": "GOFE"}, "20": {"id": 2, "nome": "GOAC"},
+        }
+        self.equipes = [
+            {"codigo": 545, "nome": "GOFE/GR2 - ESTABELECIMENTOS", "gerencia_id": 1,
+             "gerencia_nome": "GOFE", "supervisores": ["Chefe"], "matriculas": ["10", "11"]},
+            {"codigo": 412, "nome": "GOAC - GRUPO", "gerencia_id": 2,
+             "gerencia_nome": "GOAC", "supervisores": [], "matriculas": ["20"]},
+        ]
         self.ordens = [
-            {
-                "numero": "OS-001", "status": "aberta", "prioridade": "normal",
-                "matricula_supervisor": "111", "fiscais": ["Carlos"],
-                "data_abertura": "2026-01-10", "data_ciencia": None,
-                "data_ultima_movimentacao": "2026-01-10", "dias_parado": 5,
-            },
-            {
-                "numero": "OS-002", "status": "em_andamento", "prioridade": "alta",
-                "matricula_supervisor": "111", "fiscais": ["Carlos"],
-                "data_abertura": "2026-01-05", "data_ciencia": "2026-01-07",
-                "data_ultima_movimentacao": "2026-01-20", "dias_parado": 3,
-            },
-            {
-                "numero": "OS-003", "status": "concluida", "prioridade": "normal",
-                "matricula_supervisor": "222", "fiscais": ["Ana"],
-                "data_abertura": "2025-12-01", "data_ciencia": "2025-12-03",
-                "data_ultima_movimentacao": "2025-12-20", "dias_parado": 0,
-            },
-        ]
-        self.gerencias = [{"id": 1, "name": "Gerencia A"}]
-        self.supervisoes = [
-            {"id": 10, "name": "Supervisao X", "gerencia_id": 1},
-            {"id": 20, "name": "Supervisao Y", "gerencia_id": 1},
-        ]
-        self.users = [
-            {"id": 1, "username": "admin", "role": "admin", "matricula": None, "supervisao_id": None},
-            {"id": 2, "username": "Sup1", "role": "supervisor", "matricula": "111", "supervisao_id": 10},
-            {"id": 3, "username": "Sup2", "role": "supervisor", "matricula": "222", "supervisao_id": 20},
-            {"id": 4, "username": "Carlos", "role": "fiscal", "matricula": "333", "supervisao_id": 10},
-            {"id": 5, "username": "Ana", "role": "fiscal", "matricula": "444", "supervisao_id": 20},
+            _os_atf("A", 4, [_fiscal("10")], data_abertura="2026-01-10"),
+            _os_atf("B", 1, [_fiscal("10", ciencia=None)], data_abertura="2026-01-15"),
+            _os_atf("C", 5, [_fiscal("20", ciencia=None)], data_abertura="2026-02-01"),
+            _os_atf("D", 2, [_fiscal("20")], data_abertura="2026-02-05"),
+            _os_atf("E", 1, [_fiscal("99")], data_abertura="2026-02-10"),
+            _os_atf("F", 1, [_fiscal("10"), _fiscal("20")], data_abertura="2026-02-11"),
         ]
 
-    def test_visao_geral_total(self):
-        result = gerar_dashboard(self.ordens, self.gerencias, self.supervisoes, self.users)
-        vg = result["visao_geral"]
-        self.assertEqual(vg["total_os"], 3)
-        self.assertEqual(vg["os_abertas"], 1)
-        self.assertEqual(vg["os_em_andamento"], 1)
-        self.assertEqual(vg["os_concluidas"], 1)
+    def _gerar(self, ordens=None):
+        return gerar_dashboard_desempenho(
+            self.ordens if ordens is None else ordens,
+            self.gerencias, self.gerencia_por_matricula, self.equipes,
+        )
 
-    def test_distribuicao_status(self):
-        result = gerar_dashboard(self.ordens, self.gerencias, self.supervisoes, self.users)
-        ds = result["distribuicao_status"]
-        self.assertEqual(ds["aberta"], 1)
-        self.assertEqual(ds["em_andamento"], 1)
-        self.assertEqual(ds["concluida"], 1)
-        self.assertEqual(ds["cancelada"], 0)
+    def test_visao_geral_pelos_grupos_de_situacao(self):
+        v = self._gerar()["visao_geral"]
+        self.assertEqual(
+            (v["total_os"], v["em_andamento"], v["bloqueadas"], v["encerradas"], v["canceladas"]),
+            (6, 3, 1, 1, 1),
+        )
+        self.assertEqual(v["os_sem_ciencia"], 2)
+        # Cancelada sai do denominador: 1 encerrada em 5 validas.
+        self.assertEqual(v["taxa_encerramento"], 20.0)
 
-    def test_desempenho_gerencias_tem_id(self):
-        result = gerar_dashboard(self.ordens, self.gerencias, self.supervisoes, self.users)
-        for g in result["desempenho_gerencias"]:
-            self.assertIn("id", g)
-            self.assertIn("nome", g)
+    def test_os_que_nenhum_cadastro_alcanca_sao_contadas(self):
+        v = self._gerar()["visao_geral"]
+        self.assertEqual((v["os_sem_gerencia"], v["os_sem_equipe"]), (1, 1))
 
-    def test_desempenho_supervisoes_tem_gerencia_id(self):
-        result = gerar_dashboard(self.ordens, self.gerencias, self.supervisoes, self.users)
-        for s in result["desempenho_supervisoes"]:
-            self.assertIn("gerencia_id", s)
-            self.assertIn("gerencia_nome", s)
+    def test_gerencias_do_cadastro_inteiro_e_sem_os_no_fim(self):
+        linhas = {g["nome"]: g for g in self._gerar()["desempenho_gerencias"]}
+        self.assertEqual(set(linhas), {"GOFE", "GOAC", "GECOF"})
+        # A OS F tem fiscais das duas gerencias e conta nas duas.
+        self.assertEqual(linhas["GOFE"]["total_os"], 3)
+        self.assertEqual(linhas["GOAC"]["total_os"], 3)
+        self.assertEqual(self._gerar()["desempenho_gerencias"][-1]["nome"], "GECOF")
 
-    def test_carga_fiscais_tem_supervisao_id(self):
-        result = gerar_dashboard(self.ordens, self.gerencias, self.supervisoes, self.users)
-        for f in result["carga_fiscais"]:
-            self.assertIn("supervisao_id", f)
-            self.assertIn("os_ativas", f)
+    def test_termometro_ignora_gerencia_sem_os(self):
+        ranking = self._gerar()["ranking_criticidade"]
+        self.assertEqual({r["nome"] for r in ranking}, {"GOFE", "GOAC"})
+        self.assertEqual(ranking, sorted(ranking, key=lambda r: r["indice_saude"]))
 
-    def test_evolucao_mensal_ordenada(self):
-        result = gerar_dashboard(self.ordens, self.gerencias, self.supervisoes, self.users)
-        meses = [e["mes"] for e in result["evolucao_mensal"]]
-        self.assertEqual(meses, sorted(meses))
+    def test_equipe_conta_pelas_matriculas_dos_membros(self):
+        linhas = {e["id"]: e for e in self._gerar()["desempenho_equipes"]}
+        self.assertEqual(linhas[545]["total_os"], 3)
+        self.assertEqual(linhas[545]["supervisores"], ["Chefe"])
+        self.assertEqual(linhas[545]["gerencia_nome"], "GOFE")
+        self.assertEqual(linhas[412]["total_os"], 3)
 
-    def test_dashboard_sem_os(self):
-        visao = gerar_dashboard([], self.gerencias, self.supervisoes, self.users)["visao_geral"]
-        self.assertEqual(visao["total_os"], 0)
-        self.assertEqual(visao["os_abertas"], 0)
-        self.assertEqual(visao["os_concluidas"], 0)
-        self.assertEqual(visao["os_sem_ciencia"], 0)
-        self.assertEqual(visao["taxa_conclusao"], 0)
+    def test_carga_conta_so_os_ativa_e_designacao_valida(self):
+        ordens = self.ordens + [
+            _os_atf("G", 1, [_fiscal("11", cancelamento="2026-02-20"), _fiscal("10")],
+                    data_abertura="2026-02-12"),
+        ]
+        carga = {f["matricula"]: f for f in self._gerar(ordens)["carga_fiscais"]}
+        # 10: B, F e G (A esta encerrada); 20: C (bloqueada) e F.
+        self.assertEqual(carga["10"]["os_ativas"], 3)
+        self.assertEqual(carga["20"]["os_ativas"], 2)
+        self.assertNotIn("11", carga)
+        self.assertEqual(carga["10"]["gerencia_id"], 1)
+        self.assertEqual(carga["10"]["equipes"], [545])
 
-    def test_os_sem_ciencia_count(self):
-        result = gerar_dashboard(self.ordens, self.gerencias, self.supervisoes, self.users)
-        self.assertEqual(result["visao_geral"]["os_sem_ciencia"], 1)
+    def test_por_situacao_fecha_com_o_total_e_usa_o_nome_do_servico(self):
+        ordens = [_os_atf("X", 6, [], data_abertura="2026-01-01")]
+        ordens[0]["situacao"]["descricao"] = "EM ANALISE DE ENCERRAMENTO"
+        linhas = self._gerar(self.ordens + ordens)["por_situacao"]
+        self.assertEqual(sum(l["total"] for l in linhas), 7)
+        self.assertIn("EM ANALISE DE ENCERRAMENTO", [l["descricao"] for l in linhas])
 
-    def test_total_fiscais_e_supervisores(self):
-        result = gerar_dashboard(self.ordens, self.gerencias, self.supervisoes, self.users)
-        self.assertEqual(result["visao_geral"]["total_fiscais"], 2)
-        self.assertEqual(result["visao_geral"]["total_supervisores"], 2)
+    def test_evolucao_mensal_por_safra_de_abertura(self):
+        self.assertEqual(self._gerar()["evolucao_mensal"], [
+            {"mes": "2026-01", "abertas": 2, "encerradas": 1},
+            {"mes": "2026-02", "abertas": 4, "encerradas": 0},
+        ])
+
+    def test_comparativo_entre_os_dois_ultimos_meses(self):
+        comp = self._gerar()["comparativo_mensal"]
+        self.assertEqual(comp["total_os"], {"atual": 4, "anterior": 2, "delta": 2})
+        self.assertEqual(comp["_labels"], {"mes_atual": "2026-02", "mes_anterior": "2026-01"})
+
+    def test_sem_os_nao_quebra(self):
+        dados = self._gerar([])
+        self.assertEqual(dados["visao_geral"]["total_os"], 0)
+        self.assertEqual(dados["visao_geral"]["taxa_encerramento"], 0)
+        self.assertEqual(dados["comparativo_mensal"], {})
+        self.assertEqual(dados["ranking_criticidade"], [])
 
 
 class TestGerarDashboardOS(unittest.TestCase):

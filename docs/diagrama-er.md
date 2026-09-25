@@ -99,9 +99,10 @@ só escreve em cima de NULL; o que o admin disse manda mais (ver README,
 |-----------------------------|-------------------------------------|
 | `GET /ordens`               | API ATF (primária) → MOCK           |
 | `GET /ordens/{numero}/pdf`  | API ATF (primária) → MOCK           |
-| `GET /admin/dashboard`      | Informix (legado) → MOCK            |
-| `GET /relatorio/*`          | Informix (legado) → MOCK            |
-| `GET /alertas`              | Informix (legado) → MOCK            |
+| `GET /admin/dashboard[/os]` | API ATF (primária) → MOCK           |
+| `GET /admin/dashboard/eventos` | API ATF (serviço de eventos) → MOCK |
+| `GET /relatorios/*`         | API ATF (primária) → MOCK           |
+| `GET /alertas`              | API ATF (primária) → MOCK           |
 | `GET/POST /admin/users`     | SQLite                              |
 | `GET/POST /admin/gerencias` | SQLite                              |
 | `GET/POST /admin/supervisoes` | SQLite                            |

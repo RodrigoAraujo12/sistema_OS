@@ -9,6 +9,7 @@ import React, { useState } from "react";
 import apiClient from "../api.js";
 import { situacaoLabels, modeloLabels, motivoLabels, orgaoExecutorOptions } from "../constants.js";
 import { EMPTY_OS_FILTERS, validarFiltrosOS } from "../atfFilters.js";
+import { validarPeriodoAbertura } from "../dashboardShared.js";
 
 const SITUACOES = Object.entries(situacaoLabels);
 const MOTIVOS = Object.entries(motivoLabels);
@@ -31,9 +32,10 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
   const [filters, setFilters] = useState({ ...EMPTY_OS_FILTERS, search: "" });
   const [filtroError, setFiltroError] = useState("");
 
-  // Filtros Dashboard
+  // Filtros Dashboard: periodo de abertura obrigatorio, como no painel
   const [dashDataInicio, setDashDataInicio] = useState("");
   const [dashDataFim, setDashDataFim] = useState("");
+  const [dashErro, setDashErro] = useState("");
 
   function handleFilterChange(e) {
     const { name, value } = e.target;
@@ -73,33 +75,23 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
     }
   }
 
-  async function handleDownloadDashboard() {
-    setLoading(true);
-    try {
-      const blob = await apiClient.downloadRelatorioDashboard({
-        dataInicio: dashDataInicio || undefined,
-        dataFim: dashDataFim || undefined,
-      });
-      const today = new Date().toISOString().slice(0, 10);
-      downloadBlob(blob, `relatorio_dashboard_${today}.csv`);
-      onMessage("Relatorio de Dashboard gerado com sucesso!");
-    } catch (err) {
-      onError(err.message);
-    } finally {
-      setLoading(false);
+  /** Valida o periodo e baixa o relatorio de desempenho ("csv" ou "pdf"). */
+  async function baixarRelatorioDashboard(formato) {
+    const erro = validarPeriodoAbertura(dashDataInicio, dashDataFim);
+    if (erro) {
+      setDashErro(erro);
+      return;
     }
-  }
-
-  async function handleDownloadDashboardPdf() {
+    setDashErro("");
     setLoading(true);
     try {
-      const blob = await apiClient.downloadRelatorioDashboardPdf({
-        dataInicio: dashDataInicio || undefined,
-        dataFim: dashDataFim || undefined,
-      });
+      const periodo = { dataInicio: dashDataInicio, dataFim: dashDataFim };
+      const blob = formato === "pdf"
+        ? await apiClient.downloadRelatorioDashboardPdf(periodo)
+        : await apiClient.downloadRelatorioDashboard(periodo);
       const today = new Date().toISOString().slice(0, 10);
-      downloadBlob(blob, `relatorio_dashboard_${today}.pdf`);
-      onMessage("Relatorio PDF de Desempenho gerado com sucesso!");
+      downloadBlob(blob, `relatorio_dashboard_${today}.${formato}`);
+      onMessage(`Relatorio de Desempenho (${formato.toUpperCase()}) gerado com sucesso!`);
     } catch (err) {
       onError(err.message);
     } finally {
@@ -298,35 +290,43 @@ export default function RelatoriosPanel({ authData, onError, onMessage }) {
             </div>
           </div>
           <p className="relatorio-desc">
-            Exporta o resumo geral, desempenho por gerencia, supervisao e carga por fiscal.
-            Ideal para reunioes e acompanhamento gerencial.
+            Exporta, a partir das OS do ATF, o resumo geral, o desempenho por gerencia e por
+            equipe fiscal e a carga por fiscal — os mesmos numeros das abas Visao Geral,
+            Gerencias, Supervisoes e Fiscais do Dashboard.
+          </p>
+          <p className="relatorio-desc" style={{ fontSize: 12 }}>
+            O periodo de abertura e <strong>obrigatorio</strong>, com no maximo um ano.
           </p>
 
           <div className="relatorio-filters">
             <div className="filter-row">
               <div className="filter-group">
-                <label>Data Inicio</label>
+                <label>Abertura &mdash; In&iacute;cio</label>
                 <input type="date" value={dashDataInicio} onChange={(e) => setDashDataInicio(e.target.value)} />
               </div>
               <div className="filter-group">
-                <label>Data Fim</label>
+                <label>Abertura &mdash; Fim</label>
                 <input type="date" value={dashDataFim} onChange={(e) => setDashDataFim(e.target.value)} />
               </div>
             </div>
           </div>
 
+          {dashErro && (
+            <div className="alert error" style={{ marginTop: 10 }}>{dashErro}</div>
+          )}
+
           <div className="relatorio-actions">
             <button
               className="btn-secondary"
-              onClick={() => { setDashDataInicio(""); setDashDataFim(""); }}
+              onClick={() => { setDashDataInicio(""); setDashDataFim(""); setDashErro(""); }}
               disabled={loading}
             >
               Limpar Filtros
             </button>
-            <button className="btn-primary" onClick={handleDownloadDashboard} disabled={loading}>
+            <button className="btn-primary" onClick={() => baixarRelatorioDashboard("csv")} disabled={loading}>
               {loading ? "Gerando..." : "⬇ CSV"}
             </button>
-            <button className="btn-primary" onClick={handleDownloadDashboardPdf} disabled={loading} style={{ background: "#dc2626" }}>
+            <button className="btn-primary" onClick={() => baixarRelatorioDashboard("pdf")} disabled={loading} style={{ background: "#dc2626" }}>
               {loading ? "Gerando..." : "⬇ PDF"}
             </button>
           </div>

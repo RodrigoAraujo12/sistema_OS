@@ -746,6 +746,42 @@ class EquipeFiscalRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_equipes_com_membros(self) -> list[dict[str, Any]]:
+        """
+        Todas as equipes com a gerencia (codigo do elemento organizacional)
+        e os membros, quem chefia primeiro.
+
+        Duas consultas no total, e nao uma por equipe: e o que o dashboard
+        de desempenho precisa para montar as linhas por equipe a cada
+        consulta.
+        """
+        with self._db.connect() as conn:
+            equipes = conn.execute(
+                "SELECT codigo, nome, gerencia_codigo FROM equipes_fiscais ORDER BY nome"
+            ).fetchall()
+            membros = conn.execute(
+                """
+                SELECT codigo_equipe, matricula, nome, supervisor FROM equipe_membros
+                ORDER BY supervisor DESC, nome
+                """
+            ).fetchall()
+        por_equipe: dict[int, list[dict[str, Any]]] = {}
+        for row in membros:
+            por_equipe.setdefault(int(row["codigo_equipe"]), []).append({
+                "matricula": str(row["matricula"]),
+                "nome": row["nome"],
+                "supervisor": bool(row["supervisor"]),
+            })
+        return [
+            {
+                "codigo": int(row["codigo"]),
+                "nome": row["nome"],
+                "gerencia_codigo": row["gerencia_codigo"],
+                "membros": por_equipe.get(int(row["codigo"]), []),
+            }
+            for row in equipes
+        ]
+
     def get_matriculas_by_equipe(self, codigo_equipe: int) -> list[str]:
         """Matriculas dos membros de uma equipe. Vazio se a equipe nao existe."""
         with self._db.connect() as conn:

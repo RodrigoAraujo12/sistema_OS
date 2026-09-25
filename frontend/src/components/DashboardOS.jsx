@@ -26,47 +26,10 @@ import { Bar, Doughnut } from "react-chartjs-2";
 import apiClient from "../api.js";
 import {
   COR_TOTAL, COR_TEMPO, COR_VAZIO, PALETA_TIPO, TOPO_GRAFICO,
-  intervaloDe, formatarDias, formatarNumero,
+  PERIODOS_ABERTURA, intervaloDe, validarPeriodoAbertura, formatarDias, formatarNumero,
 } from "../dashboardShared.js";
 import DashboardFiltros, { opcoesDoMapa } from "./DashboardFiltros.jsx";
 import { modeloLabels, motivoLabels, orgaoExecutorOptions } from "../constants.js";
-
-/**
- * Atalhos de periodo. Sao so isso: preenchem as duas datas e NAO
- * consultam nada — a consulta sai no botao, como na tela de Ordens de
- * Servico. Nenhum passa de um ano, que e o teto do periodo aqui.
- *
- * Nao ha "Todos" nem "Personalizado": os campos de data estao sempre na
- * tela, entao qualquer intervalo (dentro do teto) e digitavel, e a base
- * inteira nao cabe — a consulta desce ate o ATF e um ano ja sao milhares
- * de OS e dezenas de segundos de espera.
- */
-const PERIODO_OPTIONS = [
-  { value: "30", label: "30 dias" },
-  { value: "90", label: "90 dias" },
-  { value: "180", label: "6 meses" },
-  { value: "ano", label: "Ano atual" },
-  { value: "365", label: "12 meses" },
-];
-
-/** Teto do periodo: um ano. 366 dias para o ano bissexto caber inteiro —
- *  mesmo numero da busca so por periodo em atfFilters.js. */
-const LIMITE_DIAS = 366;
-
-/**
- * Valida o periodo ANTES de gastar uma varredura no ATF.
- * Retorna a mensagem de erro, ou null se estiver tudo certo.
- *
- * As datas vem de <input type="date">, sempre em YYYY-MM-DD: comparar
- * como texto ja da a ordem certa, sem passar por Date.
- */
-function validarPeriodo(inicio, fim) {
-  if (!inicio || !fim) return "Informe o periodo de abertura: inicio e fim.";
-  if (inicio > fim) return "Periodo de abertura: o inicio nao pode ser depois do fim.";
-  const dias = (new Date(fim) - new Date(inicio)) / 86400000;
-  if (dias > LIMITE_DIAS) return "Periodo de abertura: no maximo um ano entre inicio e fim.";
-  return null;
-}
 
 /**
  * Barras horizontais de um corte. Horizontal porque os rotulos sao
@@ -185,7 +148,7 @@ export default function DashboardOS({ onError }) {
   const carregar = useCallback(async (inicio, fim, dims) => {
     // O periodo e barrado aqui, e nao so no botao: e o unico caminho ate
     // o ATF, entao vale para o Aplicar, para o Limpar e para o que vier.
-    const problema = validarPeriodo(inicio, fim);
+    const problema = validarPeriodoAbertura(inicio, fim);
     if (problema) {
       setErro(problema);
       return;
@@ -275,7 +238,7 @@ export default function DashboardOS({ onError }) {
       <div className="dash-periodo-row" style={{ borderTop: "none", paddingTop: 0 }}>
         <label className="dash-filter-label">Abertura em:</label>
         <div className="dash-periodo-btns">
-          {PERIODO_OPTIONS.map((p) => (
+          {PERIODOS_ABERTURA.map((p) => (
             <button
               key={p.value}
               className={`dash-periodo-btn ${periodo === p.value ? "active" : ""}`}

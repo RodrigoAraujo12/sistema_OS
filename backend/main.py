@@ -2,7 +2,8 @@
 main.py – Ponto de entrada da API FastAPI do Sistema Sefaz.
 
 Define os endpoints REST, middlewares e inicializacao da aplicacao.
-Os dados de Ordens de Servico vem de uma fonte externa (mock por ora).
+Os dados de Ordens de Servico vem do ATF (SOAP); sem ATF_BASE_URL no
+.env, de um mock de desenvolvimento.
 Gerencias, Supervisoes e Usuarios ficam no banco SQLite local.
 """
 
@@ -11,9 +12,10 @@ from __future__ import annotations
 import csv
 import io
 import logging
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import anyio
 import requests
@@ -50,21 +52,23 @@ from .db import (
     UserRepository,
 )
 from .external_api import (
+    JANELA_ALERTAS_DIAS,
     buscar_os_em_cache,
     detalhar_ordem_atf,
     detalhe_em_outro_ambiente,
     eventos_em_outro_ambiente,
     filtrar_atf_por_matriculas,
     gerar_alertas,
-    gerar_dashboard,
+    gerar_dashboard_desempenho,
     gerar_dashboard_eventos,
     gerar_dashboard_os,
     listar_eventos_atf,
     listar_ordens_atf,
-    listar_ordens_servico,
     mesclar_detalhe_os,
     universo_ordens_atf,
+    validar_periodo_abertura,
 )
+from .gerencias_atf import EQUIPES_FORA_DO_PAINEL
 from .schemas import (
     AlertaResponse,
     EquipeFiscalResponse,
@@ -697,26 +701,6 @@ def delete_user(
 
 # ─── Ordens de Servico (somente consulta - API externa) ────────
 
-def _build_hierarchy_filters(user: dict[str, Any]) -> dict[str, Any]:
-    """
-    Parametros de filtragem hierarquica no formato interno legado.
-
-    Usado so por /alertas, que consome o MOCK legado (com
-    matricula_supervisor). A consulta de OS usa _matriculas_visiveis.
-    """
-    filters: dict[str, Any] = {
-        "user_role": user["role"],
-        "user_matricula": user.get("matricula"),
-        "user_name": user.get("username"),
-        "supervisor_matriculas": None,
-    }
-    if user["role"] == "gerente" and user.get("gerencia_id"):
-        filters["supervisor_matriculas"] = user_repo.get_supervisor_matriculas_by_gerencia(
-            int(user["gerencia_id"])
-        )
-    return filters
-
-
 def _matriculas_visiveis(user: dict[str, Any]) -> set[str] | None:
     """
     Matriculas cujas OS o usuario pode ver. None = admin, sem restricao.
@@ -1265,47 +1249,157 @@ def get_os(
     return OSDetalheResponse(**_buscar_os_atf(numero, user))
 
 
+def _erro_transporte_atf(e: requests.RequestException, contexto: str) -> HTTPException:
+    """
+    Converte uma falha de transporte com o ATF num 502 que diz de quem e
+    o problema.
+
+    Falha de transporte NAO e ValueError e passaria batido ate o FastAPI,
+    virando um 500 cru na tela — sem dizer que o problema e do ATF, e nao
+    daqui. Os dois casos vistos em 02/09/2026: producao devolvendo 503 em
+    tudo (mod_cluster sem no JBoss registrado, some sozinho em minutos) e
+    SSLError no ambiente de desenvolvimento, cuja cadeia TLS esta
+    incompleta.
+    """
+    resposta = getattr(e, "response", None)
+    if resposta is not None and resposta.status_code == 503:
+        detalhe = (
+            "O ATF esta indisponivel (HTTP 503). Costuma ser reinicio da "
+            "aplicacao do lado deles e voltar sozinho em alguns minutos."
+        )
+    else:
+        detalhe = f"Nao foi possivel falar com o ATF: {e.__class__.__name__}."
+    logger.warning("%s: falha de transporte com o ATF (%s)", contexto, e)
+    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detalhe)
+
+
 @app.get("/alertas", response_model=list[AlertaResponse])
 def list_alertas(
     user: dict[str, Any] = Depends(get_active_user),
 ) -> list[AlertaResponse]:
-    """Lista alertas gerados a partir das OS visiveis ao usuario."""
-    filters = _build_hierarchy_filters(user)
-    return [AlertaResponse(**a) for a in gerar_alertas(**filters)]
+    """
+    Alertas sobre as OS do ATF visiveis ao usuario (ver gerar_alertas).
+
+    Olha as OS abertas nos ultimos 12 meses (JANELA_ALERTAS_DIAS), que e o
+    maior periodo que o ATF aceita numa busca so por periodo. Custa uma
+    listagem do ATF por chamada, entao a tela so pede ao abrir a aba de
+    alertas ou no botao de atualizar — nunca no login.
+    """
+    matriculas = _matriculas_visiveis(user)
+    # Quem nao enxerga matricula nenhuma nao tem alerta: nao vale uma
+    # varredura de um ano no ATF para filtrar tudo fora depois.
+    if matriculas is not None and not matriculas:
+        return []
+
+    hoje = date.today()
+    try:
+        ordens = universo_ordens_atf(
+            data_inicio=(hoje - timedelta(days=JANELA_ALERTAS_DIAS)).isoformat(),
+            data_fim=hoje.isoformat(),
+            matriculas_visiveis=matriculas,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except requests.RequestException as e:
+        raise _erro_transporte_atf(e, "Alertas")
+    return [AlertaResponse(**a) for a in gerar_alertas(ordens, hoje)]
 
 
 # ─── Dashboard (somente admin) ─────────────────────────────────
 
+
+def _equipes_do_painel() -> list[dict[str, Any]]:
+    """
+    Equipes fiscais do dashboard de desempenho (aba Supervisoes), cada uma
+    com a gerencia do cadastro local, os supervisores e as matriculas dos
+    membros.
+
+    O supervisor vem das duas origens que _matriculas_visiveis soma — a
+    marca da planilha e a amarracao manual (users.equipe_codigo) —, e a
+    equipe conta as OS pelas matriculas dos membros, como ele enxerga.
+    Assim a linha da equipe mostra o mesmo universo que o supervisor dela
+    ve na tela de OS. As equipes de EQUIPES_FORA_DO_PAINEL ficam fora,
+    como no corte por gerencia.
+    """
+    por_codigo_atf = {
+        int(g["codigo_atf"]): g
+        for g in gerencia_repo.list_gerencias()
+        if g.get("codigo_atf") is not None
+    }
+    amarrados: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for u in user_repo.list_users(role="supervisor"):
+        if u.get("equipe_codigo") is not None:
+            amarrados[int(u["equipe_codigo"])].append(u)
+
+    equipes = []
+    for e in equipe_repo.list_equipes_com_membros():
+        if e["codigo"] in EQUIPES_FORA_DO_PAINEL:
+            continue
+        gerencia = (
+            por_codigo_atf.get(int(e["gerencia_codigo"]))
+            if e["gerencia_codigo"] is not None
+            else None
+        )
+        # Por matricula, para quem esta nas duas origens aparecer uma vez.
+        supervisores: dict[str, str] = {}
+        for m in e["membros"]:
+            if m["supervisor"]:
+                supervisores.setdefault(m["matricula"], m["nome"])
+        for u in amarrados.get(e["codigo"], []):
+            supervisores.setdefault(str(u.get("matricula") or u["username"]), u["username"])
+        equipes.append({
+            "codigo": e["codigo"],
+            "nome": e["nome"],
+            "gerencia_id": gerencia["id"] if gerencia else None,
+            "gerencia_nome": gerencia["name"] if gerencia else None,
+            "supervisores": list(supervisores.values()),
+            "matriculas": [m["matricula"] for m in e["membros"]],
+        })
+    return equipes
+
+
+def _dashboard_desempenho(data_inicio: str | None, data_fim: str | None) -> dict[str, Any]:
+    """
+    Monta o dashboard de desempenho sobre o ATF: o que /admin/dashboard
+    devolve e os dois relatorios de desempenho (CSV e PDF) imprimem.
+
+    O periodo de abertura e obrigatorio e de no maximo um ano, como na aba
+    de Ordens de Servico — e a consulta e a mesma listagem dela, entao o
+    mesmo periodo nas duas abas sai do cache do ATF na segunda.
+    """
+    try:
+        validar_periodo_abertura(data_inicio, data_fim)
+        ordens = universo_ordens_atf(data_inicio=data_inicio, data_fim=data_fim)
+    except ValueError as e:
+        # Periodo invalido e erro de negocio do ATF (dsMensagemErro)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except requests.RequestException as e:
+        raise _erro_transporte_atf(e, "Dashboard de desempenho")
+
+    dashboard = gerar_dashboard_desempenho(
+        ordens,
+        [{"id": g["id"], "nome": g["name"]} for g in gerencia_repo.list_gerencias()],
+        _gerencia_por_matricula(),
+        _equipes_do_painel(),
+    )
+    dashboard["periodo"] = {"inicio": data_inicio, "fim": data_fim}
+    return dashboard
+
+
 @app.get("/admin/dashboard")
 def get_dashboard(
     user: dict[str, Any] = Depends(get_active_user),
-    data_inicio: str | None = Query(None, description="Filtro data inicio (YYYY-MM-DD)"),
-    data_fim: str | None = Query(None, description="Filtro data fim (YYYY-MM-DD)"),
+    data_inicio: str | None = Query(None, description="Abertura a partir de (YYYY-MM-DD)"),
+    data_fim: str | None = Query(None, description="Abertura ate (YYYY-MM-DD)"),
 ) -> dict[str, Any]:
-    """Retorna metricas consolidadas para o dashboard administrativo. Apenas admin."""
+    """
+    Desempenho sobre os dados reais do ATF, para as abas Visao Geral,
+    Gerencias, Supervisoes e Fiscais. Apenas admin.
+
+    Periodo de abertura obrigatorio (ver _dashboard_desempenho).
+    """
     require_admin(user)
-
-    todas_os = listar_ordens_servico()
-
-    # Filtro por periodo (baseado em data_abertura)
-    if data_inicio or data_fim:
-        filtradas = []
-        for o in todas_os:
-            dt_ab = o.get("data_abertura", "")
-            if not dt_ab:
-                continue
-            if data_inicio and dt_ab < data_inicio:
-                continue
-            if data_fim and dt_ab > data_fim:
-                continue
-            filtradas.append(o)
-        todas_os = filtradas
-
-    gerencias_list = gerencia_repo.list_gerencias()
-    supervisoes_list = supervisao_repo.list_supervisoes()
-    users_list = user_repo.list_users()
-
-    return gerar_dashboard(todas_os, gerencias_list, supervisoes_list, users_list)
+    return _dashboard_desempenho(data_inicio, data_fim)
 
 
 def _gerencia_por_matricula() -> dict[str, dict[str, Any]]:
@@ -1383,8 +1477,8 @@ def get_dashboard_os(
     Por gerencia, orgao executor, fiscal, motivo, tipo (modelo) e mes de
     abertura, cada um com o tempo medio de execucao.
 
-    Diferente de /admin/dashboard, que e do admin e roda no formato
-    legado, este respeita a hierarquia de quem chama: cada cargo agrega
+    Diferente de /admin/dashboard, que e so do admin, este respeita a
+    hierarquia de quem chama: cada cargo agrega
     exatamente as OS que ja veria na tela de consulta. Nao ha
     require_admin porque nao ha nada aqui que a listagem ja nao mostre —
     e o mesmo universo, somado.
@@ -1474,22 +1568,7 @@ def get_dashboard_eventos(
         # inexistente.
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except requests.RequestException as e:
-        # Falha de transporte NAO e ValueError e passaria batido ate o
-        # FastAPI, virando um 500 cru na tela — sem dizer que o problema
-        # e do ATF, e nao daqui. Os dois casos vistos em 02/09/2026:
-        # producao devolvendo 503 em tudo (mod_cluster sem no JBoss
-        # registrado, some sozinho em minutos) e SSLError no ambiente de
-        # desenvolvimento, cuja cadeia TLS esta incompleta.
-        resposta = getattr(e, "response", None)
-        if resposta is not None and resposta.status_code == 503:
-            detalhe = (
-                "O ATF esta indisponivel (HTTP 503). Costuma ser reinicio da "
-                "aplicacao do lado deles e voltar sozinho em alguns minutos."
-            )
-        else:
-            detalhe = f"Nao foi possivel falar com o ATF: {e.__class__.__name__}."
-        logger.warning("Dashboard de eventos: falha de transporte com o ATF (%s)", e)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detalhe)
+        raise _erro_transporte_atf(e, "Dashboard de eventos")
 
     dashboard = gerar_dashboard_eventos(eventos)
     dashboard["periodo"] = {
@@ -1815,118 +1894,122 @@ def relatorio_ordens_pdf(
     )
 
 
+def _secoes_desempenho(dashboard: dict[str, Any]) -> list[tuple[str, list[str], list[list[Any]]]]:
+    """
+    As secoes do relatorio de desempenho (titulo, cabecalho, linhas), as
+    mesmas no CSV e no PDF.
+
+    Equipe sem OS no periodo fica de fora: sao dezenas, e metade delas nao
+    opera por OS. Gerencia fica mesmo zerada — sao poucas, e a linha
+    vazia ali diz algo.
+    """
+    v = dashboard["visao_geral"]
+    colunas = ["Total OS", "Em andamento", "Bloqueadas", "Encerradas"]
+
+    def _numeros(linha: dict[str, Any]) -> list[Any]:
+        return [linha["total_os"], linha["em_andamento"], linha["bloqueadas"], linha["encerradas"]]
+
+    return [
+        (
+            "Resumo geral",
+            colunas + ["Canceladas", "Sem ciencia", "Taxa encerr. (%)"],
+            [_numeros(v) + [v["canceladas"], v["os_sem_ciencia"], v["taxa_encerramento"]]],
+        ),
+        (
+            "Desempenho por gerencia",
+            ["Gerencia"] + colunas + ["Canceladas", "Taxa encerr. (%)", "Sem ciencia"],
+            [
+                [g["nome"]] + _numeros(g) + [g["canceladas"], g["taxa_encerramento"], g["os_sem_ciencia"]]
+                for g in dashboard["desempenho_gerencias"]
+            ],
+        ),
+        (
+            "Desempenho por equipe fiscal",
+            ["Equipe", "Gerencia", "Supervisor(es)"] + colunas + ["Taxa encerr. (%)", "Sem ciencia"],
+            [
+                [e["nome"], e["gerencia_nome"] or "-", ", ".join(e["supervisores"]) or "-"]
+                + _numeros(e) + [e["taxa_encerramento"], e["os_sem_ciencia"]]
+                for e in dashboard["desempenho_equipes"] if e["total_os"]
+            ],
+        ),
+        (
+            "Carga por fiscal (OS ativas)",
+            ["Fiscal", "Matricula", "OS ativas"],
+            [[f["nome"], f["matricula"] or "-", f["os_ativas"]] for f in dashboard["carga_fiscais"]],
+        ),
+    ]
+
+
+def _notas_desempenho(dashboard: dict[str, Any]) -> list[str]:
+    """Periodo e as ressalvas que mudam a leitura dos numeros."""
+    periodo = dashboard["periodo"]
+    inicio, fim = (
+        datetime.strptime(periodo[chave], "%Y-%m-%d").strftime("%d/%m/%Y")
+        for chave in ("inicio", "fim")
+    )
+    v = dashboard["visao_geral"]
+    return [
+        f"OS abertas de {inicio} a {fim}, dados do ATF.",
+        f"OS sem gerencia cadastrada: {v['os_sem_gerencia']}. OS sem equipe fiscal: {v['os_sem_equipe']}.",
+        "Uma OS conta em cada gerencia e equipe que os seus fiscais alcancam.",
+    ]
+
+
+def _caber(pdf: FPDF, texto: Any, largura: float) -> str:
+    """Corta o texto com reticencias ate caber na celula."""
+    texto = _safe(str(texto))
+    if pdf.get_string_width(texto) <= largura - 2:
+        return texto
+    while texto and pdf.get_string_width(texto + "...") > largura - 2:
+        texto = texto[:-1]
+    return texto + "..."
+
+
+# Larguras das colunas de cada secao no PDF (A4 paisagem, ~277 mm uteis),
+# na ordem de _secoes_desempenho.
+_LARGURAS_PDF_DESEMPENHO = [
+    [38, 38, 38, 38, 38, 38, 38],
+    [80, 22, 28, 26, 26, 26, 28, 26],
+    [58, 38, 58, 14, 22, 19, 19, 24, 20],
+    [150, 50, 50],
+]
+
+
 @app.get("/relatorios/dashboard/pdf")
 def relatorio_dashboard_pdf(
     user: dict[str, Any] = Depends(get_active_user),
-    data_inicio: str | None = Query(None),
-    data_fim: str | None = Query(None),
+    data_inicio: str | None = Query(None, description="Abertura a partir de (YYYY-MM-DD)"),
+    data_fim: str | None = Query(None, description="Abertura ate (YYYY-MM-DD)"),
 ) -> Response:
-    """Gera relatorio PDF do dashboard. Apenas admin."""
+    """Relatorio PDF de desempenho, sobre o ATF. Apenas admin; periodo obrigatorio."""
     require_admin(user)
-
-    todas_os = listar_ordens_servico()
-    if data_inicio or data_fim:
-        todas_os = [
-            o for o in todas_os
-            if o.get("data_abertura")
-            and (not data_inicio or o["data_abertura"] >= data_inicio)
-            and (not data_fim or o["data_abertura"] <= data_fim)
-        ]
-
-    gerencias_list = gerencia_repo.list_gerencias()
-    supervisoes_list = supervisao_repo.list_supervisoes()
-    users_list = user_repo.list_users()
-    dashboard = gerar_dashboard(todas_os, gerencias_list, supervisoes_list, users_list)
+    dashboard = _dashboard_desempenho(data_inicio, data_fim)
 
     pdf = _PDF("Relatorio de Desempenho - Dashboard")
     pdf.alias_nb_pages()
     pdf.add_page()
 
-    # ─── Resumo Geral ───
-    visao = dashboard.get("visao_geral", {})
-    pdf.set_font("Helvetica", "B", 9)
-    pdf.cell(0, 7, "Resumo Geral", new_x="LMARGIN", new_y="NEXT")
-    rg_headers = ["Total OS", "Abertas", "Em Andamento", "Concluidas",
-                  "Canceladas", "Sem Ciencia", "Taxa (%)"]
-    rg_vals = [
-        visao.get("total_os", 0), visao.get("os_abertas", 0),
-        visao.get("os_em_andamento", 0), visao.get("os_concluidas", 0),
-        visao.get("os_canceladas", 0), visao.get("os_sem_ciencia", 0),
-        visao.get("taxa_conclusao", 0),
-    ]
-    w = 38
-    pdf.set_font("Helvetica", "B", 7)
-    for h in rg_headers:
-        pdf.cell(w, 6, h, border=1, align="C")
-    pdf.ln()
-    pdf.set_font("Helvetica", "", 7)
-    for v in rg_vals:
-        pdf.cell(w, 5, str(v), border=1, align="C")
-    pdf.ln(8)
+    pdf.set_font("Helvetica", "", 8)
+    for nota in _notas_desempenho(dashboard):
+        pdf.cell(0, 5, _safe(nota), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
 
-    # ─── Gerencias ───
-    pdf.set_font("Helvetica", "B", 9)
-    pdf.cell(0, 7, "Desempenho por Gerencia", new_x="LMARGIN", new_y="NEXT")
-    g_headers = ["Gerencia", "Total", "Abertas", "Andamento", "Concluidas",
-                 "Taxa (%)", "Sem Ciencia"]
-    g_widths = [65, 22, 24, 27, 27, 24, 30]
-    pdf.set_font("Helvetica", "B", 7)
-    for i, h in enumerate(g_headers):
-        pdf.cell(g_widths[i], 6, h, border=1, align="C")
-    pdf.ln()
-    pdf.set_font("Helvetica", "", 6.5)
-    for g in dashboard.get("desempenho_gerencias", []):
-        vals = [
-            _safe(g.get("nome"))[:40], str(g.get("total_os", 0)),
-            str(g.get("abertas", 0)), str(g.get("em_andamento", 0)),
-            str(g.get("concluidas", 0)), str(g.get("taxa_conclusao", 0)),
-            str(g.get("os_sem_ciencia", 0)),
-        ]
-        for i, v in enumerate(vals):
-            pdf.cell(g_widths[i], 5, v, border=1, align="C")
+    for (titulo, cabecalho, linhas), larguras in zip(_secoes_desempenho(dashboard), _LARGURAS_PDF_DESEMPENHO):
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.cell(0, 7, titulo, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "B", 7)
+        for h, w in zip(cabecalho, larguras):
+            pdf.cell(w, 6, _caber(pdf, h, w), border=1, align="C")
         pdf.ln()
-    pdf.ln(5)
-
-    # ─── Supervisoes ───
-    pdf.set_font("Helvetica", "B", 9)
-    pdf.cell(0, 7, "Desempenho por Supervisao", new_x="LMARGIN", new_y="NEXT")
-    s_headers = ["Supervisao", "Gerencia", "Total", "Abertas", "Andamento",
-                 "Concluidas", "Taxa (%)", "Sem Ciencia"]
-    s_widths = [55, 55, 20, 22, 25, 25, 22, 28]
-    pdf.set_font("Helvetica", "B", 7)
-    for i, h in enumerate(s_headers):
-        pdf.cell(s_widths[i], 6, h, border=1, align="C")
-    pdf.ln()
-    pdf.set_font("Helvetica", "", 6.5)
-    for s in dashboard.get("desempenho_supervisoes", []):
-        vals = [
-            _safe(s.get("nome"))[:35], _safe(s.get("gerencia_nome"))[:35],
-            str(s.get("total_os", 0)), str(s.get("abertas", 0)),
-            str(s.get("em_andamento", 0)), str(s.get("concluidas", 0)),
-            str(s.get("taxa_conclusao", 0)), str(s.get("os_sem_ciencia", 0)),
-        ]
-        for i, v in enumerate(vals):
-            pdf.cell(s_widths[i], 5, v, border=1, align="C")
-        pdf.ln()
-    pdf.ln(5)
-
-    # ─── Fiscais ───
-    pdf.set_font("Helvetica", "B", 9)
-    pdf.cell(0, 7, "Carga por Fiscal", new_x="LMARGIN", new_y="NEXT")
-    f_headers = ["Fiscal", "OS Ativas"]
-    f_widths = [140, 50]
-    pdf.set_font("Helvetica", "B", 7)
-    for i, h in enumerate(f_headers):
-        pdf.cell(f_widths[i], 6, h, border=1, align="C")
-    pdf.ln()
-    pdf.set_font("Helvetica", "", 6.5)
-    for f in dashboard.get("carga_fiscais", []):
-        vals = [
-            _safe(f.get("nome"))[:85], str(f.get("os_ativas", 0)),
-        ]
-        for i, v in enumerate(vals):
-            pdf.cell(f_widths[i], 5, v, border=1, align="C")
-        pdf.ln()
+        pdf.set_font("Helvetica", "", 6.5)
+        if not linhas:
+            pdf.cell(sum(larguras), 5, "Nenhuma OS no periodo.", border=1, align="C")
+            pdf.ln()
+        for linha in linhas:
+            for valor, w in zip(linha, larguras):
+                pdf.cell(w, 5, _caber(pdf, valor, w), border=1, align="C")
+            pdf.ln()
+        pdf.ln(5)
 
     pdf_bytes = bytes(pdf.output())
     today = date.today().strftime("%Y-%m-%d")
@@ -1943,91 +2026,26 @@ def relatorio_dashboard_pdf(
 @app.get("/relatorios/dashboard")
 def relatorio_dashboard_csv(
     user: dict[str, Any] = Depends(get_active_user),
-    data_inicio: str | None = Query(None),
-    data_fim: str | None = Query(None),
+    data_inicio: str | None = Query(None, description="Abertura a partir de (YYYY-MM-DD)"),
+    data_fim: str | None = Query(None, description="Abertura ate (YYYY-MM-DD)"),
 ) -> StreamingResponse:
-    """Gera relatorio CSV do dashboard (desempenho por gerencia/supervisao). Apenas admin."""
+    """Relatorio CSV de desempenho, sobre o ATF. Apenas admin; periodo obrigatorio."""
     require_admin(user)
-
-    todas_os = listar_ordens_servico()
-    if data_inicio or data_fim:
-        todas_os = [
-            o for o in todas_os
-            if o.get("data_abertura")
-            and (not data_inicio or o["data_abertura"] >= data_inicio)
-            and (not data_fim or o["data_abertura"] <= data_fim)
-        ]
-
-    gerencias_list = gerencia_repo.list_gerencias()
-    supervisoes_list = supervisao_repo.list_supervisoes()
-    users_list = user_repo.list_users()
-    dashboard = gerar_dashboard(todas_os, gerencias_list, supervisoes_list, users_list)
+    dashboard = _dashboard_desempenho(data_inicio, data_fim)
 
     output = io.StringIO()
-    output.write("\ufeff")
+    output.write("﻿")
     writer = csv.writer(output, delimiter=";")
 
-    # Resumo geral
-    visao = dashboard.get("visao_geral", {})
-    writer.writerow(["=== RESUMO GERAL ==="])
-    writer.writerow(["Total OS", "Abertas", "Em Andamento", "Concluidas", "Canceladas",
-                      "OS Sem Ciencia", "Taxa Conclusao (%)"])
-    writer.writerow([
-        visao.get("total_os", 0),
-        visao.get("os_abertas", 0),
-        visao.get("os_em_andamento", 0),
-        visao.get("os_concluidas", 0),
-        visao.get("os_canceladas", 0),
-        visao.get("os_sem_ciencia", 0),
-        visao.get("taxa_conclusao", 0),
-    ])
+    for nota in _notas_desempenho(dashboard):
+        writer.writerow([nota])
     writer.writerow([])
 
-    # Por gerencia
-    writer.writerow(["=== DESEMPENHO POR GERENCIA ==="])
-    writer.writerow([
-        "Gerencia", "Total OS", "Abertas", "Em Andamento", "Concluidas",
-        "Taxa Conclusao (%)", "OS Sem Ciencia",
-    ])
-    for g in dashboard.get("desempenho_gerencias", []):
-        writer.writerow([
-            g.get("nome", ""),
-            g.get("total_os", 0),
-            g.get("abertas", 0),
-            g.get("em_andamento", 0),
-            g.get("concluidas", 0),
-            g.get("taxa_conclusao", 0),
-            g.get("os_sem_ciencia", 0),
-        ])
-    writer.writerow([])
-
-    # Por supervisao
-    writer.writerow(["=== DESEMPENHO POR SUPERVISAO ==="])
-    writer.writerow([
-        "Supervisao", "Gerencia", "Total OS", "Abertas", "Em Andamento",
-        "Concluidas", "Taxa Conclusao (%)", "OS Sem Ciencia",
-    ])
-    for s in dashboard.get("desempenho_supervisoes", []):
-        writer.writerow([
-            s.get("nome", ""),
-            s.get("gerencia_nome", ""),
-            s.get("total_os", 0),
-            s.get("abertas", 0),
-            s.get("em_andamento", 0),
-            s.get("concluidas", 0),
-            s.get("taxa_conclusao", 0),
-            s.get("os_sem_ciencia", 0),
-        ])
-    writer.writerow([])
-
-    # Por fiscal
-    writer.writerow(["=== CARGA POR FISCAL ==="])
-    writer.writerow(["Fiscal", "OS Ativas"])
-    for f in dashboard.get("carga_fiscais", []):
-        writer.writerow([
-            f.get("nome", ""),
-            f.get("os_ativas", 0),
-        ])
+    for titulo, cabecalho, linhas in _secoes_desempenho(dashboard):
+        writer.writerow([f"=== {titulo.upper()} ==="])
+        writer.writerow(cabecalho)
+        writer.writerows(linhas)
+        writer.writerow([])
 
     output.seek(0)
     today = date.today().strftime("%Y-%m-%d")
