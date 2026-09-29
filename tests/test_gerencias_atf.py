@@ -300,9 +300,10 @@ class TestEquipesEquivalentes(unittest.TestCase):
         """
         self.assertFalse(set(EQUIPES_EQUIVALENTES) & set(EQUIPES_EQUIVALENTES.values()))
 
-    def test_536_nao_entra_sem_confirmacao(self):
-        # Juntar duas equipes por palpite mistura as OS delas em todo
-        # filtro: a 536 so entra quando a SEFAZ confirmar que e a 610.
+    def test_536_nao_e_codigo_antigo_de_equipe_nenhuma(self):
+        # A 536 era a equipe generica da GOFE: em producao as OS dela foram
+        # redistribuidas entre equipes regionais diferentes. Mapea-la para
+        # uma so juntaria OS que a SEFAZ separou.
         self.assertNotIn(536, EQUIPES_EQUIVALENTES)
 
 

@@ -103,9 +103,12 @@ EQUIPES_FORA_DO_PAINEL: frozenset[int] = frozenset({613, 614})
 #   (Rodrigo, 22/09/2026). As duas conviveram no ATF ate julho/2026; desde
 #   agosto so a 545 recebe OS nova.
 #
-# A 536 `GOFE - GEFTE` NAO entra enquanto a SEFAZ nao confirmar se e
-# codigo antigo da 610: juntar duas equipes por palpite mistura as OS
-# delas em todo filtro.
+# A 536 `GOFE - GEFTE` NAO entra, e nao por falta de confirmacao: ela nao
+# e codigo antigo de equipe nenhuma. Era a equipe generica da GOFE — as OS
+# que a usavam aparecem em producao redistribuidas entre equipes regionais
+# (GOFE/GR3, GOFE/GR5) ou sem equipe, e a propria 536 nao tem mais OS
+# (conferido em 29/09/2026). Mapea-la para uma equipe so juntaria OS que
+# a SEFAZ separou.
 EQUIPES_EQUIVALENTES: dict[int, int] = {542: 545}
 
 

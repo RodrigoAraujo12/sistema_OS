@@ -960,7 +960,6 @@ proposito. Ultima revisao: 29/09/2026.
 | **Equipes sem supervisor marcado** | A planilha marca a chefia de 30 das 46 equipes. Para as outras 16 falta saber se estao mesmo sem supervisor ou se ficaram de fora do preenchimento; ate la, o admin pode amarrar a mao. |
 | **Chefia como coluna, e nao como cor** | A chefia vem na cor da celula (ver abaixo). Um "limpar formatacao" ou uma exportacao em CSV apaga a informacao sem deixar rastro. |
 | **Gerencia do servico de eventos x gerencia da equipe** | O servico de eventos manda a gerencia pronta; a aba de OS a deduz do nome da equipe. Ate a SEFAZ confirmar como as duas se correspondem, os cortes por gerencia das duas abas nao devem ser comparados linha a linha. |
-| **Codigo antigo de equipe** | A equipe 536 (`GOFE - GEFTE`) ainda aparece em OS e nao esta na planilha; falta saber se e codigo antigo da 610, como a 542 e da 545. Confirmado, basta entrar em `EQUIPES_EQUIVALENTES` (ver [Codigo antigo de equipe](#codigo-antigo-de-equipe)). |
 | Tabelas de codigo de `stPrazoOS`, `tpNatureza` e `tpDocumento` | Esses campos chegam so como codigo (`"0"`, `"I"`, `"1"`), sem descricao em lugar nenhum. Continuam na resposta da API, mas saem da tela — um numero solto nao informa ninguem. Ha comentario no `OrdensPanel.jsx` marcando onde recoloca-los. |
 | Motivo do cancelamento | O servico de detalhe nao devolve o bloco de cancelamento (ver [Armadilhas da doc do detalhe](#armadilhas-da-doc-do-detalhe)). Se a area fiscal precisar, e campo novo a pedir. |
 
@@ -1311,9 +1310,13 @@ codigo antigo ao atual, e tem tres efeitos:
   codigo+nome — senao a mesma equipe sairia em duas linhas. O rotulo e o
   nome mais frequente.
 
-A 536 (`GOFE - GEFTE`) so entra na tabela quando a SEFAZ confirmar que e
-codigo antigo da 610: juntar duas equipes por palpite mistura as OS delas
-em todo filtro.
+A 536 (`GOFE - GEFTE`), que aparecia em OS e nao esta na planilha,
+**nao entra na tabela**: ela nao e codigo antigo de equipe nenhuma. Era a
+equipe generica da GOFE — as OS que a usavam num ambiente de teste
+aparecem em producao redistribuidas entre equipes regionais (GOFE/GR3,
+GOFE/GR5) ou sem equipe, e a propria 536 nao tem mais OS em producao
+(conferido em 29/09/2026). Liga-la a uma equipe so juntaria OS que a
+SEFAZ separou.
 
 ### Divida tecnica conhecida
 
@@ -1381,7 +1384,7 @@ Para deploy em producao, considerar:
 
 1. **Validar o sistema contra o ambiente definitivo do ATF**, seguindo [Ambientes](#ambientes--leia-antes-de-trocar-a-url)
 2. **Trocar os usuarios de exemplo pelos reais** e cadastrar os gerentes nas gerencias do ATF — ver [Passando dos usuarios de exemplo para os reais](#passando-dos-usuarios-de-exemplo-para-os-reais)
-3. **Levar a SEFAZ as perguntas de [Esperando a SEFAZ](#esperando-a-sefaz)** — entre elas a 536, que so entra na tabela de equivalencia com confirmacao
+3. **Levar a SEFAZ as perguntas de [Esperando a SEFAZ](#esperando-a-sefaz)**
 4. **Sessoes persistentes** (JWT com refresh tokens), para um reinicio nao deslogar todo mundo
 5. ~~**Exportar relatorios** em PDF/Excel a partir do dashboard~~ ✅ (CSV + PDF implementados)
 6. **Adicionar testes end-to-end** com Playwright ou Cypress
