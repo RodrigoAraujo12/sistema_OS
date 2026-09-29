@@ -1,6 +1,6 @@
 # Sistema SEFAZ PB – Gestao de Ordens de Servico
 
-Sistema web para gestao e acompanhamento de Ordens de Servico (OS) da Secretaria de Estado da Fazenda da Paraiba, com hierarquia organizacional **Gerencia → Supervisao → Fiscal**, dashboard administrativo com graficos interativos, alertas automaticos, dark mode e integracao com banco IBM Informix.
+Sistema web para gestao e acompanhamento de Ordens de Servico (OS) da Secretaria de Estado da Fazenda da Paraiba, com hierarquia organizacional **Gerencia → Equipe fiscal → Fiscal**, dashboard administrativo com graficos interativos, alertas automaticos, dark mode e integracao com o **ATF** (webservice SOAP da SEFAZ-PB), de onde vem toda OS exibida.
 
 ---
 
@@ -30,6 +30,18 @@ Sistema web para gestao e acompanhamento de Ordens de Servico (OS) da Secretaria
 ---
 
 ## Visao Geral
+
+O Sistema SEFAZ PB permite que auditores fiscais, supervisores, gerentes e administradores acompanhem o andamento de Ordens de Servico de fiscalizacao tributaria. O sistema e **somente leitura sobre a OS**: ela nasce e muda no ATF, e aqui e consultada. O sistema oferece:
+
+- **Painel de OS** com filtros por situacao, modelo, motivo, equipe fiscal, orgao executor, contribuinte e periodos de abertura, ciencia e encerramento
+- **Detalhe da OS** com eventos, prorrogacoes, notificacoes, justificativas e recolhimentos, e PDF de cada OS
+- **Dashboard** com KPIs, comparativo mensal e cortes por gerencia, equipe fiscal, fiscal, motivo e tipo, alem de uma aba so de eventos de acompanhamento
+- **Termometro da Fiscalizacao** – ranking de saude por gerencia, sobre a taxa de encerramento e a ciencia das OS do ATF
+- **Alertas automaticos** para OS sem evento de acompanhamento e fiscal sem ciencia (incluindo OS bloqueada)
+- **Relatorios exportaveis** em CSV e PDF (OS e Dashboard)
+- **Controle de acesso hierarquico** – cada perfil ve apenas o que lhe compete
+- **Importacao das equipes fiscais e dos auditores** a partir da planilha da SEFAZ
+- **Dark mode** com toggle e persistencia no localStorage
 
 ## Screenshots
 
@@ -65,44 +77,31 @@ Sistema web para gestao e acompanhamento de Ordens de Servico (OS) da Secretaria
 
 ---
 
-## Visao Geral
-
-O Sistema SEFAZ PB permite que auditores fiscais, supervisores, gerentes e administradores acompanhem o andamento de Ordens de Servico de fiscalizacao tributaria. O sistema oferece:
-
-- **Painel de OS** com filtros por status, tipo, periodo e busca textual
-- **Dashboard com KPIs em tempo real**, graficos interativos e comparativo mensal
-- **Termometro da Fiscalizacao** – ranking de saude por gerencia, sobre a taxa de encerramento e a ciencia das OS do ATF
-- **Alertas automaticos** para OS sem evento de acompanhamento e fiscal sem ciencia (incluindo OS bloqueada)
-- **Relatorios exportaveis** em CSV e PDF (OS e Dashboard)
-- **Controle de acesso hierarquico** – cada perfil ve apenas o que lhe compete
-- **Dark mode** com toggle e persistencia no localStorage
-
 ## Tecnologias
 
-| Camada      | Tecnologia                                                     | Versao       |
-| ----------- | -------------------------------------------------------------- | ------------ |
-| Backend     | Python + FastAPI + Uvicorn                                     | 3.12 / 0.111 |
-| Frontend    | React + Chart.js + react-chartjs-2                             | 18.3 / 4.5   |
-| Bundler     | Vite                                                           | 5.4          |
-| Banco Local | SQLite (usuarios, gerencias, supervisoes)                      | built-in     |
-| Banco Ext.  | ATF REST/XML API (OS) + IBM Informix via pyodbc (legado)       | HTTPS / ODBC |
-| HTTP Client | requests (chamadas HTTPS ao ATF)                               | 2.31+        |
-| PDF         | fpdf2 (geracao de relatorios PDF)                              | 2.8.3        |
-| Testes      | pytest                                                         | 8.x          |
+| Camada      | Tecnologia                                                     | Versao              |
+| ----------- | -------------------------------------------------------------- | ------------------- |
+| Backend     | Python + FastAPI + Uvicorn                                     | 3.12+ / 0.141 / 0.53 |
+| Frontend    | React + Chart.js + react-chartjs-2                             | 18.3 / 4.5 / 5.3    |
+| Bundler     | Vite                                                           | 8.3                 |
+| Banco Local | SQLite (usuarios, gerencias, supervisoes, equipes fiscais)     | built-in            |
+| Fonte das OS | ATF – webservice SOAP/XML da SEFAZ-PB                         | HTTPS               |
+| HTTP Client | requests (chamadas HTTPS ao ATF)                               | 2.31+               |
+| PDF         | fpdf2 (geracao de relatorios PDF)                              | 2.8.3               |
+| Testes      | unittest (a suite tambem roda com pytest)                      | stdlib              |
 
 ## Pre-requisitos
 
 - **Python** >= 3.12
-- **Node.js** >= 18 (npm incluido)
-- **IBM Informix Client SDK** (opcional – sistema funciona com dados MOCK sem ele)
-- **pyodbc** + driver ODBC do Informix (opcional)
+- **Node.js** 20.19+ ou 22.12+ (exigencia do Vite 8; npm incluido)
+- Acesso de rede ao ATF, para dados reais. Sem ele, deixe `ATF_BASE_URL` vazio e o sistema usa dados MOCK
 
 ## Instalacao
 
 ```powershell
 # 1. Clonar o repositorio
-git clone <url-do-repo> sistema_sefaz
-cd sistema_sefaz
+git clone <url-do-repo> sistema_OS
+cd sistema_OS
 
 # 2. Criar e ativar o ambiente virtual Python
 python -m venv .venv
@@ -117,7 +116,7 @@ npm --prefix .\frontend install
 
 # 5. Configurar variaveis de ambiente
 cp .env.example .env
-# Editar .env conforme necessidade (Informix, CORS, etc.)
+# Editar .env conforme necessidade (ATF, senha do admin, etc.)
 ```
 
 ## Execucao
@@ -147,11 +146,20 @@ npm --prefix .\frontend run dev
 
 ```powershell
 npm --prefix .\frontend run build
+npm --prefix .\frontend run preview   # serve o build na mesma porta 5000, sem HMR
 ```
+
+O `start.bat` sobe o backend pelo `start_backend.bat`, com `--reload`, que e
+modo de desenvolvimento. Para uso continuo, prefira `uvicorn` sem `--reload`
+e o `preview` do build.
 
 ## Credenciais
 
-Todos os usuarios sao criados automaticamente na primeira execucao (seed).
+Num banco novo, os usuarios abaixo sao criados automaticamente na primeira
+execucao (seed). Eles sao **de exemplo** — matriculas ficticias, que so casam
+com os dados MOCK. Em uso real sao substituidos pelos auditores importados da
+planilha da SEFAZ; ver [Passando dos usuarios de exemplo para os reais](#passando-dos-usuarios-de-exemplo-para-os-reais).
+
 **Nao existe senha padrao.** O `admin` usa a senha de `ADMIN_PASSWORD` no
 `.env`; se a variavel estiver vazia, o sistema gera uma aleatoria e a imprime
 no log do primeiro boot. Os demais usuarios do seed nascem com uma senha
@@ -190,6 +198,11 @@ trocar no primeiro acesso.
 > **Total:** 1 admin + 3 gerentes + 6 supervisores + 15 fiscais = **25 usuarios**
 
 ## Hierarquia Organizacional
+
+A arvore abaixo e a do seed de exemplo, com gerencias e supervisoes locais.
+Com os dados reais, as gerencias e as equipes fiscais vem do ATF e da
+planilha da SEFAZ, e a supervisao local vira fallback — ver
+[Como a visibilidade e resolvida hoje](#como-a-visibilidade-e-resolvida-hoje).
 
 ```
 Admin (acesso total)
@@ -230,27 +243,38 @@ Admin (acesso total)
 
 ### Regras de Visibilidade
 
+A OS do ATF so se liga as pessoas pelas matriculas dos fiscais designados,
+entao cada perfil ve as OS em que alguem do seu conjunto de matriculas esta
+designado:
+
 | Perfil         | O que pode ver                                                     |
 | -------------- | ------------------------------------------------------------------ |
 | **Admin**      | Todas as OS, dashboard completo, CRUD de entidades                 |
-| **Gerente**    | OS de todos os supervisores da sua gerencia                        |
-| **Supervisor** | OS onde a `matricula_supervisor` e a sua matricula                 |
-| **Fiscal**     | OS onde seu nome aparece no campo `fiscais`                        |
+| **Gerente**    | A propria + os lotados na sua gerencia + as equipes dos seus supervisores |
+| **Supervisor** | A propria + as equipes fiscais que chefia; sem equipe, a supervisao local |
+| **Fiscal**     | So as OS em que a sua matricula esta designada                     |
+
+Detalhes e o que segue em aberto em
+[Como a visibilidade e resolvida hoje](#como-a-visibilidade-e-resolvida-hoje).
 
 ## Funcionalidades
 
 ### Autenticacao e Seguranca
-- Login com token de sessao (UUID em memoria)
-- Hash de senhas com **PBKDF2-HMAC-SHA256** (120.000 iteracoes + salt aleatorio de 16 bytes)
-- Troca de senha obrigatoria no primeiro acesso (`must_change_password`)
-- Reset de senha pelo admin (gera senha temporaria)
+- Login com token de sessao (UUID guardado em memoria, vale 8 h — `SESSION_TTL_MINUTES`); logout revoga no servidor. Reiniciar o backend encerra todas as sessoes
+- Hash de senhas com **PBKDF2-HMAC-SHA256** (600.000 iteracoes + salt aleatorio); hashes antigos sao refeitos no login
+- Limite de tentativas por usuario (5) e por IP (20), com bloqueio de 15 min — vale para o login e para a troca de senha
+- Troca de senha obrigatoria no primeiro acesso (`must_change_password`): ate trocar, o resto da API recusa o token
+- Senha nova com no minimo 8 caracteres, maiuscula, minuscula, numero e caractere especial
+- Reset de senha pelo admin (gera senha temporaria, exibida uma unica vez)
 
 ### Painel de Ordens de Servico
-- Listagem com filtros via API ATF: numero da OS, modelo, IE, CNPJ, razao social, matriculas do fiscal/supervisor
+- Listagem com filtros via API ATF: numero da OS, modelo, motivo de abertura, equipe fiscal, orgao executor, IE, CNPJ, razao social, matriculas do fiscal/supervisor
 - **Situacoes ATF**: 0-Aguardando Autorizacao, 1-Autorizada, 2-Cancelada, 3-Substituida, 4-Encerrada, 5-Bloqueada, 6-Em Analise para Encerramento, 7-Execucao Suspensa
 - **Modelos**: 1-Normal, 2-Simplificada, 7-Especial, 8-Especifica
-- Filtro por periodo de abertura e por periodo de ciencia (datas inicio/fim)
+- Filtro por periodo de abertura, de ciencia e de encerramento (datas inicio/fim)
+- Ordenacao por coluna, feita no servidor
 - **Paginacao servidor**: 20 registros por pagina (limite maximo: 50)
+- Clique numa linha abre o detalhe completo da OS (servico de detalhe do ATF)
 - Datas exibidas no formato brasileiro (DD/MM/AAAA)
 - Download de PDF individual de cada OS
 
@@ -297,7 +321,7 @@ enxergaria nenhuma OS alem das proprias.
 
 ## Dashboard Administrativo
 
-Acessivel apenas pelo perfil **admin**. Contem:
+Acessivel apenas pelo perfil **admin**, na tela.
 
 Todas as abas leem o ATF. Ordens de Servico e Eventos tem cada uma a
 propria consulta; Visao Geral, Gerencias, Supervisoes e Fiscais dividem
@@ -327,6 +351,8 @@ com as do mes anterior, e so aparece sem filtro de gerencia ou equipe.
 | Gerencias    | Taxa de encerramento + tabela por gerencia do cadastro                 |
 | Supervisoes  | Uma linha por **equipe fiscal** do ATF, com os supervisores da planilha |
 | Fiscais      | Carga de trabalho (OS ativas) por fiscal                                |
+| Ordens de Servico | Quantidade de OS e tempo medio de execucao por gerencia, orgao executor, fiscal, motivo, tipo e mes (`/admin/dashboard/os`) |
+| Eventos      | Quantidade de eventos de acompanhamento por gerencia, equipe, procedimento, motivo, tipo e mes (`/admin/dashboard/eventos`) |
 
 ### Termometro da Fiscalizacao
 
@@ -370,32 +396,37 @@ e `PESO_SEM_CIENCIA = 0.50`.
 ## Arquitetura
 
 ```
-+---------------+     HTTP/REST     +--------------------+
-|  Frontend     | <---------------> |  Backend (API)     |
-|  React SPA    |   JSON + Bearer   |  FastAPI/Uvicorn   |
-|  Chart.js     |                   |                    |
-+---------------+                   +---+--------+-------+
-                                        |        |
-                                    SQLite    ATF API / Informix
-                                    (local)   (remoto – OS)
-                                        |        |
-                                    users    ordens_
-                                    geren.   servico
-                                    superv.
++---------------+   HTTP (porta 5000)   +----------------+   127.0.0.1:8000   +--------------------+
+|  Navegador    | --------------------> |  Vite          | -----------------> |  Backend (API)     |
+|  React SPA    |   pagina + /api       |  (dev/preview) |   proxy, xfwd      |  FastAPI/Uvicorn   |
+|  Chart.js     |   JSON + Bearer       |                |                    |                    |
++---------------+                       +----------------+                    +---+------------+---+
+                                                                                  |            |
+                                                                               SQLite      ATF (SOAP/HTTPS)
+                                                                               (local)     listagem, detalhe
+                                                                                  |        e eventos de OS
+                                                                               usuarios,
+                                                                               gerencias, supervisoes,
+                                                                               equipes fiscais
 ```
+
+So a porta 5000 sai da maquina: o backend escuta em 127.0.0.1 e e
+alcancado pelo proxy do Vite, que repassa o IP real em `X-Forwarded-For`.
+Como pagina e API tem a mesma origem, nao ha CORS no caminho.
 
 ### Fluxo de Dados
 
-1. **Frontend** -> `api.js` -> requisicao HTTP com token Bearer
-2. **Backend** -> `main.py` -> valida token -> chama servico adequado
-3. **Dados de OS** -> `external_api.py` -> se `ATF_BASE_URL` configurado: chama API ATF via HTTPS + parse XML -> senao: dados MOCK; Informix permanece como integracao legada
-4. **Dados de usuarios** -> `db.py` -> SQLite local (`app.db`)
+1. **Frontend** -> `api.js` -> requisicao HTTP relativa (mesma origem) com token Bearer
+2. **Backend** -> `main.py` -> valida token -> resolve o que o usuario pode ver (`_matriculas_visiveis`) -> chama o servico adequado
+3. **Dados de OS** -> `external_api.py` -> se `ATF_BASE_URL` configurado: chama o ATF via SOAP/HTTPS + parse XML, com cache curto (`ATF_CACHE_TTL`) -> senao: dados MOCK
+4. **Dados de usuarios, gerencias e equipes** -> `db.py` -> SQLite local (`app.db`)
 5. **Autenticacao** -> `auth.py` -> PBKDF2 hash + token UUID em memoria
 
 ### Principios de Design
 
 - **Separacao de responsabilidades**: auth, db, schemas, external_api, config em modulos independentes
-- **Fallback gracioso**: Informix indisponivel -> dados MOCK automaticamente
+- **MOCK so sem ATF**: `ATF_BASE_URL` vazio usa dados de exemplo, para desenvolver sem rede. Com o ATF configurado nao ha fallback — uma falha dele aparece como erro, nunca como dado de exemplo
+- **Falha fechada**: cadastro incompleto resulta em conjunto de matriculas vazio, nunca em acesso irrestrito
 - **Validacao dupla**: Pydantic (schemas) + regras de negocio (endpoints)
 - **Constantes nomeadas**: magic numbers extraidos para constantes (`DIAS_SEM_EVENTO_ALERTA`, `PESO_*`, `PBKDF2_ITERATIONS`)
 - **Helpers reutilizaveis**: `_metricas_desempenho()` usado por visao geral, gerencias, equipes e comparativo
@@ -405,79 +436,85 @@ e `PESO_SEM_CIENCIA = 0.50`.
 ## Estrutura do Projeto
 
 ```
-sistema_sefaz/
+sistema_OS/
 |-- backend/                        # API FastAPI (Python)
-|   |-- main.py                     # Endpoints REST, middlewares, seed (1144 linhas)
-|   |-- external_api.py             # OS via ATF/Informix/MOCK, alertas, dashboard (1472 linhas)
-|   |-- auth.py                     # PBKDF2 hash, tokens, login/registro (141 linhas)
-|   |-- db.py                       # SQLite repos: User, Gerencia, Supervisao (335 linhas)
-|   |-- schemas.py                  # Modelos Pydantic request/response (224 linhas)
-|   |-- informix_db.py              # Conexao ODBC com Informix + reconexao automatica (legado)
-|   |-- config.py                   # Variaveis de ambiente (.env) incl. ATF_BASE_URL
-|   +-- requirements.txt            # fastapi, uvicorn, python-dotenv, pyodbc, fpdf2, requests
-|-- frontend/                       # SPA React (15 componentes)
+|   |-- main.py                     # Endpoints REST, middlewares, visibilidade, seed, PDFs
+|   |-- external_api.py             # ATF (listagem, detalhe, eventos), MOCK, cache, alertas, dashboards
+|   |-- auth.py                     # PBKDF2, tokens de sessao, limite de tentativas de login
+|   |-- db.py                       # SQLite: usuarios, gerencias, supervisoes, equipes fiscais
+|   |-- schemas.py                  # Modelos Pydantic request/response
+|   |-- config.py                   # Variaveis de ambiente (.env)
+|   |-- gerencias_atf.py            # Regra que tira a gerencia do nome da equipe fiscal
+|   |-- importar_equipes.py         # CLI: importa equipes, chefias e lotacao da planilha da SEFAZ
+|   |-- importar_usuarios.py        # CLI: cadastra os auditores da planilha como usuarios
+|   |-- seed.py                     # Usuarios, gerencias e supervisoes de exemplo
+|   |-- verificar_eventos.py        # CLI: diagnostico isolado do servico de eventos
+|   +-- requirements.txt            # fastapi, uvicorn, python-dotenv, fpdf2, requests
+|-- frontend/                       # SPA React
 |   |-- src/
-|   |   |-- App.jsx                 # Componente raiz: auth, navegacao, data fetching (248 linhas)
-|   |   |-- api.js                  # Cliente HTTP (ApiClient, URL configuravel)
+|   |   |-- App.jsx                 # Componente raiz: auth, navegacao, carga de dados
+|   |   |-- api.js                  # Cliente HTTP (chamadas relativas, via proxy)
 |   |   |-- main.jsx                # Entry point React
-|   |   |-- constants.js            # Labels, situacaoLabels, modeloLabels, formatarData
+|   |   |-- constants.js            # Rotulos do ATF (situacao, modelo, motivo, orgao), formatarData
+|   |   |-- atfFilters.js           # Filtros de busca de OS e as regras do ATF (painel e relatorios)
+|   |   |-- dashboardShared.js      # Periodos, formatacao e cores comuns as abas do dashboard
 |   |   |-- styles.css              # CSS com variaveis + dark mode
 |   |   +-- components/
 |   |       |-- LoginPage.jsx       # Tela de login
 |   |       |-- ChangePasswordPage.jsx # Troca de senha obrigatoria
 |   |       |-- TopBar.jsx          # Barra superior com navegacao e dark mode
-|   |       |-- OrdensPanel.jsx     # Painel de OS com filtros ATF e paginacao servidor (580 linhas)
+|   |       |-- OrdensPanel.jsx     # Painel de OS: filtros, ordenacao, paginacao, detalhe e PDF
 |   |       |-- AlertasPanel.jsx    # Painel de alertas
-|   |       |-- DashboardPanel.jsx  # Orquestrador do dashboard com abas e filtros
+|   |       |-- DashboardPanel.jsx  # Orquestrador do dashboard com abas e periodo
+|   |       |-- DashboardFiltros.jsx # Barra de filtros comum as abas de OS e eventos
 |   |       |-- DashboardGeral.jsx  # Aba Visao Geral: termometro, pizza, evolucao
-|   |       |-- DashboardGerencias.jsx  # Aba Gerencias: tabela + grafico
-|   |       |-- DashboardSupervisoes.jsx # Aba Supervisoes: tabela + grafico
+|   |       |-- DashboardGerencias.jsx  # Aba Gerencias
+|   |       |-- DashboardSupervisoes.jsx # Aba Supervisoes (uma linha por equipe fiscal)
 |   |       |-- DashboardFiscais.jsx    # Aba Fiscais: carga de trabalho
+|   |       |-- DashboardOS.jsx     # Aba Ordens de Servico: cortes de quantidade de OS
+|   |       |-- DashboardEventos.jsx # Aba Eventos: cortes de quantidade de eventos
 |   |       |-- GerenciasAdmin.jsx  # CRUD de gerencias
 |   |       |-- SupervisoesAdmin.jsx # CRUD de supervisoes
-|   |       |-- UsuariosAdmin.jsx   # CRUD de usuarios com cascata
-|   |       |-- RelatoriosPanel.jsx  # Gerador de relatorios CSV e PDF com filtros
+|   |       |-- UsuariosAdmin.jsx   # CRUD de usuarios, lotacao e chefia de equipe
+|   |       |-- RelatoriosPanel.jsx # Gerador de relatorios CSV e PDF com filtros
 |   |       +-- ConfirmModal.jsx    # Modal de confirmacao reutilizavel
-|   |-- public/                     # logo e imagens estaticas
+|   |-- public/                     # logo
 |   |-- package.json                # react, chart.js, vite
-|   +-- vite.config.js
-|-- tests/                          # 329 testes (unitarios + integracao)
-|   |-- test_auth.py                # Hash, tokens, login, registro, troca de senha (18 testes)
-|   |-- test_db.py                  # CRUD usuarios, gerencias, supervisoes – SQLite in-memory (23 testes)
-|   |-- test_schemas.py             # Validacao Pydantic, campos obrigatorios/opcionais (19 testes)
-|   |-- test_external_api.py        # SOAP, caches, alertas e dashboards sobre o ATF (90 testes)
-|   |-- test_equipes_fiscais.py     # Importacao da planilha de equipes e visibilidade (25 testes)
-|   |-- test_eventos_os.py          # Servico de eventos e cortes do bloco 2 (24 testes)
-|   |-- test_seed_e_importacao_usuarios.py  # Seed e importacao dos auditores reais (12 testes)
-|   +-- test_integration.py         # Testes E2E com TestClient FastAPI (124 testes)
+|   +-- vite.config.js              # porta 5000, proxy para o backend, cabecalhos de seguranca
+|-- tests/                          # 408 testes (unitarios + integracao)
 |-- docs/
-|   +-- diagrama-er.md              # Diagrama ER (Mermaid) – SQLite + ATF
+|   |-- dashboard-api-spec.md       # Contrato dos endpoints de dashboard
+|   |-- diagrama-er.md              # Diagrama ER (Mermaid) – SQLite + ATF
+|   |-- teste_regra_periodo_atf.md  # Teste da regra de periodo dos filtros da listagem
+|   |-- testes-atf/                 # Envelopes XML usados nesses casos
+|   +-- screenshots/
 |-- .github/
 |   +-- copilot-instructions.md     # Instrucoes para GitHub Copilot
 |-- start.bat                       # Inicia backend + frontend (Windows)
-|-- start_backend.bat               # Inicia backend com env Informix
+|-- start_backend.bat               # Inicia so o backend (chamado pelo start.bat)
 |-- start.sh                        # Inicia backend + frontend (Linux/Mac)
-|-- test_api.py                     # Testes manuais da API
 |-- .env.example                    # Modelo de configuracao
 +-- .env                            # Configuracao local (nao versionado)
 ```
 
 ## API REST – Endpoints
 
-Base URL: `http://localhost:8000`
+Base URL: `http://127.0.0.1:8000` na propria maquina. Pela rede, as mesmas
+rotas passam pelo proxy do front, na porta 5000.
 
 ### Autenticacao
 
 | Metodo | Rota                    | Descricao                            | Auth  |
 | ------ | ----------------------- | ------------------------------------ | ----- |
 | POST   | `/auth/login`           | Login -> retorna token + dados       | Nao   |
+| POST   | `/auth/logout`          | Revoga o token da sessao atual       | Token |
 | POST   | `/auth/change-password` | Troca senha do usuario autenticado   | Token |
 
 **Exemplo de login:**
 ```bash
 curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "admin123"}'
+  -d '{"username": "admin", "password": "<senha-do-admin>"}'
 ```
 
 **Resposta:**
@@ -505,8 +542,9 @@ curl -X POST http://localhost:8000/auth/login \
 | GET    | `/ordens/{numero}/detalhe` | Detalhe completo de UMA OS (servico detalharOrdemServico) | Token |
 | GET    | `/ordens/{numero}/pdf` | Gera e baixa PDF detalhado de uma OS            | Token |
 | GET    | `/alertas`             | Lista alertas gerados                           | Token |
+| GET    | `/equipes-fiscais`     | Codigo e nome das equipes fiscais importadas (alimenta o filtro) | Token |
 
-**Dois servicos do ATF, dois usos.** `/ordens` consome o
+**Tres servicos do ATF, tres usos.** `/ordens` consome o
 `listarOrdensServicoWebService` (doc da listagem) e alimenta o grid.
 `/ordens/{numero}/detalhe` consome o `detalharOrdemServicoWebService`
 (doc do detalhe) e e chamado a cada clique numa linha — uma OS por
@@ -516,9 +554,11 @@ processos, justificativas de atraso, descricoes complementares e o
 total recolhido. Como nenhum dos dois e superconjunto do outro (equipe
 fiscal, dias de execucao e as medias por Modelo/Motivo so existem na
 listagem), o painel sobrepoe o detalhe a linha ja carregada, campo a
-campo, sem apagar o que vier vazio.
+campo, sem apagar o que vier vazio. O terceiro, `listarEventosOrdemServico`
+(doc dos eventos), devolve eventos de acompanhamento em lote e alimenta so
+a aba Eventos do Dashboard.
 
-Os dois servicos precisam apontar para o mesmo ambiente do ATF, e a
+Os servicos precisam apontar para o mesmo ambiente do ATF, e a
 doc do detalhe tem armadilhas no nome da operacao e na lista de retorno —
 ver [Integracao ATF](#integracao-atf).
 
@@ -537,8 +577,19 @@ ver [Integracao ATF](#integracao-atf).
 | `data_abertura_fim`| string YYYY-MM-DD | Data final de abertura                         |
 | `data_ciencia_ini` | string YYYY-MM-DD | Data inicial de ciencia                        |
 | `data_ciencia_fim` | string YYYY-MM-DD | Data final de ciencia                          |
+| `data_encerramento_ini` | string YYYY-MM-DD | Data inicial de encerramento              |
+| `data_encerramento_fim` | string YYYY-MM-DD | Data final de encerramento                |
+| `motivo_abertura`  | string      | Codigo do motivo de abertura                           |
+| `equipe_fiscal`    | string      | Codigo da equipe fiscal                                |
+| `orgao_executor`   | string      | Codigo do orgao executor                               |
+| `ordenar_por`      | string      | Coluna de ordenacao                                    |
+| `ordem`            | `asc`/`desc` | Direcao da ordenacao (default: `asc`)                 |
 | `pagina`           | int (>=1)   | Pagina atual (default: 1)                              |
 | `limite`           | int (1-50)  | Registros por pagina (default: 20)                     |
+
+Modelo, motivo, situacao, equipe e orgao executor precisam vir junto com
+um periodo de abertura ou de encerramento — regra da doc da listagem, que
+a tela confere antes de consultar.
 
 **Headers obrigatorios:**
 ```
@@ -573,6 +624,7 @@ Authorization: Bearer <token>
 | PUT    | `/admin/users/{id}`                               | Atualizar usuario                  |
 | DELETE | `/admin/users/{id}`                               | Excluir usuario (retorna 204)      |
 | POST   | `/admin/users/{id}/reset-password`                | Resetar senha                      |
+| GET    | `/admin/equipes-fiscais/{codigo}/membros`         | Membros de uma equipe fiscal (nome e matricula) |
 
 > **`/admin/dashboard/os` e a excecao da tabela acima: nao exige admin.**
 > Ele agrega o mesmo universo que a listagem de OS ja mostra a quem
@@ -589,8 +641,7 @@ Authorization: Bearer <token>
 Cortes de **quantidade de OS** sobre os dados reais do ATF, pedidos pela
 area fiscal em 31/08/2026: por gerencia, orgao executor, fiscal, motivo,
 tipo (modelo) e mes de abertura — cada um com o tempo medio de execucao.
-Alimenta a aba "Ordens de Servico" do Dashboard, a unica que nao roda
-sobre o formato interno legado.
+Alimenta a aba "Ordens de Servico" do Dashboard.
 
 Contrato completo, incluindo as tres decisoes que mudam a leitura dos
 numeros (tempo medio so das encerradas, corte por fiscal que soma mais
@@ -618,19 +669,19 @@ problematica.
 
 Tres coisas que valem saber antes de usar:
 
-- **Em 02/09/2026 a operacao so existe em DESENVOLVIMENTO.** O `?wsdl` de
-  producao e o de homologacao declaram apenas `listarOrdemServico` e
-  `detalharOrdemServico`. Ate a SEFAZ implantar, aponte
-  `ATF_EVENTOS_BASE_URL` para o ambiente que a tem — e a aba mostra um
-  aviso vermelho. Desenvolvimento e a MESMA base de producao com o
-  contribuinte mascarado (o resto dos campos bate, ate as matriculas),
-  entao as contagens valem; o limite e ser um **snapshot congelado**, que
-  naquela data ia so ate o fim de julho. Para diagnosticar o servico
-  isolado: `python -m backend.verificar_eventos --url <URL>`.
+- **A operacao precisa estar publicada no ambiente da listagem.** Ela
+  chegou aos ambientes da SEFAZ em momentos diferentes. Se o ambiente em
+  uso ainda nao a tiver, `ATF_EVENTOS_BASE_URL` aponta para um que tenha —
+  e a aba mostra um aviso vermelho, porque os numeros deixam de fechar com
+  os da aba de OS. Para diagnosticar o servico isolado, sem subir o
+  backend: `python -m backend.verificar_eventos --url <URL> --dias 60`.
 - **A gerencia aqui vem do ATF**, e nao do cadastro local: o servico
   manda `cdGerencia`/`sgGerencia` (97% dos eventos medidos). Este
-  corte se preenche mesmo com os fiscais sem lotacao amarrada, ao
-  contrario do corte por gerencia da aba de OS.
+  corte nao depende do cadastro local, ao contrario do corte por gerencia
+  da aba de OS, que sai da equipe fiscal (ver
+  [A gerencia de cada equipe sai do nome dela](#a-gerencia-de-cada-equipe-sai-do-nome-dela)).
+  Por isso as duas abas podem nomear a mesma area de forma diferente;
+  ainda falta a SEFAZ confirmar como as duas se correspondem.
 - **Este endpoint exige admin**, e por limite de dado: o servico nao
   devolve matricula nenhuma, que e a unica chave pela qual o sistema liga
   uma OS a uma pessoa. Sem ela nao ha como aplicar `_matriculas_visiveis`.
@@ -650,29 +701,34 @@ e montado estao em
 
 ## Testes
 
-O projeto possui **329 testes** (unitarios + integracao) com cobertura dos modulos principais:
+O projeto possui **408 testes** (unitarios + integracao) com cobertura dos modulos principais:
 
 | Modulo         | Arquivo                      | Testes | Foco                                                         |
 | -------------- | ---------------------------- | ------ | ------------------------------------------------------------ |
-| Autenticacao   | `tests/test_auth.py`         | 18     | Hash PBKDF2, criacao/validacao de token, login, registro, troca/reset de senha |
+| Autenticacao   | `tests/test_auth.py`         | 25     | Hash PBKDF2 e rehash do hash legado, tokens, login, registro, limite de tentativas, troca/reset de senha |
 | Banco de Dados | `tests/test_db.py`           | 23     | CRUD de users, gerencias, supervisoes (SQLite in-memory)     |
 | Schemas        | `tests/test_schemas.py`      | 19     | Validacao Pydantic, campos obrigatorios/opcionais            |
 | API Externa    | `tests/test_external_api.py` | 90     | Envelopes e parse SOAP, caches, alertas e dashboards sobre o ATF |
-| Equipes fiscais| `tests/test_equipes_fiscais.py` | 25  | Importacao da planilha, vinculo equipe/membros, visibilidade |
+| Equipes fiscais| `tests/test_equipes_fiscais.py` | 47  | Importacao da planilha, chefia pela cor da celula, vinculo equipe/membros, visibilidade |
+| Gerencias ATF  | `tests/test_gerencias_atf.py` | 23    | Regra que tira a gerencia do nome da equipe, cadastro das gerencias do ATF, mapa matricula -> gerencia |
 | Eventos de OS  | `tests/test_eventos_os.py`   | 24     | Servico de eventos: envelope, parse, regras de periodo, cortes do bloco 2 |
 | Seed/usuarios  | `tests/test_seed_e_importacao_usuarios.py` | 12 | Seed de exemplo e importacao dos auditores reais |
-| Integracao     | `tests/test_integration.py`  | 124    | Testes E2E com TestClient FastAPI (auth, CRUD, OS, dashboard) |
-| Informix       | `tests/test_informix.py`     | —      | Script standalone de diagnostico de conexao Informix (nao coletado pelo pytest) |
+| Integracao     | `tests/test_integration.py`  | 145    | Testes E2E com TestClient FastAPI (auth, CRUD, OS, dashboard) |
+
+A suite nao depende de rede nem do `.env`: os testes forcam o MOCK e usam
+banco temporario. Ela e escrita com `unittest`, que ja vem com o Python;
+o pytest e opcional (nao esta no `requirements.txt`).
 
 ```powershell
 # Rodar todos os testes
 .venv\Scripts\Activate.ps1
-python -m pytest tests/ -v
+python -m unittest discover -s tests -t .
 
-# Rodar modulo especifico
+# Com pytest (pip install pytest), a mesma suite:
+python -m pytest tests/ -v
 python -m pytest tests/test_auth.py -v
 
-# Rodar com cobertura (requer pytest-cov)
+# Com cobertura (pip install pytest-cov)
 python -m pytest tests/ --cov=backend --cov-report=term-missing
 ```
 
@@ -682,17 +738,18 @@ O sistema consulta a **API ATF (SEFAZ PB)** via SOAP sobre HTTPS para ler
 Ordens de Servico. Se `ATF_BASE_URL` nao estiver configurado, usa **dados
 MOCK** automaticamente — e o que permite desenvolver sem rede.
 
-### Os dois servicos
+### Os tres servicos
 
-Ambos ficam no mesmo endpoint (`POST {ATF_BASE_URL}/<caminho-do-servico>`);
+Todos ficam no mesmo endpoint (`POST {ATF_BASE_URL}/<caminho-do-servico>`);
 o que muda e a operacao dentro do envelope SOAP.
 
 | Servico | Doc | Usado em | Traz |
 | ------- | --- | -------- | ---- |
-| `listarOrdensServicoWebService` | doc da listagem | grid de OS, relatorios, PDF | lista completa (sem paginacao), com equipe fiscal, dias de execucao e medias por Modelo/Motivo |
+| `listarOrdensServicoWebService` | doc da listagem | grid de OS, alertas, dashboard, relatorios, PDF | lista completa (sem paginacao), com equipe fiscal, dias de execucao e medias por Modelo/Motivo |
 | `detalharOrdemServicoWebService` | doc do detalhe | clique numa linha do grid — uma OS por vez | contribuinte com endereco, eventos, prorrogacoes, notificacoes, processos, justificativas, recolhimentos |
+| `listarEventosOrdemServico` | doc dos eventos | aba Eventos do Dashboard | eventos de acompanhamento em lote, com gerencia e equipe; sem matricula |
 
-Nenhum dos dois e superconjunto do outro, entao a OS exibida e a
+Nenhum dos dois primeiros e superconjunto do outro, entao a OS exibida e a
 **sobreposicao** dos dois: o detalhe cobre a linha do grid campo a campo,
 e o que vier vazio nao apaga o que a listagem trouxe. Sem isso, abrir uma
 OS apagaria da tela a equipe fiscal e os campos calculados.
@@ -708,35 +765,46 @@ O **PDF de uma OS** (`/ordens/{numero}/pdf`) sai com o mesmo conteudo do
 modal. Como o servidor nao tem a linha do grid em maos, ele busca os dois
 servicos e mescla — por isso o download demora mais que abrir o modal. Se
 o servico de detalhe falhar, o PDF sai so com os dados da listagem em vez
-de nao sair: em producao ele ainda nao esta publicado.
+de nao sair.
 
 ### Ambientes — leia antes de trocar a URL
 
-**Os dois servicos precisam apontar para o MESMO ambiente.** Producao e
-desenvolvimento tem bancos diferentes: a mesma OS volta com outro
-contribuinte, outra situacao e outros fiscais em cada um. Misturar
-produz um registro incoerente na tela e — pior — faria a checagem de
-hierarquia ser decidida por dados de desenvolvimento.
+**Os servicos precisam apontar para o MESMO ambiente.** Os ambientes de
+teste da SEFAZ sao copias da base de producao com o contribuinte
+**mascarado** e **congeladas numa data**. Duas consequencias:
 
-Os dois servicos nem sempre estao publicados no mesmo ambiente: pode
-haver um momento em que so o ambiente de homologacao responde aos dois,
-enquanto producao atende apenas a listagem. Por isso o ambiente ativo e
-decidido por `.env` — **nenhum endereco vive no repositorio**.
+- misturar ambientes faz a mesma OS aparecer com uma razao social na
+  linha do grid e outra no detalhe;
+- num ambiente de teste, periodo posterior ao congelamento volta
+  **zerado** — na tela parece queda de produtividade e e so o fim da
+  copia. As contagens anteriores ao corte sao dado real.
+
+Os servicos nem sempre estao publicados ao mesmo tempo em todos os
+ambientes. Por isso o ambiente ativo e decidido por `.env` — **nenhum
+endereco vive no repositorio**.
 
 Para migrar de ambiente:
 
-1. Trocar `ATF_BASE_URL` no `.env`.
-2. **Conferir o `?wsdl` de producao antes**: o nome da operacao difere
-   entre os ambientes (ver a armadilha abaixo).
-3. Refazer o mapeamento de qualquer codigo do ATF guardado no banco
-   local — codigos coletados em desenvolvimento podem nao valer em
-   producao.
+1. **Conferir o `?wsdl` do destino**: se as tres operacoes estao
+   declaradas e com o nome esperado (ver a armadilha abaixo). Para o
+   servico de eventos, `python -m backend.verificar_eventos --url <URL>`
+   faz a chamada real e mostra o preenchimento dos campos.
+2. **Conferir a cadeia TLS** (`openssl s_client -connect <host>:443`). Se o
+   servidor mandar a cadeia incompleta, o `requests` falha com
+   "unable to get local issuer certificate". Prefira montar um bundle com
+   a intermediaria e apontar `REQUESTS_CA_BUNDLE` para ele a desligar
+   `ATF_SSL_VERIFY`, que desliga a verificacao para todos os servicos.
+3. Trocar `ATF_BASE_URL` no `.env` (e `REQUESTS_CA_BUNDLE`, se for o caso)
+   e **reiniciar o backend**: o `.env` so e lido na inicializacao.
+4. Refazer o mapeamento de qualquer codigo do ATF guardado no banco
+   local — codigos coletados num ambiente podem nao valer em outro.
 
 `ATF_DETALHE_BASE_URL` existe para o caso de ser mesmo necessario separar
 os dois servicos em ambientes distintos. Vazia (o normal) = usa a mesma
 URL da listagem. Preenchida, a permissao de acesso a OS passa
 automaticamente a ser decidida pela **listagem**, nunca pelos fiscais do
 outro banco — ver `_buscar_detalhe_os_atf`, em `main.py`.
+`ATF_EVENTOS_BASE_URL` funciona do mesmo jeito para o servico de eventos.
 
 ### Armadilhas da doc do detalhe
 
@@ -771,19 +839,29 @@ outro banco — ver `_buscar_detalhe_os_atf`, em `main.py`.
   cancelada, portanto, nao ha como exibir o motivo. Nao e lacuna do
   parser: e o servico que nao expoe. Se a area fiscal precisar, tem que
   ser pedido a SEFAZ como campo novo.
-- **Recolhimentos e denuncias sao lidos pelo contrato, sem validacao
-  contra dado real:** nenhuma das 40 OS varridas no ambiente de teste
-  trouxe esses blocos preenchidos. Se aparecer divergencia quando houver
-  dado de verdade, e ali que se olha primeiro.
+- **Recolhimentos ja foram conferidos contra dado real:** a OS indicada
+  pela SEFAZ como caso de teste volta com os 40 registros e o total que a
+  tela do ATF mostra. **Denuncias continuam lidas so pelo contrato**:
+  nenhuma OS conferida trouxe esse bloco preenchido. Se aparecer
+  divergencia, e ali que se olha primeiro.
 
 ### Configuracao ATF
 
 ```bash
-# Os dois servicos saem desta URL. Trocar so com o passo a passo acima.
-ATF_BASE_URL=https://<host-homologacao>
+# Os tres servicos saem desta URL. Trocar so com o passo a passo acima.
+ATF_BASE_URL=https://<host-do-atf>
 
-# Vazia = detalhe usa a URL acima. So preencher para separar ambientes.
+# Caminho do endpoint SOAP, somado a ATF_BASE_URL (ignorado se a URL ja
+# terminar no servico).
+ATF_WS_PATH=<caminho-do-servico>
+
+# Vazias = usam a URL acima. So preencher para separar ambientes.
 ATF_DETALHE_BASE_URL=
+ATF_EVENTOS_BASE_URL=
+
+# Verificacao TLS. Cadeia incompleta: prefira REQUESTS_CA_BUNDLE a false.
+ATF_SSL_VERIFY=true
+# REQUESTS_CA_BUNDLE=C:/caminho/para/bundle.pem
 
 # Segundos de cache das respostas do ATF. 0 desliga.
 ATF_CACHE_TTL=60
@@ -844,41 +922,47 @@ Todas as variaveis ficam no arquivo `.env` (copiado de `.env.example`):
 | -------------------- | -------------------------------------- | -------------------------- |
 | `APP_TITLE`          | Titulo da aplicacao                    | `Sistema Sefaz`            |
 | `LOG_LEVEL`          | Nivel de log (DEBUG/INFO/WARNING)      | `INFO`                     |
-| `CORS_ORIGINS`       | Origens permitidas (separadas por `,`) | `http://localhost:5173`    |
+| `CORS_ORIGINS`       | Origens permitidas (separadas por `,`). So importa se o front for servido de outra origem; pelo proxy do Vite nao ha CORS | `http://localhost:5173`    |
 | `ATF_BASE_URL`       | URL base da API ATF (vazio = usa MOCK). Ver [Ambientes](#ambientes--leia-antes-de-trocar-a-url) antes de trocar | `""` (vazio)               |
+| `ATF_WS_PATH`        | Caminho do endpoint SOAP, somado a `ATF_BASE_URL` | `""` (vazio)               |
 | `ATF_DETALHE_BASE_URL` | URL so do servico de detalhe. Vazia = usa `ATF_BASE_URL` | `""` (vazio)             |
 | `ATF_EVENTOS_BASE_URL` | URL so do servico de eventos. Vazia = usa `ATF_BASE_URL` | `""` (vazio)             |
 | `ATF_CACHE_TTL`      | Segundos de cache das respostas do ATF (0 desliga) | `60`             |
 | `ATF_SSL_VERIFY`     | Verifica o certificado TLS do ATF (so desligue em ambiente controlado) | `true` |
+| `REQUESTS_CA_BUNDLE` | Bundle de CAs usado pelo `requests` (lido do ambiente; serve para cadeia TLS incompleta) | bundle do `certifi` |
 | `ADMIN_PASSWORD`     | Senha do `admin` no primeiro boot (vazia = aleatoria, impressa no log) | `""` (vazio) |
 | `API_DOCS`           | Liga `/docs`, `/redoc` e `/openapi.json` (so em desenvolvimento) | `false` |
 | `WORKER_THREADS`     | Threads dos endpoints sincronos (cada chamada ao ATF ocupa uma por ate 60 s) | `100` |
 | `PBKDF2_ITERATIONS`  | Iteracoes do hash de senha; hashes antigos sao refeitos no login | `600000` |
-| `INFORMIX_SERVER`    | Servidor Informix (legado)             | (vazio = nao usa Informix) |
-| `INFORMIX_DATABASE`  | Nome do banco Informix                 | —                          |
-| `INFORMIX_HOST`      | Host do servidor Informix              | —                          |
-| `INFORMIX_PORT`      | Porta ODBC Informix                    | `9088`                     |
-| `INFORMIX_USER`      | Usuario do banco Informix              | —                          |
-| `INFORMIX_PASSWORD`  | Senha do banco Informix                | —                          |
-| `INFORMIX_PROTOCOL`  | Protocolo de conexao Informix          | `onsoctcp`                 |
+| `SESSION_TTL_MINUTES` | Validade do token de sessao, em minutos | `480` |
+| `LOGIN_MAX_FALHAS_USUARIO` | Falhas de login por usuario antes do bloqueio | `5` |
+| `LOGIN_MAX_FALHAS_IP` | Falhas de login por IP antes do bloqueio | `20` |
+| `LOGIN_BLOQUEIO_MINUTOS` | Duracao do bloqueio de login | `15` |
 
-### Variaveis do Frontend (build)
+### URL da API no frontend
 
-A URL da API e configurada automaticamente pelo Vite via `import.meta.env.VITE_API_BASE_URL`.
-Se nao definida, o padrao e `http://localhost:8000`.
+O front chama a API com caminho **relativo**, na mesma origem da pagina, e
+o proxy do Vite encaminha ao backend (`vite.config.js`). Nao ha variavel a
+configurar. So se o front for servido de outra origem e preciso fixar a
+URL no build, com o `define` `API_BASE_URL` (ver o comentario em
+`frontend/src/api.js`) — e ai `CORS_ORIGINS` passa a valer.
 
 ## Decisoes e Pendencias
 
 Registro do que foi decidido e do que esta parado esperando terceiros.
 Serve para nao "corrigir" de novo algo que ja foi decidido assim de
-proposito. Ultima revisao: 25/08/2026.
+proposito. Ultima revisao: 29/09/2026.
 
 ### Esperando a SEFAZ
 
 | O que falta | O que fica travado |
 | ----------- | ------------------ |
-| **Quem chefia cada equipe fiscal** | A planilha da SEFAZ traz a composicao das equipes, mas nao diz quem e o supervisor de cada uma. Ate vir, o vinculo e feito a mao pelo admin no cadastro de usuarios (campo "Equipe Fiscal"). |
+| **Equipes sem supervisor marcado** | A planilha marca a chefia de 30 das 46 equipes. Para as outras 16 falta saber se estao mesmo sem supervisor ou se ficaram de fora do preenchimento; ate la, o admin pode amarrar a mao. |
+| **Chefia como coluna, e nao como cor** | A chefia vem na cor da celula (ver abaixo). Um "limpar formatacao" ou uma exportacao em CSV apaga a informacao sem deixar rastro. |
+| **Gerencia do servico de eventos x gerencia da equipe** | O servico de eventos manda a gerencia pronta; a aba de OS a deduz do nome da equipe. Ate a SEFAZ confirmar como as duas se correspondem, os cortes por gerencia das duas abas nao devem ser comparados linha a linha. |
+| **Codigo antigo de equipe** | A equipe 536 (`GOFE - GEFTE`) ainda aparece em OS e nao esta na planilha; falta saber se e codigo antigo da 610, como a 542 e da 545. |
 | Tabelas de codigo de `stPrazoOS`, `tpNatureza` e `tpDocumento` | Esses campos chegam so como codigo (`"0"`, `"I"`, `"1"`), sem descricao em lugar nenhum. Continuam na resposta da API, mas saem da tela — um numero solto nao informa ninguem. Ha comentario no `OrdensPanel.jsx` marcando onde recoloca-los. |
+| Motivo do cancelamento | O servico de detalhe nao devolve o bloco de cancelamento (ver [Armadilhas da doc do detalhe](#armadilhas-da-doc-do-detalhe)). Se a area fiscal precisar, e campo novo a pedir. |
 
 ### Equipes fiscais (resolvido em 25/08/2026)
 
@@ -896,7 +980,9 @@ que grava em `equipes_fiscais` e `equipe_membros`. Com ela:
   importacao nunca rodou, a lista volta vazia e o campo degrada para o
   antigo, onde se digita o codigo;
 - um supervisor pode ser amarrado a uma equipe (`users.equipe_codigo`),
-  e entao e ela que define o que ele enxerga.
+  e entao e ela que define o que ele enxerga. Desde 17/09/2026 a chefia
+  tambem vem da propria planilha — ver
+  [Quem chefia cada equipe vem na cor da celula](#quem-chefia-cada-equipe-vem-na-cor-da-celula).
 
 **Aba "Elementos Organizacionais"** — confere com os 18 orgaos
 executores fixos em `constants.js`, codigo e sigla, sem divergencia. A
@@ -1122,12 +1208,14 @@ virar uma falha de acesso:
 | | Onde mora | De onde vem | Efeito |
 | --- | --- | --- | --- |
 | **Pertence** | `equipe_membros` | planilha da SEFAZ | nenhum sobre visibilidade; e informativo |
-| **Chefia** | `users.equipe_codigo` | preenchido pelo admin | o supervisor passa a ver as OS de toda a equipe |
+| **Chefia** | `equipe_membros.supervisor` e `users.equipe_codigo` | a cor da planilha e a amarracao feita pelo admin, somadas | o supervisor passa a ver as OS de toda a equipe |
 
-Depois de importar, os 334 auditores tem equipe (pertencimento) e nenhum
-tem chefia — e o correto. Se a importacao preenchesse `equipe_codigo`,
-cada auditor viraria supervisor da propria equipe e enxergaria as OS de
-todos os colegas.
+A chefia so tem efeito para quem **ja e supervisor** no cadastro. Importar
+a planilha grava a marca de chefia, mas nao promove ninguem: sem
+`--amarrar-supervisores`, os 334 auditores continuam fiscais e so enxergam
+as proprias OS. Se a importacao simplesmente preenchesse `equipe_codigo`
+para todos, cada auditor viraria supervisor da propria equipe e
+enxergaria as OS de todos os colegas.
 
 Na tela de Usuarios as duas aparecem em colunas separadas: **Equipe
 (ATF)**, so leitura, e **Chefia**, editavel. Ao promover alguem a
@@ -1142,9 +1230,13 @@ o usuario pode enxergar:
 | Cargo | Ve as OS de |
 | ----- | ----------- |
 | admin | todas (sem restricao) |
-| gerente | a propria matricula + todos os lotados na sua gerencia |
-| supervisor | a propria + a **equipe fiscal do ATF**, se houver uma amarrada; senao, os lotados na sua supervisao |
+| gerente | a propria matricula + todos os lotados na sua gerencia + as equipes chefiadas pelos seus supervisores |
+| supervisor | a propria + as **equipes fiscais do ATF** que chefia (marca da planilha somada a amarracao manual); sem nenhuma, os lotados na sua supervisao local |
 | fiscal | apenas a propria |
+
+O gerente soma as equipes dos supervisores para a hierarquia nao
+inverter: a equipe do ATF alcanca fiscais de outra lotacao e ate quem nao
+tem login, e sem isso um supervisor veria OS que o gerente dele nao ve.
 
 A equipe fiscal tem precedencia sobre a supervisao local por ser a fonte
 da verdade da SEFAZ, e cobre tambem os fiscais que ainda nao tem login
@@ -1197,9 +1289,17 @@ a descricao na mesclagem — por isso o detalhe usa `status_codigo`.
 
 ### Divida tecnica conhecida
 
-- `listaDenuncia` e `recolhimentoOS` sao parseados pelo contrato da doc
-  revisada, mas nunca chegaram preenchidos no ambiente de teste (40 OS
-  varridas). A leitura desses dois blocos e a unica parte do detalhe que
+- **Falha de rede com o ATF vira HTTP 500 cru em parte das rotas.**
+  `_erro_transporte_atf` (em `main.py`) converte a falha num 502 que diz
+  que o problema e do ATF, mas so e usado em `/alertas`, `/admin/dashboard`
+  e `/admin/dashboard/eventos`. A listagem e o detalhe de OS,
+  `/admin/dashboard/os` e os relatorios ainda deixam a excecao subir.
+- **Equipe com codigo antigo ainda em uso.** O ATF usa a 542 e a 545 para
+  a mesma equipe, mas o filtro de equipe sai da tabela importada, que so
+  tem a 545: filtrar por ela nao traz as OS gravadas com a 542, sem aviso
+  na tela.
+- `listaDenuncia` e parseada pelo contrato da doc revisada, mas nunca
+  chegou preenchida numa OS conferida. E a unica parte do detalhe que
   nunca foi confrontada com dado real.
 
 ## Troubleshooting
@@ -1207,16 +1307,19 @@ a descricao na mesclagem — por isso o detalhe usa `status_codigo`.
 | Problema                       | Solucao                                                      |
 | ------------------------------ | ------------------------------------------------------------ |
 | Backend nao inicia             | Verificar se venv esta ativo e porta 8000 livre              |
-| Frontend nao carrega           | Verificar se backend esta rodando e CORS configurado         |
-| Dados MOCK em vez de ATF       | Verificar se `ATF_BASE_URL` esta definido no `.env`          |
-| Informix nao conecta           | Executar `python tests\test_informix.py` para diagnostico    |
-| Dados MOCK em vez de Informix  | Verificar variaveis `INFORMIX_*` no `.env`                   |
-| Dashboard sem dados            | Logar como `admin` – dashboard e exclusivo para admin        |
-| Score sempre 0                 | Verificar se ha OS com `data_ultima_movimentacao` antiga      |
+| Frontend nao carrega           | Verificar se o backend esta rodando em 127.0.0.1:8000 (o proxy do Vite depende dele) |
+| Dados MOCK em vez de ATF       | Verificar se `ATF_BASE_URL` esta definido no `.env` e reiniciar o backend (o `.env` so e lido no boot) |
+| "Nao foi possivel falar com o ATF: SSLError" | Cadeia TLS incompleta no servidor do ATF. Apontar `REQUESTS_CA_BUNDLE` para um bundle com a intermediaria (ver [Ambientes](#ambientes--leia-antes-de-trocar-a-url)) |
+| "O ATF esta indisponivel (HTTP 503)" | A aplicacao do ATF esta reiniciando; costuma voltar sozinha em minutos. Conferir com `curl` no `?wsdl` |
+| HTTP 500 na tela de OS ou nos relatorios | Ver o log do backend: nessas rotas, falha de rede com o ATF ainda sai como 500 (ver [Divida tecnica](#divida-tecnica-conhecida)) |
+| Numeros zerados a partir de certo mes | Ambiente de teste do ATF congelado numa data — nao e queda de produtividade |
+| Dashboard sem dados            | Dashboard e exclusivo para `admin`; preencher o periodo de abertura e clicar em consultar |
+| Termometro com notas baixas num periodo recente | Esperado: as OS ainda nao tiveram tempo de encerrar |
+| Corte por gerencia ou equipe quase vazio | Gerencia e equipe fiscal sao campos novos no ATF; em periodo antigo vem vazios. Conferir o periodo antes de investigar |
 | Dark mode nao persiste         | Verificar se `localStorage` esta habilitado no navegador     |
 | `IntegrityError` ao criar user | Username ou matricula ja existe no banco                     |
-| Deltas nao aparecem nos KPIs   | Precisa de OS em pelo menos 2 meses diferentes               |
-| CORS bloqueando requisicoes    | Adicionar a origem em `CORS_ORIGINS` no `.env`               |
+| Deltas nao aparecem nos KPIs   | Precisa de OS em pelo menos 2 meses diferentes, e sem filtro de gerencia ou equipe |
+| CORS bloqueando requisicoes    | So acontece com o front servido de outra origem: adicionar a origem em `CORS_ORIGINS` no `.env` |
 
 ### Comandos Uteis
 
@@ -1231,10 +1334,13 @@ Get-NetTCPConnection -LocalPort 8000,5000 -ErrorAction SilentlyContinue
 npm --prefix .\frontend run build
 
 # Rodar testes com output detalhado
-python -m pytest tests/ -v --tb=short
+python -m unittest discover -s tests -t . -v
+
+# Diagnosticar o servico de eventos do ATF sem subir o backend
+python -m backend.verificar_eventos --url <URL> --dias 60
 
 # Ver Swagger da API (exige API_DOCS=true no .env; fica desligado por padrao)
-# Abra http://localhost:8000/docs no navegador
+# Abra http://127.0.0.1:8000/docs no navegador
 ```
 
 ## Notas de Producao
@@ -1244,20 +1350,21 @@ Para deploy em producao, considerar:
 | Item                    | Dev (atual)                | Producao (recomendado)          |
 | ----------------------- | -------------------------- | ------------------------------- |
 | Banco de usuarios       | SQLite (`app.db`)          | PostgreSQL ou MySQL             |
-| Tokens de sessao        | UUID em memoria (dict)     | JWT + Redis                     |
+| Tokens de sessao        | UUID em memoria, 8 h; reiniciar o backend derruba todas as sessoes | Sessao persistente (JWT + Redis) |
 | Hash de senha           | PBKDF2 (600k iteracoes, rehash no login) | Argon2id         |
-| Frontend                | vite (dev ou preview)      | Build otimizado + CDN           |
-| CORS                    | `localhost:5173`           | Dominio real                    |
+| Processo                | `uvicorn --reload` e Vite em janelas abertas a mao | Servico com reinicio automatico, sem `--reload` |
+| Frontend                | vite (dev ou preview)      | Build servido por servidor estatico |
 | HTTPS                   | Nao                        | Certificado TLS obrigatorio     |
-| Rate limiting           | So no login e troca de senha | Middleware ou WAF             |
-| Monitoramento           | Logs (stdout)              | Sentry, Datadog, etc.           |
-| Backup de dados         | Nao                        | Rotina automatizada             |
-| App.jsx                 | 245 linhas (decomposto)    | 14 componentes separados (OK)   |
+| Rate limiting           | So no login e na troca de senha | Middleware ou WAF          |
+| Monitoramento           | Logs (stdout)              | Log em arquivo + alerta         |
+| Backup de dados         | Copias manuais do `app.db` | Rotina automatizada             |
 
 ### Proximos Passos Sugeridos
 
-1. **Implementar JWT** com refresh tokens para sessoes persistentes
-2. ~~**Exportar relatorios** em PDF/Excel a partir do dashboard~~ ✅ (CSV + PDF implementados)
-3. **Implementar WebSocket** para alertas em tempo real
-4. **Adicionar testes end-to-end** com Playwright ou Cypress
-5. **Migrar banco de usuarios** para PostgreSQL em producao
+1. **Validar o sistema contra o ambiente definitivo do ATF**, seguindo [Ambientes](#ambientes--leia-antes-de-trocar-a-url)
+2. **Trocar os usuarios de exemplo pelos reais** e cadastrar os gerentes nas gerencias do ATF — ver [Passando dos usuarios de exemplo para os reais](#passando-dos-usuarios-de-exemplo-para-os-reais)
+3. **Fechar a [divida tecnica conhecida](#divida-tecnica-conhecida)**: 502 em todas as rotas do ATF e a equipe de codigo antigo
+4. **Sessoes persistentes** (JWT com refresh tokens), para um reinicio nao deslogar todo mundo
+5. ~~**Exportar relatorios** em PDF/Excel a partir do dashboard~~ ✅ (CSV + PDF implementados)
+6. **Adicionar testes end-to-end** com Playwright ou Cypress
+7. **Migrar banco de usuarios** para PostgreSQL em producao

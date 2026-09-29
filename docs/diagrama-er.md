@@ -2,10 +2,9 @@
 
 ## Visão Geral
 
-O sistema utiliza **três fontes de dados**:
+O sistema utiliza **duas fontes de dados**:
 - **SQLite** (`backend/app.db`) — usuários, gerências, supervisões e equipes fiscais (persistência local)
-- **API ATF** — ordens de serviço (fonte principal, via HTTPS + XML)
-- **IBM Informix** (`sefaz_test`) — ordens de serviço (legado, via ODBC; substituído pela ATF)
+- **API ATF** — ordens de serviço e eventos (via SOAP sobre HTTPS; sem `ATF_BASE_URL`, dados MOCK)
 
 ## Diagrama Entidade-Relacionamento
 
@@ -72,7 +71,7 @@ erDiagram
 ```
 
 > **Nota:** `ordens_servico` não é uma tabela SQLite — representa os dados retornados pela API ATF
-> (ou Informix em fallback). Os campos acima refletem o schema normalizado pelo backend após o parse do XML.
+> (ou pelo MOCK, sem ATF configurado). Os campos acima refletem o schema normalizado pelo backend após o parse do XML.
 
 ## Relações
 
