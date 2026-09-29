@@ -94,6 +94,39 @@ _POR_NOME_INTEIRO: dict[str, int] = {
 # lacuna a preencher depois.
 EQUIPES_FORA_DO_PAINEL: frozenset[int] = frozenset({613, 614})
 
+# Codigo antigo de equipe -> codigo atual. O ATF ainda devolve OS gravadas
+# com o antigo, mas a planilha — e portanto todo <select> de equipe — so
+# tem o atual, e o filtro que desce ao ATF e um cdEquipeFisc so: filtrar
+# pela equipe atual perdia, sem aviso, as OS do codigo antigo.
+#
+# - 542 `GR2-ESTABELECIMENTO` e a 545 `GOFE/GR2 - ESTABELECIMENTOS`
+#   (Rodrigo, 22/09/2026). As duas conviveram no ATF ate julho/2026; desde
+#   agosto so a 545 recebe OS nova.
+#
+# A 536 `GOFE - GEFTE` NAO entra enquanto a SEFAZ nao confirmar se e
+# codigo antigo da 610: juntar duas equipes por palpite mistura as OS
+# delas em todo filtro.
+EQUIPES_EQUIVALENTES: dict[int, int] = {542: 545}
+
+
+def equipe_atual(codigo: int | None) -> int | None:
+    """Codigo atual da equipe: o proprio, se nao for um codigo antigo."""
+    if codigo is None:
+        return None
+    return EQUIPES_EQUIVALENTES.get(codigo, codigo)
+
+
+def codigos_da_equipe(codigo: int) -> frozenset[int]:
+    """
+    Todos os codigos com que o ATF grava a equipe: o atual e os antigos.
+
+    Aceita tanto o atual quanto um antigo — os dois levam ao mesmo
+    conjunto. Equipe sem codigo antigo devolve so ela mesma.
+    """
+    atual = equipe_atual(codigo)
+    antigos = {antigo for antigo, novo in EQUIPES_EQUIVALENTES.items() if novo == atual}
+    return frozenset({atual, *antigos})
+
 
 def _sem_acento(texto: str) -> str:
     return (

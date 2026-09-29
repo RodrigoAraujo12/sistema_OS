@@ -16,8 +16,11 @@ from pathlib import Path
 
 from backend.db import Database, EquipeFiscalRepository, GerenciaRepository
 from backend.gerencias_atf import (
+    EQUIPES_EQUIVALENTES,
     EQUIPES_FORA_DO_PAINEL,
     GERENCIAS,
+    codigos_da_equipe,
+    equipe_atual,
     gerencia_de_equipe,
     gerencias_das_equipes,
 )
@@ -264,6 +267,43 @@ class TestMapaDoPainel(unittest.TestCase):
             gerencia_da_equipe={"1001": 999},
         )
         self.assertEqual(mapa, {})
+
+
+class TestEquipesEquivalentes(unittest.TestCase):
+    """
+    O ATF ainda grava OS com o codigo antigo de uma equipe (542), mas a
+    planilha so tem o atual (545). Os filtros e cortes enxergam os dois
+    como a mesma equipe.
+    """
+
+    def test_codigo_antigo_vira_o_atual(self):
+        self.assertEqual(equipe_atual(542), 545)
+
+    def test_codigo_atual_e_equipe_sem_antigo_ficam_como_estao(self):
+        self.assertEqual(equipe_atual(545), 545)
+        self.assertEqual(equipe_atual(600), 600)
+        self.assertIsNone(equipe_atual(None))
+
+    def test_atual_e_antigo_levam_ao_mesmo_conjunto(self):
+        self.assertEqual(codigos_da_equipe(545), frozenset({545, 542}))
+        self.assertEqual(codigos_da_equipe(542), frozenset({545, 542}))
+
+    def test_equipe_sem_codigo_antigo_e_so_ela(self):
+        # E o que mantem o filtro das outras equipes descendo ao ATF.
+        self.assertEqual(codigos_da_equipe(600), frozenset({600}))
+
+    def test_nenhum_codigo_atual_e_tambem_antigo(self):
+        """
+        equipe_atual resolve um passo so. Uma cadeia (A -> B -> C) deixaria
+        o A parado no B — em vez de resolver em laco, a tabela nao pode
+        ter cadeia.
+        """
+        self.assertFalse(set(EQUIPES_EQUIVALENTES) & set(EQUIPES_EQUIVALENTES.values()))
+
+    def test_536_nao_entra_sem_confirmacao(self):
+        # Juntar duas equipes por palpite mistura as OS delas em todo
+        # filtro: a 536 so entra quando a SEFAZ confirmar que e a 610.
+        self.assertNotIn(536, EQUIPES_EQUIVALENTES)
 
 
 if __name__ == "__main__":

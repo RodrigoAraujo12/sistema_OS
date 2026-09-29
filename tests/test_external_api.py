@@ -8,6 +8,7 @@ a listagem do ATF.
 
 from __future__ import annotations
 
+import re
 import unittest
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timezone
@@ -22,6 +23,7 @@ from backend.external_api import (
     _montar_envelope_soap,
     _montar_parametros_atf,
     _parse_detalhe_soap,
+    _parse_resposta_soap,
     detalhar_ordem_atf,
     detalhe_em_outro_ambiente,
     filtrar_atf_por_matriculas,
@@ -29,6 +31,7 @@ from backend.external_api import (
     gerar_dashboard_desempenho,
     gerar_dashboard_os,
     limpar_cache_atf,
+    listar_ordens_atf,
     mesclar_detalhe_os,
     url_base_detalhe_atf,
     validar_periodo_abertura,
@@ -128,6 +131,91 @@ class TestCacheATF(unittest.TestCase):
                 _chamar_atf_https("https://atf.local", numero_os="X")
                 _chamar_atf_https("https://atf.local", numero_os="X")
         self.assertEqual(post.call_count, 2)
+
+
+def _resposta_com_equipes(equipes: dict[str, tuple[int, str]]) -> str:
+    """Resposta da listagem com uma OS por equipe (numero -> (cdEquipeFisc, nome))."""
+    ordens = "".join(
+        f"<ordemServico><nrOrdemServico>{n}</nrOrdemServico>"
+        f"<cdEquipeFisc>{codigo}</cdEquipeFisc><noEquipeFisc>{nome}</noEquipeFisc>"
+        f"<dataAbertura>10/05/2026</dataAbertura>"
+        f"</ordemServico>"
+        for n, (codigo, nome) in equipes.items()
+    )
+    return f"<resultado><listaOrdemServico>{ordens}</listaOrdemServico></resultado>"
+
+
+class TestEquipeComCodigoAntigo(unittest.TestCase):
+    """
+    O ATF ainda devolve OS com o codigo antigo 542 da equipe que a planilha
+    so conhece como 545. O filtro manda um cdEquipeFisc so, entao filtrar
+    pela 545 no ATF perdia as OS da 542 — sem aviso na tela.
+    """
+
+    _OS = {
+        "OS-NOVA": (545, "GOFE/GR2 - ESTABELECIMENTOS"),
+        "OS-ANTIGA": (542, "GR2-ESTABELECIMENTO"),
+        "OS-OUTRA": (600, "OUTRA EQUIPE"),
+    }
+
+    def setUp(self):
+        limpar_cache_atf()
+        self.addCleanup(limpar_cache_atf)
+
+    def _atf_falso(self, *args, **kwargs) -> MagicMock:
+        """Responde como o ATF: so as OS do cdEquipeFisc pedido (todas, sem ele)."""
+        achado = re.search(rb"cdEquipeFisc>(\d+)<", kwargs["data"])
+        pedido = int(achado.group(1)) if achado else None
+        os_ = {n: e for n, e in self._OS.items() if pedido in (None, e[0])}
+        return MagicMock(status_code=200, text=_resposta_com_equipes(os_))
+
+    def _listar(self, equipe: str) -> tuple[list[dict], list[bytes | None]]:
+        """Devolve as OS e o cdEquipeFisc de cada chamada feita ao ATF."""
+        with patch("backend.config.ATF_BASE_URL", "https://atf.local"), \
+                patch("requests.post", side_effect=self._atf_falso) as post:
+            r = listar_ordens_atf(
+                equipe_fiscal=equipe,
+                data_abertura_ini="2026-05-01", data_abertura_fim="2026-05-31",
+                limite=50,
+            )
+        pedidos = [
+            (m.group(1) if (m := re.search(rb"cdEquipeFisc>(\d+)<", c.kwargs["data"])) else None)
+            for c in post.call_args_list
+        ]
+        return r["ordens"], pedidos
+
+    def test_parse_troca_o_codigo_antigo_e_mantem_o_nome_do_atf(self):
+        ordens = {o["numero_os"]: o for o in _parse_resposta_soap(_resposta_com_equipes(self._OS))}
+        self.assertEqual(ordens["OS-ANTIGA"]["equipe_fiscal_codigo"], 545)
+        self.assertEqual(ordens["OS-ANTIGA"]["equipe_fiscal"], "GR2-ESTABELECIMENTO")
+        self.assertEqual(ordens["OS-OUTRA"]["equipe_fiscal_codigo"], 600)
+
+    def test_filtrar_pela_equipe_atual_traz_as_os_do_codigo_antigo(self):
+        ordens, _ = self._listar("545")
+        self.assertEqual(sorted(o["numero_os"] for o in ordens), ["OS-ANTIGA", "OS-NOVA"])
+        self.assertEqual({o["equipe_fiscal_codigo"] for o in ordens}, {545})
+
+    def test_uma_chamada_filtrada_por_codigo(self):
+        """
+        Nunca uma chamada sem equipe: o periodo inteiro sem filtro estourou
+        o timeout de 60s numa janela de 12 meses em producao.
+        """
+        _, pedidos = self._listar("545")
+        self.assertEqual(pedidos, [b"542", b"545"])
+
+    def test_filtrar_pelo_codigo_antigo_da_o_mesmo_resultado(self):
+        ordens, _ = self._listar("542")
+        self.assertEqual(sorted(o["numero_os"] for o in ordens), ["OS-ANTIGA", "OS-NOVA"])
+
+    def test_equipe_sem_codigo_antigo_continua_com_uma_chamada(self):
+        ordens, pedidos = self._listar("600")
+        self.assertEqual(pedidos, [b"600"])
+        self.assertEqual([o["numero_os"] for o in ordens], ["OS-OUTRA"])
+
+    def test_sem_filtro_de_equipe_nada_muda(self):
+        ordens, pedidos = self._listar(None)
+        self.assertEqual(pedidos, [None])
+        self.assertEqual(len(ordens), 3)
 
 
 class TestEscapeParametrosATF(unittest.TestCase):

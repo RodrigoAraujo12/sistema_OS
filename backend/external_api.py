@@ -23,6 +23,7 @@ from xml.sax.saxutils import escape as _escape_xml
 
 from . import config
 from .config import ATF_CACHE_TTL
+from .gerencias_atf import codigos_da_equipe, equipe_atual
 
 logger = logging.getLogger("sefaz.external_api")
 
@@ -1175,7 +1176,9 @@ def _parse_resposta_soap(xml_text: str) -> list[dict[str, Any]]:
             "orgao_executor_sigla": (os_el.findtext("sgOrgaoExec", "") or "").strip(),
             "orgao_executor_codigo": _int_ou_none(os_el.findtext("cdOrgaoExec")),
             "equipe_fiscal": (os_el.findtext("noEquipeFisc", "") or "").strip(),
-            "equipe_fiscal_codigo": _int_ou_none(os_el.findtext("cdEquipeFisc")),
+            # Codigo antigo vira o atual (EQUIPES_EQUIVALENTES); o nome fica
+            # como o ATF mandou.
+            "equipe_fiscal_codigo": equipe_atual(_int_ou_none(os_el.findtext("cdEquipeFisc"))),
             "procedimento": (os_el.findtext("noProcedimento", "") or "").strip(),
             "situacao": situacao,
             "data_abertura": _data_do_atf(os_el.findtext("dataAbertura")),
@@ -1189,6 +1192,29 @@ def _parse_resposta_soap(xml_text: str) -> list[dict[str, Any]]:
         })
 
     return ordens
+
+
+def _codigos_equipe_para_atf(equipe_fiscal: str | None) -> list[str | None]:
+    """
+    Os cdEquipeFisc a mandar ao ATF para o filtro de equipe, um por chamada.
+
+    O servico aceita um cdEquipeFisc so, e o ATF ainda grava OS com o
+    codigo antigo de algumas equipes (ver EQUIPES_EQUIVALENTES): filtrar so
+    pelo atual perdia as OS do antigo. Para essas equipes sao duas
+    chamadas, uma por codigo, e o resultado e a soma — cada OS tem um
+    codigo so, entao nada se repete. As demais seguem com uma chamada.
+
+    Por que nao uma chamada so, sem equipe, filtrando aqui, como as
+    selecoes multiplas de situacao: o custo do ATF cresce com o periodo
+    varrido, e nao so com o que volta. Medido em producao em 29/09/2026,
+    numa janela de 12 meses: cada codigo filtrado levou ~9s, e a mesma
+    janela sem filtro estourou o timeout de 60s. Duas chamadas filtradas
+    custam alguns segundos a mais num mes e salvam a consulta de um ano.
+    """
+    codigo = _int_ou_none(equipe_fiscal)
+    if codigo is None:
+        return [equipe_fiscal]
+    return [str(c) for c in sorted(codigos_da_equipe(codigo))]
 
 
 def _pos_filtrar_atf(
@@ -1724,7 +1750,7 @@ def _parse_detalhe_soap(xml_text: str) -> dict[str, Any] | None:
         # time do ATF e nao entrou nem na doc nem na resposta (conferido
         # em 17 OS): fica lido por antecipacao, sem custo, e ate la o
         # codigo da equipe continua vindo da listagem pela mesclagem.
-        "equipe_fiscal_codigo": _int_ou_none(_txt(os_el, "equipeFiscalizacao/cdEquipe")),
+        "equipe_fiscal_codigo": equipe_atual(_int_ou_none(_txt(os_el, "equipeFiscalizacao/cdEquipe"))),
         "bd_fiscal": _txt_ou_none(os_el, "dsTpBdFiscal"),
         "bd_fiscal_codigo": _txt_ou_none(os_el, "tpBdFiscal"),
         "orgao_origem": _txt(org_el, "noElementoOrg") or None,
@@ -2039,21 +2065,24 @@ def listar_ordens_atf(
         matriculas_lista = [m.strip() for m in (matriculas or "").split(",") if m.strip()]
 
         # O servico aceita um unico statusOS e uma unica matriculaFiscal;
-        # selecoes multiplas sao aplicadas no pos-filtro local.
-        ordens = _chamar_atf_https(
-            ATF_BASE_URL,
-            numero_os=numero_os,
-            modelo=modelo,
-            motivo_abertura=motivo_abertura,
-            situacao=situacoes[0] if situacoes and len(situacoes) == 1 else None,
-            matricula_fiscal=matriculas_lista[0] if len(matriculas_lista) == 1 else None,
-            equipe_fiscal=equipe_fiscal,
-            orgao_executor=orgao_executor,
-            cnpj=cnpj, ie=ie,
-            data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
-            data_encerramento_ini=data_encerramento_ini,
-            data_encerramento_fim=data_encerramento_fim,
-        )
+        # selecoes multiplas sao aplicadas no pos-filtro local. Equipe com
+        # codigo antigo vira uma chamada por codigo (_codigos_equipe_para_atf).
+        ordens: list[dict[str, Any]] = []
+        for codigo_equipe in _codigos_equipe_para_atf(equipe_fiscal):
+            ordens += _chamar_atf_https(
+                ATF_BASE_URL,
+                numero_os=numero_os,
+                modelo=modelo,
+                motivo_abertura=motivo_abertura,
+                situacao=situacoes[0] if situacoes and len(situacoes) == 1 else None,
+                matricula_fiscal=matriculas_lista[0] if len(matriculas_lista) == 1 else None,
+                equipe_fiscal=codigo_equipe,
+                orgao_executor=orgao_executor,
+                cnpj=cnpj, ie=ie,
+                data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
+                data_encerramento_ini=data_encerramento_ini,
+                data_encerramento_fim=data_encerramento_fim,
+            )
         ordens = _pos_filtrar_atf(
             ordens,
             situacoes=situacoes if situacoes and len(situacoes) > 1 else None,
@@ -3101,7 +3130,8 @@ def _parse_resposta_eventos_soap(xml_text: str) -> list[dict[str, Any]]:
             "gerencia_sigla": _txt(e_el, "sgGerencia"),
             "gerencia_codigo": _int_ou_none(_txt(e_el, "cdGerencia")),
             "equipe_fiscal": _txt(e_el, "noEquipeFisc"),
-            "equipe_fiscal_codigo": _int_ou_none(_txt(e_el, "cdEquipeFisc")),
+            # Codigo antigo vira o atual, como na listagem de OS.
+            "equipe_fiscal_codigo": equipe_atual(_int_ou_none(_txt(e_el, "cdEquipeFisc"))),
             "procedimento": _txt(e_el, "noProcedimento"),
             "procedimento_codigo": _int_ou_none(_txt(e_el, "cdProcedimento")),
             "data_abertura": _data_do_atf(_txt(e_el, "dataAberturaOS")) or None,
@@ -3346,13 +3376,18 @@ def listar_eventos_atf(
     base_url = url_base_eventos_atf()
     if base_url:
         logger.debug("Chamando servico de eventos do ATF: %s", base_url)
-        return _chamar_eventos_atf_https(
-            base_url,
-            modelo=modelo, motivo_abertura=motivo_abertura,
-            equipe_fiscal=equipe_fiscal, gerencia=gerencia, procedimento=procedimento,
-            data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
-            data_inclusao_ini=data_inclusao_ini, data_inclusao_fim=data_inclusao_fim,
-        )
+        # Mesma regra da listagem de OS: equipe com codigo antigo vira uma
+        # chamada por codigo (ver _codigos_equipe_para_atf).
+        eventos: list[dict[str, Any]] = []
+        for codigo_equipe in _codigos_equipe_para_atf(equipe_fiscal):
+            eventos += _chamar_eventos_atf_https(
+                base_url,
+                modelo=modelo, motivo_abertura=motivo_abertura,
+                equipe_fiscal=codigo_equipe, gerencia=gerencia, procedimento=procedimento,
+                data_abertura_ini=data_abertura_ini, data_abertura_fim=data_abertura_fim,
+                data_inclusao_ini=data_inclusao_ini, data_inclusao_fim=data_inclusao_fim,
+            )
+        return eventos
 
     logger.debug("Servico de eventos nao configurado - usando MOCK")
     return _mock_eventos_atf(
@@ -3408,20 +3443,30 @@ def _agrupar_eventos(
     Ao contrario de _agrupar_os, a chave e UMA so: um evento pertence a
     exatamente uma gerencia, um procedimento, um mes. Nao ha o caso da OS
     com varios fiscais, entao a soma das linhas fecha com o total.
-    """
-    grupos: dict[tuple[Any, str], list[dict[str, Any]]] = defaultdict(list)
-    for e in eventos:
-        grupos[chave_de(e)].append(e)
 
-    linhas = [
-        {
-            "id": ident,
+    Com codigo, a identidade do grupo e o codigo, e nao o par (codigo,
+    nome): a equipe de codigo antigo chega normalizada para o atual, mas
+    com o nome antigo (ver EQUIPES_EQUIVALENTES), e o par a partiria em
+    duas linhas com o mesmo id. O rotulo e o nome mais frequente. Sem
+    codigo, o nome continua sendo a identidade.
+    """
+    grupos: dict[tuple[bool, Any], list[dict[str, Any]]] = defaultdict(list)
+    rotulos: dict[tuple[bool, Any], Counter[str]] = defaultdict(Counter)
+    for e in eventos:
+        ident, rotulo = chave_de(e)
+        chave = (ident is None, rotulo if ident is None else ident)
+        grupos[chave].append(e)
+        rotulos[chave][rotulo] += 1
+
+    linhas = []
+    for chave, lista in grupos.items():
+        rotulo = rotulos[chave].most_common(1)[0][0]
+        linhas.append({
+            "id": None if chave[0] else chave[1],
             "rotulo": rotulo,
             "vazio": rotulo in _ROTULOS_VAZIOS_EVT,
             **_resumo_eventos(lista),
-        }
-        for (ident, rotulo), lista in grupos.items()
-    ]
+        })
     linhas.sort(key=lambda linha: (-linha["total"], linha["rotulo"]))
     return linhas
 

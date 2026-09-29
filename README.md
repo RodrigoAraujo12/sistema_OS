@@ -481,7 +481,7 @@ sistema_OS/
 |   |-- public/                     # logo
 |   |-- package.json                # react, chart.js, vite
 |   +-- vite.config.js              # porta 5000, proxy para o backend, cabecalhos de seguranca
-|-- tests/                          # 412 testes (unitarios + integracao)
+|-- tests/                          # 429 testes (unitarios + integracao)
 |-- docs/
 |   |-- dashboard-api-spec.md       # Contrato dos endpoints de dashboard
 |   |-- diagrama-er.md              # Diagrama ER (Mermaid) – SQLite + ATF
@@ -701,17 +701,17 @@ e montado estao em
 
 ## Testes
 
-O projeto possui **412 testes** (unitarios + integracao) com cobertura dos modulos principais:
+O projeto possui **429 testes** (unitarios + integracao) com cobertura dos modulos principais:
 
 | Modulo         | Arquivo                      | Testes | Foco                                                         |
 | -------------- | ---------------------------- | ------ | ------------------------------------------------------------ |
 | Autenticacao   | `tests/test_auth.py`         | 25     | Hash PBKDF2 e rehash do hash legado, tokens, login, registro, limite de tentativas, troca/reset de senha |
 | Banco de Dados | `tests/test_db.py`           | 23     | CRUD de users, gerencias, supervisoes (SQLite in-memory)     |
 | Schemas        | `tests/test_schemas.py`      | 19     | Validacao Pydantic, campos obrigatorios/opcionais            |
-| API Externa    | `tests/test_external_api.py` | 90     | Envelopes e parse SOAP, caches, alertas e dashboards sobre o ATF |
+| API Externa    | `tests/test_external_api.py` | 96     | Envelopes e parse SOAP, caches, alertas, dashboards e equipe de codigo antigo na listagem |
 | Equipes fiscais| `tests/test_equipes_fiscais.py` | 47  | Importacao da planilha, chefia pela cor da celula, vinculo equipe/membros, visibilidade |
-| Gerencias ATF  | `tests/test_gerencias_atf.py` | 23    | Regra que tira a gerencia do nome da equipe, cadastro das gerencias do ATF, mapa matricula -> gerencia |
-| Eventos de OS  | `tests/test_eventos_os.py`   | 24     | Servico de eventos: envelope, parse, regras de periodo, cortes do bloco 2 |
+| Gerencias ATF  | `tests/test_gerencias_atf.py` | 29    | Regra que tira a gerencia do nome da equipe, cadastro das gerencias do ATF, mapa matricula -> gerencia, equivalencia de codigos de equipe |
+| Eventos de OS  | `tests/test_eventos_os.py`   | 29     | Servico de eventos: envelope, parse, regras de periodo, cortes do bloco 2, equipe de codigo antigo |
 | Seed/usuarios  | `tests/test_seed_e_importacao_usuarios.py` | 12 | Seed de exemplo e importacao dos auditores reais |
 | Integracao     | `tests/test_integration.py`  | 149    | Testes E2E com TestClient FastAPI (auth, CRUD, OS, dashboard, falhas do ATF) |
 
@@ -960,7 +960,7 @@ proposito. Ultima revisao: 29/09/2026.
 | **Equipes sem supervisor marcado** | A planilha marca a chefia de 30 das 46 equipes. Para as outras 16 falta saber se estao mesmo sem supervisor ou se ficaram de fora do preenchimento; ate la, o admin pode amarrar a mao. |
 | **Chefia como coluna, e nao como cor** | A chefia vem na cor da celula (ver abaixo). Um "limpar formatacao" ou uma exportacao em CSV apaga a informacao sem deixar rastro. |
 | **Gerencia do servico de eventos x gerencia da equipe** | O servico de eventos manda a gerencia pronta; a aba de OS a deduz do nome da equipe. Ate a SEFAZ confirmar como as duas se correspondem, os cortes por gerencia das duas abas nao devem ser comparados linha a linha. |
-| **Codigo antigo de equipe** | A equipe 536 (`GOFE - GEFTE`) ainda aparece em OS e nao esta na planilha; falta saber se e codigo antigo da 610, como a 542 e da 545. |
+| **Codigo antigo de equipe** | A equipe 536 (`GOFE - GEFTE`) ainda aparece em OS e nao esta na planilha; falta saber se e codigo antigo da 610, como a 542 e da 545. Confirmado, basta entrar em `EQUIPES_EQUIVALENTES` (ver [Codigo antigo de equipe](#codigo-antigo-de-equipe)). |
 | Tabelas de codigo de `stPrazoOS`, `tpNatureza` e `tpDocumento` | Esses campos chegam so como codigo (`"0"`, `"I"`, `"1"`), sem descricao em lugar nenhum. Continuam na resposta da API, mas saem da tela — um numero solto nao informa ninguem. Ha comentario no `OrdensPanel.jsx` marcando onde recoloca-los. |
 | Motivo do cancelamento | O servico de detalhe nao devolve o bloco de cancelamento (ver [Armadilhas da doc do detalhe](#armadilhas-da-doc-do-detalhe)). Se a area fiscal precisar, e campo novo a pedir. |
 
@@ -1287,12 +1287,36 @@ do status do fiscal (`stFiscalOS` = `"0"`) e a listagem manda o *texto*
 (`"DESIGNADO"`). Mapear os dois para a mesma chave fazia o codigo apagar
 a descricao na mesclagem — por isso o detalhe usa `status_codigo`.
 
+### Codigo antigo de equipe
+
+O ATF ainda devolve OS gravadas com o codigo antigo de uma equipe: a 542
+(`GR2-ESTABELECIMENTO`) e a 545 (`GOFE/GR2 - ESTABELECIMENTOS`), que
+conviveram ate julho/2026. A planilha — e portanto todo `<select>` de
+equipe — so tem a 545, e o filtro que desce ao ATF e um `cdEquipeFisc`
+so: filtrar pela 545 perdia as OS da 542, sem aviso.
+
+A tabela `EQUIPES_EQUIVALENTES`, em `backend/gerencias_atf.py`, liga o
+codigo antigo ao atual, e tem tres efeitos:
+
+- **na leitura**, a listagem, o detalhe e os eventos trocam o codigo
+  antigo pelo atual. O **nome** fica como o ATF mandou, entao a linha da
+  OS continua mostrando `GR2-ESTABELECIMENTO`;
+- **no filtro**, pedir a equipe (pelo codigo atual ou pelo antigo) vira
+  **uma chamada ao ATF por codigo**, e o resultado e a soma. Nao e uma
+  chamada so, sem equipe, filtrada aqui: o custo do ATF cresce com o
+  periodo varrido, e 12 meses sem filtro estouraram o timeout de 60s em
+  producao, contra ~9s por codigo filtrado. Equipes sem codigo antigo
+  seguem com uma chamada;
+- **no corte por equipe da aba Eventos**, o grupo e o codigo, e nao o par
+  codigo+nome — senao a mesma equipe sairia em duas linhas. O rotulo e o
+  nome mais frequente.
+
+A 536 (`GOFE - GEFTE`) so entra na tabela quando a SEFAZ confirmar que e
+codigo antigo da 610: juntar duas equipes por palpite mistura as OS delas
+em todo filtro.
+
 ### Divida tecnica conhecida
 
-- **Equipe com codigo antigo ainda em uso.** O ATF usa a 542 e a 545 para
-  a mesma equipe, mas o filtro de equipe sai da tabela importada, que so
-  tem a 545: filtrar por ela nao traz as OS gravadas com a 542, sem aviso
-  na tela.
 - `listaDenuncia` e parseada pelo contrato da doc revisada, mas nunca
   chegou preenchida numa OS conferida. E a unica parte do detalhe que
   nunca foi confrontada com dado real.
@@ -1357,7 +1381,7 @@ Para deploy em producao, considerar:
 
 1. **Validar o sistema contra o ambiente definitivo do ATF**, seguindo [Ambientes](#ambientes--leia-antes-de-trocar-a-url)
 2. **Trocar os usuarios de exemplo pelos reais** e cadastrar os gerentes nas gerencias do ATF — ver [Passando dos usuarios de exemplo para os reais](#passando-dos-usuarios-de-exemplo-para-os-reais)
-3. **Fechar a [divida tecnica conhecida](#divida-tecnica-conhecida)**: a equipe de codigo antigo
+3. **Levar a SEFAZ as perguntas de [Esperando a SEFAZ](#esperando-a-sefaz)** — entre elas a 536, que so entra na tabela de equivalencia com confirmacao
 4. **Sessoes persistentes** (JWT com refresh tokens), para um reinicio nao deslogar todo mundo
 5. ~~**Exportar relatorios** em PDF/Excel a partir do dashboard~~ ✅ (CSV + PDF implementados)
 6. **Adicionar testes end-to-end** com Playwright ou Cypress

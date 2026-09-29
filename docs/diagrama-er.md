@@ -59,7 +59,7 @@ erDiagram
         INTEGER motivo_abertura_codigo
         INTEGER situacao "0 a 7; 5 = Bloqueada"
         INTEGER orgao_executor_codigo "os 18 de constants.js"
-        INTEGER equipe_fiscal_codigo FK "cdEquipeFisc; vazio em OS antigas"
+        INTEGER equipe_fiscal_codigo FK "cdEquipeFisc; codigo antigo ja vem trocado pelo atual"
         TEXT procedimento
         TEXT ie
         TEXT cnpj
@@ -134,7 +134,7 @@ erDiagram
 | `users` | `equipe_membros` | 0..1:N | matrícula | Pertencer a uma equipe não dá visibilidade; chefiar dá, e só para quem é supervisor |
 | `ordens_servico_atf` | `fiscais_da_os` | 1:N | `numero_os` | Fiscais designados na OS |
 | `users` / `equipe_membros` | `fiscais_da_os` | N:N | matrícula | Base da visibilidade e dos cortes por fiscal e por gerência |
-| `equipes_fiscais` | `ordens_servico_atf` | 0..1:N | `cdEquipeFisc` | Filtro e corte por equipe; não entra na visibilidade |
+| `equipes_fiscais` | `ordens_servico_atf` | 0..1:N | `cdEquipeFisc` | Filtro e corte por equipe; não entra na visibilidade. Vazio em OS antigas; código antigo de equipe chega trocado pelo atual (`EQUIPES_EQUIVALENTES`, ver README) |
 | `ordens_servico_atf` | `eventos_atf` | 1:N | `numero_os` | Serviço de eventos. Não traz matrícula, por isso a aba Eventos é só do admin |
 
 ## O que a matrícula resolve

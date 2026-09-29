@@ -11,6 +11,7 @@ nomes contra a resposta que o servico de desenvolvimento devolveu em
 
 from __future__ import annotations
 
+import re
 import unittest
 from unittest.mock import MagicMock, patch
 from xml.sax.saxutils import escape
@@ -22,6 +23,8 @@ from backend.external_api import (
     _parse_resposta_eventos_soap,
     _validar_periodos_eventos,
     gerar_dashboard_eventos,
+    limpar_cache_atf,
+    listar_eventos_atf,
 )
 
 
@@ -296,6 +299,105 @@ class TestDashboardEventos(unittest.TestCase):
         self.assertEqual(d["visao_geral"]["total_eventos"], 0)
         self.assertIsNone(d["visao_geral"]["media_por_os"])
         self.assertEqual(d["por_gerencia"], [])
+
+
+def _evento_xml(codigo_evento: int, equipe: int, nome_equipe: str) -> str:
+    return (
+        "<eventoOS>"
+        f"<cdEventoAcompOS>{codigo_evento}</cdEventoAcompOS>"
+        f"<nrOrdemServico>OS-{codigo_evento}</nrOrdemServico>"
+        f"<cdEquipeFisc>{equipe}</cdEquipeFisc><noEquipeFisc>{nome_equipe}</noEquipeFisc>"
+        "<dataAberturaOS>05/01/2026</dataAberturaOS>"
+        "<dataInclusaoEventoOS>10/01/2026</dataInclusaoEventoOS>"
+        "</eventoOS>"
+    )
+
+
+class TestEquipeComCodigoAntigo(unittest.TestCase):
+    """
+    A equipe 542 e o codigo antigo da 545 (ver EQUIPES_EQUIVALENTES). Nos
+    eventos ela precisa cair no filtro e no corte da 545, e nao numa linha
+    propria com o mesmo codigo.
+    """
+
+    # (codigo do evento, cdEquipeFisc, nome)
+    _EVENTOS = (
+        (1, 545, "GOFE/GR2 - ESTABELECIMENTOS"),
+        (2, 545, "GOFE/GR2 - ESTABELECIMENTOS"),
+        (3, 542, "GR2-ESTABELECIMENTO"),
+        (4, 600, "OUTRA EQUIPE"),
+    )
+
+    def setUp(self):
+        limpar_cache_atf()
+        self.addCleanup(limpar_cache_atf)
+
+    def _resposta(self, pedido: int | None = None) -> str:
+        """Resposta do servico com os eventos do cdEquipeFisc pedido (todos, sem ele)."""
+        corpo = "".join(
+            _evento_xml(cod, equipe, nome)
+            for cod, equipe, nome in self._EVENTOS
+            if pedido in (None, equipe)
+        )
+        return _envelope_de_resposta(
+            f"<resultado><listaEventosOS>{corpo}</listaEventosOS></resultado>"
+        )
+
+    def _atf_falso(self, *args, **kwargs) -> MagicMock:
+        achado = re.search(rb"cdEquipeFisc>(\d+)<", kwargs["data"])
+        return MagicMock(
+            status_code=200,
+            text=self._resposta(int(achado.group(1)) if achado else None),
+        )
+
+    def _listar(self, equipe: str) -> tuple[list[dict], list[bytes | None]]:
+        with patch("backend.external_api.url_base_eventos_atf", return_value="https://atf.local"), \
+                patch("requests.post", side_effect=self._atf_falso) as post:
+            eventos = listar_eventos_atf(
+                equipe_fiscal=equipe,
+                data_inclusao_ini="2026-01-01", data_inclusao_fim="2026-01-31",
+            )
+        pedidos = [
+            (m.group(1) if (m := re.search(rb"cdEquipeFisc>(\d+)<", c.kwargs["data"])) else None)
+            for c in post.call_args_list
+        ]
+        return eventos, pedidos
+
+    def test_parse_troca_o_codigo_antigo(self):
+        eventos = {e["codigo_evento"]: e for e in _parse_resposta_eventos_soap(self._resposta())}
+        self.assertEqual(eventos[3]["equipe_fiscal_codigo"], 545)
+        self.assertEqual(eventos[3]["equipe_fiscal"], "GR2-ESTABELECIMENTO")
+
+    def test_filtrar_pela_equipe_atual_traz_os_eventos_do_codigo_antigo(self):
+        eventos, pedidos = self._listar("545")
+        self.assertEqual(sorted(e["codigo_evento"] for e in eventos), [1, 2, 3])
+        self.assertEqual(pedidos, [b"542", b"545"])
+
+    def test_equipe_sem_codigo_antigo_continua_com_uma_chamada(self):
+        eventos, pedidos = self._listar("600")
+        self.assertEqual(pedidos, [b"600"])
+        self.assertEqual([e["codigo_evento"] for e in eventos], [4])
+
+    def test_corte_por_equipe_junta_os_dois_codigos_numa_linha(self):
+        """
+        Mesmo id com dois nomes sairia em duas linhas de id 545. O rotulo e
+        o nome mais frequente — o atual, quando a equipe ja migrou.
+        """
+        eventos = _parse_resposta_eventos_soap(self._resposta())
+        linhas = {l["id"]: l for l in gerar_dashboard_eventos(eventos)["por_equipe"]}
+        self.assertEqual(sorted(linhas), [545, 600])
+        self.assertEqual(linhas[545]["total"], 3)
+        self.assertEqual(linhas[545]["rotulo"], "GOFE/GR2 - ESTABELECIMENTOS")
+
+    def test_sem_codigo_o_nome_continua_separando_as_linhas(self):
+        """Agrupar pelo codigo nao pode juntar gerencias diferentes que vieram sem codigo."""
+        eventos = [
+            _evt(codigo_evento=1, gerencia_codigo=None, gerencia_sigla="G1"),
+            _evt(codigo_evento=2, gerencia_codigo=None, gerencia_sigla="G2"),
+        ]
+        linhas = gerar_dashboard_eventos(eventos)["por_gerencia"]
+        self.assertEqual(sorted(l["rotulo"] for l in linhas), ["G1", "G2"])
+        self.assertTrue(all(l["id"] is None for l in linhas))
 
 
 if __name__ == "__main__":
