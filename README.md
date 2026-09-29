@@ -425,7 +425,7 @@ Como pagina e API tem a mesma origem, nao ha CORS no caminho.
 ### Principios de Design
 
 - **Separacao de responsabilidades**: auth, db, schemas, external_api, config em modulos independentes
-- **MOCK so sem ATF**: `ATF_BASE_URL` vazio usa dados de exemplo, para desenvolver sem rede. Com o ATF configurado nao ha fallback — uma falha dele aparece como erro, nunca como dado de exemplo
+- **MOCK so sem ATF**: `ATF_BASE_URL` vazio usa dados de exemplo, para desenvolver sem rede. Com o ATF configurado nao ha fallback — uma falha dele aparece como erro, nunca como dado de exemplo. Falha de rede com o ATF vira **HTTP 502** em qualquer rota, pelo handler de `requests.RequestException` em `main.py`, com uma mensagem que diz que o problema e do ATF
 - **Falha fechada**: cadastro incompleto resulta em conjunto de matriculas vazio, nunca em acesso irrestrito
 - **Validacao dupla**: Pydantic (schemas) + regras de negocio (endpoints)
 - **Constantes nomeadas**: magic numbers extraidos para constantes (`DIAS_SEM_EVENTO_ALERTA`, `PESO_*`, `PBKDF2_ITERATIONS`)
@@ -481,7 +481,7 @@ sistema_OS/
 |   |-- public/                     # logo
 |   |-- package.json                # react, chart.js, vite
 |   +-- vite.config.js              # porta 5000, proxy para o backend, cabecalhos de seguranca
-|-- tests/                          # 408 testes (unitarios + integracao)
+|-- tests/                          # 412 testes (unitarios + integracao)
 |-- docs/
 |   |-- dashboard-api-spec.md       # Contrato dos endpoints de dashboard
 |   |-- diagrama-er.md              # Diagrama ER (Mermaid) – SQLite + ATF
@@ -701,7 +701,7 @@ e montado estao em
 
 ## Testes
 
-O projeto possui **408 testes** (unitarios + integracao) com cobertura dos modulos principais:
+O projeto possui **412 testes** (unitarios + integracao) com cobertura dos modulos principais:
 
 | Modulo         | Arquivo                      | Testes | Foco                                                         |
 | -------------- | ---------------------------- | ------ | ------------------------------------------------------------ |
@@ -713,7 +713,7 @@ O projeto possui **408 testes** (unitarios + integracao) com cobertura dos modul
 | Gerencias ATF  | `tests/test_gerencias_atf.py` | 23    | Regra que tira a gerencia do nome da equipe, cadastro das gerencias do ATF, mapa matricula -> gerencia |
 | Eventos de OS  | `tests/test_eventos_os.py`   | 24     | Servico de eventos: envelope, parse, regras de periodo, cortes do bloco 2 |
 | Seed/usuarios  | `tests/test_seed_e_importacao_usuarios.py` | 12 | Seed de exemplo e importacao dos auditores reais |
-| Integracao     | `tests/test_integration.py`  | 145    | Testes E2E com TestClient FastAPI (auth, CRUD, OS, dashboard) |
+| Integracao     | `tests/test_integration.py`  | 149    | Testes E2E com TestClient FastAPI (auth, CRUD, OS, dashboard, falhas do ATF) |
 
 A suite nao depende de rede nem do `.env`: os testes forcam o MOCK e usam
 banco temporario. Ela e escrita com `unittest`, que ja vem com o Python;
@@ -1289,11 +1289,6 @@ a descricao na mesclagem — por isso o detalhe usa `status_codigo`.
 
 ### Divida tecnica conhecida
 
-- **Falha de rede com o ATF vira HTTP 500 cru em parte das rotas.**
-  `_erro_transporte_atf` (em `main.py`) converte a falha num 502 que diz
-  que o problema e do ATF, mas so e usado em `/alertas`, `/admin/dashboard`
-  e `/admin/dashboard/eventos`. A listagem e o detalhe de OS,
-  `/admin/dashboard/os` e os relatorios ainda deixam a excecao subir.
 - **Equipe com codigo antigo ainda em uso.** O ATF usa a 542 e a 545 para
   a mesma equipe, mas o filtro de equipe sai da tabela importada, que so
   tem a 545: filtrar por ela nao traz as OS gravadas com a 542, sem aviso
@@ -1311,7 +1306,6 @@ a descricao na mesclagem — por isso o detalhe usa `status_codigo`.
 | Dados MOCK em vez de ATF       | Verificar se `ATF_BASE_URL` esta definido no `.env` e reiniciar o backend (o `.env` so e lido no boot) |
 | "Nao foi possivel falar com o ATF: SSLError" | Cadeia TLS incompleta no servidor do ATF. Apontar `REQUESTS_CA_BUNDLE` para um bundle com a intermediaria (ver [Ambientes](#ambientes--leia-antes-de-trocar-a-url)) |
 | "O ATF esta indisponivel (HTTP 503)" | A aplicacao do ATF esta reiniciando; costuma voltar sozinha em minutos. Conferir com `curl` no `?wsdl` |
-| HTTP 500 na tela de OS ou nos relatorios | Ver o log do backend: nessas rotas, falha de rede com o ATF ainda sai como 500 (ver [Divida tecnica](#divida-tecnica-conhecida)) |
 | Numeros zerados a partir de certo mes | Ambiente de teste do ATF congelado numa data — nao e queda de produtividade |
 | Dashboard sem dados            | Dashboard e exclusivo para `admin`; preencher o periodo de abertura e clicar em consultar |
 | Termometro com notas baixas num periodo recente | Esperado: as OS ainda nao tiveram tempo de encerrar |
@@ -1363,7 +1357,7 @@ Para deploy em producao, considerar:
 
 1. **Validar o sistema contra o ambiente definitivo do ATF**, seguindo [Ambientes](#ambientes--leia-antes-de-trocar-a-url)
 2. **Trocar os usuarios de exemplo pelos reais** e cadastrar os gerentes nas gerencias do ATF — ver [Passando dos usuarios de exemplo para os reais](#passando-dos-usuarios-de-exemplo-para-os-reais)
-3. **Fechar a [divida tecnica conhecida](#divida-tecnica-conhecida)**: 502 em todas as rotas do ATF e a equipe de codigo antigo
+3. **Fechar a [divida tecnica conhecida](#divida-tecnica-conhecida)**: a equipe de codigo antigo
 4. **Sessoes persistentes** (JWT com refresh tokens), para um reinicio nao deslogar todo mundo
 5. ~~**Exportar relatorios** em PDF/Excel a partir do dashboard~~ ✅ (CSV + PDF implementados)
 6. **Adicionar testes end-to-end** com Playwright ou Cypress

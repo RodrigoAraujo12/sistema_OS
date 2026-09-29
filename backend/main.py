@@ -25,7 +25,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import seed
 from .auth import (
@@ -931,8 +931,8 @@ def _os_completa_para_pdf(numero: str, user: dict[str, Any]) -> dict[str, Any]:
     listagem, que e a fonte autoritativa.
 
     Se o detalhe falhar, o PDF sai so com a listagem em vez de nao sair:
-    o servico de detalhe pode nao estar publicado no ambiente em uso (e o
-    caso de producao hoje), e um relatorio menor e melhor que um erro.
+    o servico de detalhe pode nao estar publicado no ambiente em uso, e
+    um relatorio menor e melhor que um erro.
     """
     ordem = _buscar_os_atf(numero, user)
     try:
@@ -1271,6 +1271,22 @@ def _erro_transporte_atf(e: requests.RequestException, contexto: str) -> HTTPExc
         detalhe = f"Nao foi possivel falar com o ATF: {e.__class__.__name__}."
     logger.warning("%s: falha de transporte com o ATF (%s)", contexto, e)
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detalhe)
+
+
+@app.exception_handler(requests.RequestException)
+async def _atf_inacessivel(request: Request, exc: requests.RequestException) -> JSONResponse:
+    """
+    Rede de seguranca: qualquer falha de transporte com o ATF que escape
+    de uma rota vira o mesmo 502 de _erro_transporte_atf.
+
+    Ate 29/09/2026 cada rota tinha de lembrar do proprio except, e as que
+    esqueceram — a listagem e o detalhe de OS, o dashboard de OS e os
+    relatorios — devolviam 500 cru justamente na tela mais usada. As rotas
+    que ja capturam continuam capturando, com o contexto delas no log;
+    esta cobre as demais e as que vierem.
+    """
+    erro = _erro_transporte_atf(exc, f"{request.method} {request.url.path}")
+    return JSONResponse(status_code=erro.status_code, content={"detail": erro.detail})
 
 
 @app.get("/alertas", response_model=list[AlertaResponse])

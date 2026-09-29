@@ -939,9 +939,9 @@ class TestOrdensEndpoints(IntegrationTestBase):
 
     def test_pdf_sai_mesmo_se_o_detalhe_falhar(self):
         """
-        O servico de detalhe pode nao estar publicado no ambiente em uso
-        (e o caso de producao hoje). Nesse caso o PDF sai com o que a
-        listagem tem, em vez de estourar um erro na cara do usuario.
+        O servico de detalhe pode nao estar publicado no ambiente em uso.
+        Nesse caso o PDF sai com o que a listagem tem, em vez de estourar
+        um erro na cara do usuario.
         """
         with patch("backend.main.detalhar_ordem_atf", side_effect=ConnectionError("caiu")):
             r = self.client.get(
@@ -2198,6 +2198,80 @@ class TestDashboardEventosEndpoint(IntegrationTestBase):
         # Sem ATF configurado (MOCK), nao ha dois ambientes para divergir.
         self.assertFalse(corpo["outro_ambiente"])
 
+
+class TestFalhaDeRedeComOATF(IntegrationTestBase):
+    """
+    Falha de transporte com o ATF vira 502 em TODA rota, e nao so nas que
+    lembraram do proprio except.
+
+    Ate 29/09/2026 a listagem e o detalhe de OS, o dashboard de OS e os
+    relatorios de OS devolviam 500 cru quando o ATF caia — na tela, "o
+    sistema tem um bug" em vez de "o ATF esta fora". Quem cobre agora e o
+    exception_handler de requests.RequestException em main.py.
+    """
+
+    _PERIODO = "data_abertura_ini=2026-01-01&data_abertura_fim=2026-03-31"
+
+    # (rota, funcao do main que vai ao ATF). A busca por numero passa
+    # antes pelo cache da listagem, desligado nos testes abaixo para a
+    # chamada chegar ao ATF.
+    _ROTAS = (
+        (f"/ordens?{_PERIODO}", "listar_ordens_atf"),
+        ("/ordens/OS-2026-003", "listar_ordens_atf"),
+        ("/ordens/OS-2026-003/pdf", "listar_ordens_atf"),
+        ("/ordens/OS-2026-003/detalhe", "detalhar_ordem_atf"),
+        ("/admin/dashboard/os?data_inicio=2026-01-01&data_fim=2026-03-31", "universo_ordens_atf"),
+        (f"/relatorios/ordens?{_PERIODO}", "listar_ordens_atf"),
+        (f"/relatorios/ordens/pdf?{_PERIODO}", "listar_ordens_atf"),
+    )
+
+    def _get_com_atf_falhando(self, rota: str, funcao: str, erro: Exception):
+        with patch("backend.main.buscar_os_em_cache", return_value=None), \
+                patch(f"backend.main.{funcao}", side_effect=erro):
+            return self.client.get(rota, headers=self._admin_header())
+
+    def test_atf_fora_do_ar_vira_502_em_toda_rota(self):
+        import requests
+
+        for rota, funcao in self._ROTAS:
+            with self.subTest(rota=rota):
+                r = self._get_com_atf_falhando(
+                    rota, funcao, requests.exceptions.ConnectionError("caiu"),
+                )
+                self.assertEqual(r.status_code, 502, r.text)
+                self.assertIn("ATF", r.json()["detail"])
+
+    def test_falha_de_tls_tambem_vira_502(self):
+        import requests
+
+        r = self._get_com_atf_falhando(
+            f"/ordens?{self._PERIODO}", "listar_ordens_atf",
+            requests.exceptions.SSLError("bad chain"),
+        )
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("SSLError", r.json()["detail"])
+
+    def test_503_do_atf_diz_que_costuma_voltar_sozinho(self):
+        import requests
+
+        erro = requests.HTTPError("503 Server Error", response=MagicMock(status_code=503))
+        r = self._get_com_atf_falhando(
+            f"/ordens?{self._PERIODO}", "listar_ordens_atf", erro,
+        )
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("503", r.json()["detail"])
+
+    def test_502_mantem_os_cabecalhos_de_seguranca(self):
+        """O handler roda dentro do middleware: o erro sai com no-store como o resto."""
+        import requests
+
+        r = self._get_com_atf_falhando(
+            f"/ordens?{self._PERIODO}", "listar_ordens_atf",
+            requests.exceptions.ConnectionError("caiu"),
+        )
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(r.headers["Cache-Control"], "no-store")
+        self.assertEqual(r.headers["X-Content-Type-Options"], "nosniff")
 
 
 class TestEndurecimentoHTTP(IntegrationTestBase):
