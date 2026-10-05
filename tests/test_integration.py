@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -36,6 +37,7 @@ def _create_app(db_path: str) -> TestClient:
 
     from backend.auth import AuthService, PasswordHasher, TokenStore
     from backend.db import (
+        ConfigAlertasRepository,
         Database,
         EquipeFiscalRepository,
         GerenciaRepository,
@@ -48,6 +50,7 @@ def _create_app(db_path: str) -> TestClient:
     gerencia_repo = GerenciaRepository(database)
     supervisao_repo = SupervisaoRepository(database)
     equipe_repo = EquipeFiscalRepository(database)
+    config_alertas_repo = ConfigAlertasRepository(database)
     auth_service = AuthService(user_repo, PasswordHasher(), TokenStore())
 
     # Patcheia os objetos do modulo main com nossas instancias isoladas
@@ -58,6 +61,7 @@ def _create_app(db_path: str) -> TestClient:
     main_module.gerencia_repo = gerencia_repo
     main_module.supervisao_repo = supervisao_repo
     main_module.equipe_repo = equipe_repo
+    main_module.config_alertas_repo = config_alertas_repo
     main_module.auth_service = auth_service
     # Sem isso o seed gera uma senha aleatoria para o admin e o teste nao
     # teria como entrar (e o proposito de nao existir senha fixa).
@@ -1072,13 +1076,12 @@ class TestTrocaDeSenhaObrigatoria(IntegrationTestBase):
 class TestAlertasEndpoints(IntegrationTestBase):
     """
     GET /alertas sobre as OS do ATF (aqui, o MOCK: ATF_BASE_URL vazio no
-    setUp) abertas nos ultimos 12 meses.
+    setUp) abertas na janela configurada.
     """
 
     _MOCK_ALERTAS = [
         {
-            "tipo": "os_parada",
-            "severidade": "alta",
+            "tipo": "os_sem_eventos",
             "titulo": "OS sem evento ha 20 dias",
             "descricao": "A OS OS-001 esta autorizada e sem evento.",
             "referencia": "OS-001",
@@ -1092,15 +1095,39 @@ class TestAlertasEndpoints(IntegrationTestBase):
         r = self.client.get("/alertas", headers=self._auth_header(token))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(r.json()), 1)
-        self.assertEqual(r.json()[0]["tipo"], "os_parada")
+        self.assertEqual(r.json()[0]["tipo"], "os_sem_eventos")
+        # A classificacao alta/media/baixa saiu a pedido da area.
+        self.assertNotIn("severidade", r.json()[0])
 
     def test_alertas_saem_das_os_do_atf(self):
         r = self.client.get("/alertas", headers=self._admin_header())
         self.assertEqual(r.status_code, 200, r.text)
         tipos = {a["tipo"] for a in r.json()}
         self.assertTrue(tipos)
-        # O alerta de OS urgente saiu: o ATF nao tem prioridade.
-        self.assertLessEqual(tipos, {"os_parada", "os_sem_ciencia"})
+        self.assertLessEqual(tipos, {"os_sem_designacao", "os_sem_ciencia", "os_sem_eventos"})
+
+    def test_sem_designacao_so_vai_para_o_admin(self):
+        with patch("backend.main.gerar_alertas", return_value=[]) as gerar:
+            self.client.get("/alertas", headers=self._admin_header())
+            self.assertTrue(gerar.call_args.kwargs["incluir_sem_designacao"])
+            token = self._login_como("Carlos Mendes")
+            self.client.get("/alertas", headers=self._auth_header(token))
+            self.assertFalse(gerar.call_args.kwargs["incluir_sem_designacao"])
+
+    def test_alertas_usam_a_janela_e_os_prazos_gravados(self):
+        H = self._admin_header()
+        config = {
+            "dias_sem_designacao": 7, "dias_sem_ciencia": 2,
+            "dias_sem_eventos": 30, "janela_dias": 90,
+        }
+        self.assertEqual(self.client.put("/admin/alertas/config", json=config, headers=H).status_code, 200)
+        with patch("backend.main.universo_ordens_atf", return_value=[]) as universo:
+            with patch("backend.main.gerar_alertas", return_value=[]) as gerar:
+                self.client.get("/alertas", headers=H)
+        kwargs = universo.call_args.kwargs
+        dias = (date.fromisoformat(kwargs["data_fim"]) - date.fromisoformat(kwargs["data_inicio"])).days
+        self.assertEqual(dias, 90)
+        self.assertEqual(gerar.call_args.args[2], config)
 
     def test_fiscal_so_recebe_alerta_das_proprias_os(self):
         do_admin = {
@@ -1122,6 +1149,52 @@ class TestAlertasEndpoints(IntegrationTestBase):
                 r = self.client.get("/alertas", headers=self._auth_header(token))
         self.assertEqual(r.json(), [])
         universo.assert_not_called()
+
+
+class TestConfigAlertasEndpoints(IntegrationTestBase):
+    """Prazos dos alertas: qualquer usuario le, so o admin grava."""
+
+    _CONFIG = {
+        "dias_sem_designacao": 10, "dias_sem_ciencia": 5,
+        "dias_sem_eventos": 20, "janela_dias": 180,
+    }
+
+    def test_banco_vazio_devolve_o_padrao(self):
+        from backend.external_api import CONFIG_ALERTAS_PADRAO
+
+        r = self.client.get("/alertas/config", headers=self._admin_header())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json(), CONFIG_ALERTAS_PADRAO)
+
+    def test_admin_grava_e_todo_mundo_le(self):
+        r = self.client.put("/admin/alertas/config", json=self._CONFIG, headers=self._admin_header())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json(), self._CONFIG)
+        token = self._login_como("Carlos Mendes")
+        r = self.client.get("/alertas/config", headers=self._auth_header(token))
+        self.assertEqual(r.json(), self._CONFIG)
+
+    def test_quem_nao_e_admin_nao_grava(self):
+        token = self._login_como("Carlos Mendes")
+        r = self.client.put("/admin/alertas/config", json=self._CONFIG, headers=self._auth_header(token))
+        self.assertEqual(r.status_code, 403)
+
+    def test_recusa_prazo_fora_dos_limites(self):
+        H = self._admin_header()
+        for chave, valor in (
+            ("dias_sem_ciencia", -1),
+            ("dias_sem_eventos", 366),
+            ("janela_dias", 0),
+            ("janela_dias", 400),
+        ):
+            with self.subTest(chave=chave, valor=valor):
+                r = self.client.put(
+                    "/admin/alertas/config", json={**self._CONFIG, chave: valor}, headers=H,
+                )
+                self.assertEqual(r.status_code, 422)
+
+    def test_sem_login_nao_le(self):
+        self.assertEqual(self.client.get("/alertas/config").status_code, 401)
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -54,7 +54,7 @@ export default function TopBar({
             <div className="dropdown">
               <button
                 className={
-                  ["gerencias", "supervisoes", "usuarios"].includes(activeMenu)
+                  ["gerencias", "supervisoes", "usuarios", "alertas-config"].includes(activeMenu)
                     ? "active"
                     : ""
                 }
@@ -65,6 +65,7 @@ export default function TopBar({
                 <button onClick={() => onMenuChange("gerencias")}>Gerencias</button>
                 <button onClick={() => onMenuChange("supervisoes")}>Supervisoes</button>
                 <button onClick={() => onMenuChange("usuarios")}>Usuarios</button>
+                <button onClick={() => onMenuChange("alertas-config")}>Prazos dos alertas</button>
               </div>
             </div>
           )}

@@ -134,10 +134,10 @@ class TestAlertaResponse(unittest.TestCase):
 
     def test_valid(self):
         a = AlertaResponse(
-            tipo="os_urgente", severidade="alta", titulo="Titulo",
+            tipo="os_sem_ciencia", titulo="Titulo",
             descricao="Descricao", referencia="OS-001", data="2026-01-01",
         )
-        self.assertEqual(a.tipo, "os_urgente")
+        self.assertEqual(a.tipo, "os_sem_ciencia")
 
 
 class TestPasswordSchemas(unittest.TestCase):

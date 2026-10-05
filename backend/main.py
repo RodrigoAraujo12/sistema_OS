@@ -45,6 +45,7 @@ from .config import (
 )
 from .db import (
     DB_PATH,
+    ConfigAlertasRepository,
     Database,
     EquipeFiscalRepository,
     GerenciaRepository,
@@ -52,7 +53,7 @@ from .db import (
     UserRepository,
 )
 from .external_api import (
-    JANELA_ALERTAS_DIAS,
+    CONFIG_ALERTAS_PADRAO,
     buscar_os_em_cache,
     detalhar_ordem_atf,
     detalhe_em_outro_ambiente,
@@ -71,6 +72,7 @@ from .external_api import (
 from .gerencias_atf import EQUIPES_FORA_DO_PAINEL
 from .schemas import (
     AlertaResponse,
+    ConfigAlertas,
     EquipeFiscalResponse,
     EquipeMembroResponse,
     GerenciaCreateRequest,
@@ -154,6 +156,7 @@ user_repo = UserRepository(database)
 gerencia_repo = GerenciaRepository(database)
 supervisao_repo = SupervisaoRepository(database)
 equipe_repo = EquipeFiscalRepository(database)
+config_alertas_repo = ConfigAlertasRepository(database)
 auth_service = AuthService(user_repo, PasswordHasher(), TokenStore())
 limitador_login = LimitadorLogin()
 
@@ -1289,6 +1292,16 @@ async def _atf_inacessivel(request: Request, exc: requests.RequestException) -> 
     return JSONResponse(status_code=erro.status_code, content={"detail": erro.detail})
 
 
+def _config_alertas() -> dict[str, int]:
+    """
+    Prazos e janela dos alertas em vigor: o que o admin gravou e, no que
+    ele nao gravou, o padrao do codigo. So as chaves conhecidas — uma que
+    tenha saido do codigo e continue no banco nao vaza para a resposta.
+    """
+    gravado = config_alertas_repo.get_config()
+    return {chave: gravado.get(chave, padrao) for chave, padrao in CONFIG_ALERTAS_PADRAO.items()}
+
+
 @app.get("/alertas", response_model=list[AlertaResponse])
 def list_alertas(
     user: dict[str, Any] = Depends(get_active_user),
@@ -1296,10 +1309,13 @@ def list_alertas(
     """
     Alertas sobre as OS do ATF visiveis ao usuario (ver gerar_alertas).
 
-    Olha as OS abertas nos ultimos 12 meses (JANELA_ALERTAS_DIAS), que e o
-    maior periodo que o ATF aceita numa busca so por periodo. Custa uma
-    listagem do ATF por chamada, entao a tela so pede ao abrir a aba de
-    alertas ou no botao de atualizar — nunca no login.
+    Olha as OS abertas na janela que o admin configurou (de partida, 365
+    dias, o maior periodo que o ATF aceita numa busca so por periodo).
+    Custa uma listagem do ATF por chamada, entao a tela so pede ao abrir a
+    aba de alertas ou no botao de atualizar — nunca no login.
+
+    OS sem designacao so vai para o admin: sem fiscal, a OS nao se liga a
+    ninguem, e e o admin quem enxerga tudo.
     """
     matriculas = _matriculas_visiveis(user)
     # Quem nao enxerga matricula nenhuma nao tem alerta: nao vale uma
@@ -1307,10 +1323,11 @@ def list_alertas(
     if matriculas is not None and not matriculas:
         return []
 
+    config = _config_alertas()
     hoje = date.today()
     try:
         ordens = universo_ordens_atf(
-            data_inicio=(hoje - timedelta(days=JANELA_ALERTAS_DIAS)).isoformat(),
+            data_inicio=(hoje - timedelta(days=config["janela_dias"])).isoformat(),
             data_fim=hoje.isoformat(),
             matriculas_visiveis=matriculas,
         )
@@ -1318,7 +1335,30 @@ def list_alertas(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except requests.RequestException as e:
         raise _erro_transporte_atf(e, "Alertas")
-    return [AlertaResponse(**a) for a in gerar_alertas(ordens, hoje)]
+    alertas = gerar_alertas(
+        ordens, hoje, config, incluir_sem_designacao=user["role"] == "admin",
+    )
+    return [AlertaResponse(**a) for a in alertas]
+
+
+@app.get("/alertas/config", response_model=ConfigAlertas)
+def get_config_alertas(user: dict[str, Any] = Depends(get_active_user)) -> ConfigAlertas:
+    """
+    Prazos dos alertas em vigor. Qualquer usuario le: a aba de alertas
+    mostra as regras com os numeros de agora.
+    """
+    return ConfigAlertas(**_config_alertas())
+
+
+@app.put("/admin/alertas/config", response_model=ConfigAlertas)
+def update_config_alertas(
+    payload: ConfigAlertas, user: dict[str, Any] = Depends(get_active_user),
+) -> ConfigAlertas:
+    """Grava os prazos dos alertas. Apenas admin. Vale da proxima consulta em diante."""
+    require_admin(user)
+    config_alertas_repo.salvar(payload.model_dump())
+    logger.info("Prazos dos alertas alterados por '%s': %s.", user["username"], payload.model_dump())
+    return ConfigAlertas(**_config_alertas())
 
 
 # ─── Dashboard (somente admin) ─────────────────────────────────

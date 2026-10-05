@@ -37,7 +37,7 @@ O Sistema SEFAZ PB permite que auditores fiscais, supervisores, gerentes e admin
 - **Detalhe da OS** com eventos, prorrogacoes, notificacoes, justificativas e recolhimentos, e PDF de cada OS
 - **Dashboard** com KPIs, comparativo mensal e cortes por gerencia, equipe fiscal, fiscal, motivo e tipo, alem de uma aba so de eventos de acompanhamento
 - **Termometro da Fiscalizacao** – ranking de saude por gerencia, sobre a taxa de encerramento e a ciencia das OS do ATF
-- **Alertas automaticos** para OS sem evento de acompanhamento e fiscal sem ciencia (incluindo OS bloqueada)
+- **Alertas automaticos** para OS sem designacao, fiscal sem ciencia (incluindo OS bloqueada) e OS sem evento de acompanhamento, com os prazos em dias configurados pelo admin
 - **Relatorios exportaveis** em CSV e PDF (OS e Dashboard)
 - **Controle de acesso hierarquico** – cada perfil ve apenas o que lhe compete
 - **Importacao das equipes fiscais e dos auditores** a partir da planilha da SEFAZ
@@ -280,19 +280,39 @@ Detalhes e o que segue em aberto em
 
 ### Alertas Automaticos
 Gerados sobre as OS do ATF visiveis ao usuario (mesma hierarquia da
-listagem), **abertas nos ultimos 12 meses** — o maior periodo que o ATF
-aceita numa busca so por periodo. OS aberta antes disso e ainda em
-execucao nao entra.
+listagem), **abertas na janela configurada** — de partida 365 dias, o
+maior periodo que o ATF aceita numa busca so por periodo. OS aberta
+antes disso e ainda em execucao nao entra. Encerrada, cancelada e
+substituida nunca geram alerta.
 
-| Tipo             | Severidade | Condicao                                                                 |
-| ---------------- | ---------- | ------------------------------------------------------------------------ |
-| `os_parada`      | Alta       | OS **autorizada** sem evento de acompanhamento ha mais de 15 dias (`DIAS_SEM_EVENTO_ALERTA`); sem evento, conta do inicio da fiscalizacao ou da abertura |
-| `os_sem_ciencia` | Alta       | Fiscal designado sem ciencia numa OS que o ATF ja **bloqueou** — o desbloqueio e do supervisor, no ATF |
-| `os_sem_ciencia` | Media      | Fiscal designado, e nao cancelado, sem ciencia numa OS que nao terminou |
+Regras definidas pela area em 05/10/2026. Cada uma conta de um marco da
+OS, e o alerta sai quando o prazo e ultrapassado:
+
+| Tipo                | Conta a partir de | Condicao | Prazo inicial | Quem ve |
+| ------------------- | ----------------- | -------- | ------------- | ------- |
+| `os_sem_designacao` | abertura da OS (ou o ultimo cancelamento de designacao) | nenhum fiscal designado — designacao cancelada nao conta | 15 dias | so o admin |
+| `os_sem_ciencia`    | designacao de cada fiscal | fiscal designado, e nao cancelado, sem ciencia. Se o ATF ja **bloqueou** a OS, o texto diz que o desbloqueio e do supervisor, no ATF | 3 dias | hierarquia |
+| `os_sem_eventos`    | ultimo evento, ou a primeira ciencia quando a OS ainda nao teve evento (vale o mais recente) | OS **autorizada** sem evento de acompanhamento. Sem ciencia nenhuma nao entra: a pendencia ainda e a ciencia | 15 dias | hierarquia |
+
+**Prazos configuraveis.** O admin muda os tres prazos e a janela em
+Cadastros → Prazos dos alertas (`PUT /admin/alertas/config`), gravados
+na tabela `config_alertas`. Chave que nunca foi gravada vale o padrao do
+codigo (`CONFIG_ALERTAS_PADRAO`). A mudanca vale da proxima consulta em
+diante. A aba de alertas mostra as regras com os prazos em vigor.
+
+**Sem designacao so para o admin.** A OS se liga as pessoas pela
+matricula do fiscal: sem fiscal, nao ha fiscal nem chefe a avisar. Quando
+alguem e designado, a OS passa para a regra da ciencia, e o fiscal e o
+chefe dele passam a ve-la.
+
+**Sem classificacao.** Ate 05/10/2026 havia severidade alta/media; a area
+pediu para tirar. Os alertas saem do mais antigo para o mais novo, pela
+data em que o problema comecou.
 
 Cada consulta e uma listagem do ATF (~15 s em homologacao para 6.879 OS),
 entao os alertas **nao carregam no login**: saem ao abrir a aba, e o
-botao Atualizar refaz. A tela mostra 100 por vez.
+botao Atualizar refaz. A tela pagina de 20 em 20, sem nova consulta ao
+ATF ao trocar de pagina: os alertas chegam todos de uma vez.
 
 Ate 25/09/2026 os alertas vinham de uma lista fixa de OS de exemplo, e
 havia um `os_urgente` por prioridade. O ATF nao tem prioridade, e esse
@@ -302,6 +322,7 @@ alerta saiu junto com o mock.
 - Gerencias: criar, listar, editar
 - Supervisoes: criar, listar, editar (com validacao de cascata gerencia-supervisao)
 - Usuarios: criar, listar, editar, reset de senha (com validacao de cargo + lotacao)
+- Prazos dos alertas: dias de cada regra e janela de busca (ver Alertas Automaticos)
 
 A lotacao do usuario tem duas partes e nenhuma delas e obrigatoria desde
 23/09/2026: **gerencia** (do ATF ou local) e **supervisao** (so local).
@@ -428,7 +449,7 @@ Como pagina e API tem a mesma origem, nao ha CORS no caminho.
 - **MOCK so sem ATF**: `ATF_BASE_URL` vazio usa dados de exemplo, para desenvolver sem rede. Com o ATF configurado nao ha fallback — uma falha dele aparece como erro, nunca como dado de exemplo. Falha de rede com o ATF vira **HTTP 502** em qualquer rota, pelo handler de `requests.RequestException` em `main.py`, com uma mensagem que diz que o problema e do ATF
 - **Falha fechada**: cadastro incompleto resulta em conjunto de matriculas vazio, nunca em acesso irrestrito
 - **Validacao dupla**: Pydantic (schemas) + regras de negocio (endpoints)
-- **Constantes nomeadas**: magic numbers extraidos para constantes (`DIAS_SEM_EVENTO_ALERTA`, `PESO_*`, `PBKDF2_ITERATIONS`)
+- **Constantes nomeadas**: magic numbers extraidos para constantes (`CONFIG_ALERTAS_PADRAO`, `PESO_*`, `PBKDF2_ITERATIONS`)
 - **Helpers reutilizaveis**: `_metricas_desempenho()` usado por visao geral, gerencias, equipes e comparativo
 - **Exception chaining**: `raise ... from exc` em todos os handlers de `IntegrityError`
 - **DRY**: funcoes helper como `_get_user_by()`, `_validate_user_payload()` eliminam duplicacao
@@ -465,6 +486,7 @@ sistema_OS/
 |   |       |-- TopBar.jsx          # Barra superior com navegacao e dark mode
 |   |       |-- OrdensPanel.jsx     # Painel de OS: filtros, ordenacao, paginacao, detalhe e PDF
 |   |       |-- AlertasPanel.jsx    # Painel de alertas
+|   |       |-- AlertasConfig.jsx   # Prazos dos alertas (admin)
 |   |       |-- DashboardPanel.jsx  # Orquestrador do dashboard com abas e periodo
 |   |       |-- DashboardFiltros.jsx # Barra de filtros comum as abas de OS e eventos
 |   |       |-- DashboardGeral.jsx  # Aba Visao Geral: termometro, pizza, evolucao
@@ -542,6 +564,7 @@ curl -X POST http://localhost:8000/auth/login \
 | GET    | `/ordens/{numero}/detalhe` | Detalhe completo de UMA OS (servico detalharOrdemServico) | Token |
 | GET    | `/ordens/{numero}/pdf` | Gera e baixa PDF detalhado de uma OS            | Token |
 | GET    | `/alertas`             | Lista alertas gerados                           | Token |
+| GET    | `/alertas/config`      | Prazos dos alertas e janela em vigor            | Token |
 | GET    | `/equipes-fiscais`     | Codigo e nome das equipes fiscais importadas (alimenta o filtro) | Token |
 
 **Tres servicos do ATF, tres usos.** `/ordens` consome o
@@ -625,6 +648,7 @@ Authorization: Bearer <token>
 | DELETE | `/admin/users/{id}`                               | Excluir usuario (retorna 204)      |
 | POST   | `/admin/users/{id}/reset-password`                | Resetar senha                      |
 | GET    | `/admin/equipes-fiscais/{codigo}/membros`         | Membros de uma equipe fiscal (nome e matricula) |
+| PUT    | `/admin/alertas/config`                           | Grava os prazos dos alertas e a janela (0 a 365 dias; janela de 1 a 365) |
 
 > **`/admin/dashboard/os` e a excecao da tabela acima: nao exige admin.**
 > Ele agrega o mesmo universo que a listagem de OS ja mostra a quem
@@ -701,19 +725,19 @@ e montado estao em
 
 ## Testes
 
-O projeto possui **429 testes** (unitarios + integracao) com cobertura dos modulos principais:
+O projeto possui **444 testes** (unitarios + integracao) com cobertura dos modulos principais:
 
 | Modulo         | Arquivo                      | Testes | Foco                                                         |
 | -------------- | ---------------------------- | ------ | ------------------------------------------------------------ |
 | Autenticacao   | `tests/test_auth.py`         | 25     | Hash PBKDF2 e rehash do hash legado, tokens, login, registro, limite de tentativas, troca/reset de senha |
 | Banco de Dados | `tests/test_db.py`           | 23     | CRUD de users, gerencias, supervisoes (SQLite in-memory)     |
 | Schemas        | `tests/test_schemas.py`      | 19     | Validacao Pydantic, campos obrigatorios/opcionais            |
-| API Externa    | `tests/test_external_api.py` | 96     | Envelopes e parse SOAP, caches, alertas, dashboards e equipe de codigo antigo na listagem |
+| API Externa    | `tests/test_external_api.py` | 104    | Envelopes e parse SOAP, caches, alertas, dashboards e equipe de codigo antigo na listagem |
 | Equipes fiscais| `tests/test_equipes_fiscais.py` | 47  | Importacao da planilha, chefia pela cor da celula, vinculo equipe/membros, visibilidade |
 | Gerencias ATF  | `tests/test_gerencias_atf.py` | 29    | Regra que tira a gerencia do nome da equipe, cadastro das gerencias do ATF, mapa matricula -> gerencia, equivalencia de codigos de equipe |
 | Eventos de OS  | `tests/test_eventos_os.py`   | 29     | Servico de eventos: envelope, parse, regras de periodo, cortes do bloco 2, equipe de codigo antigo |
 | Seed/usuarios  | `tests/test_seed_e_importacao_usuarios.py` | 12 | Seed de exemplo e importacao dos auditores reais |
-| Integracao     | `tests/test_integration.py`  | 149    | Testes E2E com TestClient FastAPI (auth, CRUD, OS, dashboard, falhas do ATF) |
+| Integracao     | `tests/test_integration.py`  | 156    | Testes E2E com TestClient FastAPI (auth, CRUD, OS, alertas e seus prazos, dashboard, falhas do ATF) |
 
 A suite nao depende de rede nem do `.env`: os testes forcam o MOCK e usam
 banco temporario. Ela e escrita com `unittest`, que ja vem com o Python;
@@ -905,9 +929,10 @@ O que isso significa para este sistema: uma OS bloqueada e uma
 detectar isso ja chegam — situacao 5 na listagem, e a justificativa com
 `dsTipoJustifAtraso` no detalhe.
 
-Desde 25/09/2026 a OS bloqueada aparece nos **Alertas** (`os_sem_ciencia`
-com severidade alta, dizendo que o desbloqueio e do supervisor) e no KPI
-**Bloqueadas** do Dashboard. Filtro ou fila de trabalho dedicada do
+Desde 25/09/2026 a OS bloqueada aparece nos **Alertas** (`os_sem_ciencia`,
+com "bloqueada" no titulo e o texto dizendo que o desbloqueio e do
+supervisor) e no KPI **Bloqueadas** do Dashboard. A severidade alta que
+ela tinha saiu em 05/10/2026, junto com toda a classificacao. Filtro ou fila de trabalho dedicada do
 supervisor ainda nao existe: **nao foi pedido**.
 
 Cuidado ao desenhar isso: o desbloqueio acontece **no ATF**, nao aqui.

@@ -7,6 +7,7 @@ Contem:
 - GerenciaRepository: CRUD de gerencias
 - SupervisaoRepository: CRUD de supervisoes
 - EquipeFiscalRepository: equipes fiscais do ATF e seus membros
+- ConfigAlertasRepository: prazos dos alertas definidos pelo admin
 
 O banco fica em backend/app.db. A estrutura e criada automaticamente
 no primeiro uso via Database.init_schema().
@@ -108,6 +109,19 @@ class Database:
                     nome TEXT NOT NULL,
                     PRIMARY KEY (codigo_equipe, matricula),
                     FOREIGN KEY (codigo_equipe) REFERENCES equipes_fiscais (codigo)
+                )
+                """
+            )
+            # Prazos dos alertas que o admin define na tela (dias de cada
+            # regra e a janela de busca). Chave/valor, e nao uma coluna por
+            # prazo: regra nova entra sem migracao. Chave ausente vale o
+            # padrao do codigo (CONFIG_ALERTAS_PADRAO), por isso a tabela
+            # nasce vazia.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS config_alertas (
+                    chave TEXT PRIMARY KEY,
+                    valor INTEGER NOT NULL
                 )
                 """
             )
@@ -912,3 +926,29 @@ class EquipeFiscalRepository:
                 "SELECT COUNT(1) AS total FROM equipes_fiscais"
             ).fetchone()
             return int(row["total"]) if row else 0
+
+
+class ConfigAlertasRepository:
+    """
+    Prazos dos alertas gravados pelo admin, chave -> dias.
+
+    So guarda o que o admin salvou: o padrao de cada chave mora no codigo
+    (CONFIG_ALERTAS_PADRAO), e quem le junta os dois.
+    """
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    def get_config(self) -> dict[str, int]:
+        """Tudo o que ja foi gravado. Vazio enquanto ninguem salvou."""
+        with self._db.connect() as conn:
+            rows = conn.execute("SELECT chave, valor FROM config_alertas").fetchall()
+        return {row["chave"]: int(row["valor"]) for row in rows}
+
+    def salvar(self, config: dict[str, int]) -> None:
+        """Grava as chaves recebidas, numa transacao so; as outras ficam."""
+        with self._db.connect() as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO config_alertas (chave, valor) VALUES (?, ?)",
+                list(config.items()),
+            )

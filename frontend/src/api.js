@@ -238,6 +238,19 @@ class ApiClient {
     return this.request("/alertas");
   }
 
+  /** Prazos dos alertas em vigor (qualquer usuario le). */
+  getConfigAlertas() {
+    return this.request("/alertas/config");
+  }
+
+  /** Grava os prazos dos alertas (admin). */
+  salvarConfigAlertas(payload) {
+    return this.request("/admin/alertas/config", {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    });
+  }
+
   // Dashboard (admin only)
   getDashboard({ dataInicio, dataFim } = {}) {
     const params = new URLSearchParams();

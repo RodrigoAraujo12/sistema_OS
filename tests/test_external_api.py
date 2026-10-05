@@ -803,18 +803,25 @@ class TestValidarPeriodoAbertura(unittest.TestCase):
 
 
 class TestGerarAlertas(unittest.TestCase):
-    """Alertas sobre a listagem do ATF: OS parada e fiscal sem ciencia."""
+    """
+    Alertas sobre a listagem do ATF, com as regras de 05/10/2026: sem
+    designacao (da abertura), sem ciencia (da designacao) e sem eventos
+    (do ultimo evento, ou da ciencia). Prazos padrao: 15, 3 e 15 dias.
+    """
 
     HOJE = date(2026, 9, 25)
 
-    def _tipos(self, *ordens):
-        return [a["tipo"] for a in gerar_alertas(list(ordens), self.HOJE)]
+    def _alertas(self, *ordens, **kwargs):
+        return gerar_alertas(list(ordens), self.HOJE, **kwargs)
 
-    def test_autorizada_sem_evento_ha_mais_de_15_dias_vira_parada(self):
-        alertas = gerar_alertas(
-            [_os_atf("OS-1", 1, [_fiscal("1")], data_ultimo_evento="2026-09-01")], self.HOJE,
-        )
-        self.assertEqual([a["tipo"] for a in alertas], ["os_parada"])
+    def _tipos(self, *ordens, **kwargs):
+        return [a["tipo"] for a in self._alertas(*ordens, **kwargs)]
+
+    # ── sem eventos ──────────────────────────────────────────────
+
+    def test_autorizada_sem_evento_ha_mais_do_prazo(self):
+        alertas = self._alertas(_os_atf("OS-1", 1, [_fiscal("1")], data_ultimo_evento="2026-09-01"))
+        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_eventos"])
         self.assertIn("24 dias", alertas[0]["titulo"])
         self.assertEqual(alertas[0]["data"], "2026-09-01")
         self.assertIn("01/09/2026", alertas[0]["descricao"])
@@ -824,14 +831,33 @@ class TestGerarAlertas(unittest.TestCase):
             self._tipos(_os_atf("OS-1", 1, [_fiscal("1")], data_ultimo_evento="2026-09-20")), [],
         )
 
-    def test_sem_evento_conta_do_inicio_da_fiscalizacao(self):
-        alertas = gerar_alertas(
-            [_os_atf("OS-1", 1, [_fiscal("1")], data_inicio_fiscalizacao="2026-08-01")], self.HOJE,
+    def test_nunca_teve_evento_conta_da_ciencia(self):
+        alertas = self._alertas(_os_atf("OS-1", 1, [_fiscal("1", ciencia="2026-08-01")]))
+        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_eventos"])
+        self.assertEqual(alertas[0]["data"], "2026-08-01")
+        self.assertIn("desde a ciencia", alertas[0]["descricao"])
+        self.assertEqual(
+            self._tipos(_os_atf("OS-1", 1, [_fiscal("1", ciencia="2026-09-20")])), [],
         )
-        self.assertEqual([a["tipo"] for a in alertas], ["os_parada"])
-        self.assertIn("inicio da fiscalizacao", alertas[0]["descricao"])
 
-    def test_so_a_autorizada_vira_parada(self):
+    def test_fiscal_novo_conta_da_propria_ciencia_e_nao_do_evento_antigo(self):
+        """O ultimo evento e de quem saiu: quem chegou depois conta da ciencia."""
+        fiscais = [
+            _fiscal("1", ciencia="2026-01-02", cancelamento="2026-06-01"),
+            _fiscal("2", designacao="2026-09-18", ciencia="2026-09-19"),
+        ]
+        self.assertEqual(
+            self._tipos(_os_atf("OS-1", 1, fiscais, data_ultimo_evento="2026-05-01")), [],
+        )
+
+    def test_sem_ciencia_nenhuma_nao_cobra_evento(self):
+        """Antes da ciencia a pendencia e a ciencia, nao o evento."""
+        self.assertEqual(
+            self._tipos(_os_atf("OS-1", 1, [_fiscal("1", ciencia=None, designacao="2026-09-24")])),
+            [],
+        )
+
+    def test_so_a_autorizada_cobra_evento(self):
         """Suspensa, em analise e aguardando autorizacao nao esperam evento."""
         for situacao in (0, 6, 7):
             with self.subTest(situacao=situacao):
@@ -840,17 +866,35 @@ class TestGerarAlertas(unittest.TestCase):
                     [],
                 )
 
-    def test_fiscal_sem_ciencia_vira_alerta_medio(self):
-        alertas = gerar_alertas(
-            [_os_atf("OS-1", 1, [_fiscal("1", ciencia=None)], data_ultimo_evento="2026-09-20")],
-            self.HOJE,
-        )
-        self.assertEqual([(a["tipo"], a["severidade"]) for a in alertas], [("os_sem_ciencia", "media")])
-        self.assertIn("Fiscal 1", alertas[0]["descricao"])
+    # ── sem ciencia ──────────────────────────────────────────────
 
-    def test_bloqueada_sem_ciencia_e_alta_e_aponta_o_supervisor(self):
-        alertas = gerar_alertas([_os_atf("OS-1", 5, [_fiscal("1", ciencia=None)])], self.HOJE)
-        self.assertEqual([(a["tipo"], a["severidade"]) for a in alertas], [("os_sem_ciencia", "alta")])
+    def test_fiscal_sem_ciencia_ha_mais_do_prazo(self):
+        alertas = self._alertas(
+            _os_atf("OS-1", 7, [_fiscal("1", ciencia=None, designacao="2026-09-20")]),
+        )
+        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_ciencia"])
+        self.assertIn("5 dias", alertas[0]["titulo"])
+        self.assertIn("Fiscal 1", alertas[0]["descricao"])
+        self.assertEqual(alertas[0]["data"], "2026-09-20")
+
+    def test_ciencia_dentro_do_prazo_nao_alerta(self):
+        self.assertEqual(
+            self._tipos(_os_atf("OS-1", 7, [_fiscal("1", ciencia=None, designacao="2026-09-23")])),
+            [],
+        )
+
+    def test_cada_fiscal_conta_da_propria_designacao(self):
+        alertas = self._alertas(_os_atf("OS-1", 7, [
+            _fiscal("1", ciencia=None, designacao="2026-09-01"),
+            _fiscal("2", ciencia=None, designacao="2026-09-24"),
+        ]))
+        self.assertEqual(len(alertas), 1)
+        self.assertIn("Fiscal 1", alertas[0]["descricao"])
+        self.assertNotIn("Fiscal 2", alertas[0]["descricao"])
+
+    def test_bloqueada_sem_ciencia_aponta_o_supervisor(self):
+        alertas = self._alertas(_os_atf("OS-1", 5, [_fiscal("1", ciencia=None, designacao="2026-09-01")]))
+        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_ciencia"])
         self.assertIn("bloqueada", alertas[0]["titulo"])
         self.assertIn("supervisor", alertas[0]["descricao"])
 
@@ -862,23 +906,67 @@ class TestGerarAlertas(unittest.TestCase):
             [],
         )
 
-    def test_encerrada_e_cancelada_nao_alertam(self):
+    # ── sem designacao ───────────────────────────────────────────
+
+    def test_sem_designacao_conta_da_abertura_e_so_para_quem_pede(self):
+        os_sem_fiscal = _os_atf("OS-1", 0, [], data_abertura="2026-09-01")
+        alertas = self._alertas(os_sem_fiscal, incluir_sem_designacao=True)
+        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_designacao"])
+        self.assertIn("24 dias", alertas[0]["titulo"])
+        self.assertEqual(alertas[0]["data"], "2026-09-01")
+        self.assertEqual(self._tipos(os_sem_fiscal), [])
+
+    def test_sem_designacao_dentro_do_prazo_nao_alerta(self):
+        self.assertEqual(
+            self._tipos(_os_atf("OS-1", 0, [], data_abertura="2026-09-20"), incluir_sem_designacao=True),
+            [],
+        )
+
+    def test_designacao_cancelada_conta_do_cancelamento(self):
+        """A OS ficou sem ninguem de novo no cancelamento, nao na abertura."""
+        def _os(cancelamento):
+            return _os_atf(
+                "OS-1", 1, [_fiscal("1", cancelamento=cancelamento)], data_abertura="2026-01-01",
+            )
+
+        self.assertEqual(self._tipos(_os("2026-09-20"), incluir_sem_designacao=True), [])
+        alertas = self._alertas(_os("2026-09-01"), incluir_sem_designacao=True)
+        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_designacao"])
+        self.assertEqual(alertas[0]["data"], "2026-09-01")
+        self.assertIn("cancelada", alertas[0]["descricao"])
+
+    # ── todas ────────────────────────────────────────────────────
+
+    def test_encerrada_cancelada_e_substituida_nao_alertam(self):
         for situacao in (2, 3, 4):
             with self.subTest(situacao=situacao):
                 self.assertEqual(
-                    self._tipos(_os_atf("OS-1", situacao, [_fiscal("1", ciencia=None)])), [],
+                    self._tipos(
+                        _os_atf("OS-1", situacao, [_fiscal("1", ciencia=None)]),
+                        _os_atf("OS-2", situacao, [], data_abertura="2026-01-01"),
+                        incluir_sem_designacao=True,
+                    ),
+                    [],
                 )
 
-    def test_ordena_por_severidade_e_depois_pelo_mais_antigo(self):
-        alertas = gerar_alertas([
-            _os_atf("MEDIA", 1, [_fiscal("1", ciencia=None, designacao="2026-01-01")],
-                    data_ultimo_evento="2026-09-24"),
-            _os_atf("PARADA-NOVA", 1, [_fiscal("2")], data_ultimo_evento="2026-09-01"),
-            _os_atf("PARADA-VELHA", 1, [_fiscal("3")], data_ultimo_evento="2026-05-01"),
-        ], self.HOJE)
+    def test_prazos_configurados_valem_sobre_o_padrao(self):
+        parada = _os_atf("OS-1", 1, [_fiscal("1")], data_ultimo_evento="2026-09-01")
+        recem = _os_atf("OS-2", 7, [_fiscal("2", ciencia=None, designacao="2026-09-24")])
         self.assertEqual(
-            [a["referencia"] for a in alertas], ["PARADA-VELHA", "PARADA-NOVA", "MEDIA"],
+            self._tipos(parada, recem, config={"dias_sem_eventos": 30, "dias_sem_ciencia": 0}),
+            ["os_sem_ciencia"],
         )
+
+    def test_sem_classificacao_e_o_mais_antigo_primeiro(self):
+        alertas = self._alertas(
+            _os_atf("CIENCIA", 7, [_fiscal("1", ciencia=None, designacao="2026-06-01")]),
+            _os_atf("EVENTO-NOVO", 1, [_fiscal("2")], data_ultimo_evento="2026-09-01"),
+            _os_atf("EVENTO-VELHO", 1, [_fiscal("3")], data_ultimo_evento="2026-05-01"),
+        )
+        self.assertEqual(
+            [a["referencia"] for a in alertas], ["EVENTO-VELHO", "CIENCIA", "EVENTO-NOVO"],
+        )
+        self.assertTrue(all("severidade" not in a for a in alertas))
 
 
 class TestGerarDashboardDesempenho(unittest.TestCase):

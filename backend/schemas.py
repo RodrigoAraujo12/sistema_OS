@@ -216,13 +216,28 @@ class OSResponse(BaseModel):
 
 
 class AlertaResponse(BaseModel):
-    """Alerta gerado automaticamente a partir das regras de negocio."""
+    """
+    Alerta gerado automaticamente a partir das regras de negocio. Sem
+    severidade desde 05/10/2026: a area pediu para tirar a classificacao.
+    """
     tipo: str
-    severidade: str
     titulo: str
     descricao: str
     referencia: str
     data: str
+
+
+class ConfigAlertas(BaseModel):
+    """
+    Prazos dos alertas, em dias, e a janela de busca (OS abertas nos
+    ultimos N dias). Prazo zero vale: alerta ja no dia seguinte ao marco.
+    A janela para em 365 porque e o maior periodo que o ATF aceita numa
+    busca so por periodo.
+    """
+    dias_sem_designacao: int = Field(ge=0, le=365)
+    dias_sem_ciencia: int = Field(ge=0, le=365)
+    dias_sem_eventos: int = Field(ge=0, le=365)
+    janela_dias: int = Field(ge=1, le=365)
 
 
 # ─── Formato ATF (novo endpoint de listagem de OS) ──────────────

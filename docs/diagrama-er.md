@@ -3,7 +3,7 @@
 ## Visão Geral
 
 O sistema utiliza **duas fontes de dados**:
-- **SQLite** (`backend/app.db`) — usuários, gerências, supervisões e equipes fiscais. É o único dado que o sistema grava.
+- **SQLite** (`backend/app.db`) — usuários, gerências, supervisões, equipes fiscais e os prazos dos alertas. É o único dado que o sistema grava.
 - **API ATF** — ordens de serviço e eventos, lidos a cada consulta via SOAP sobre HTTPS e nunca gravados aqui (só ficam num cache em memória por `ATF_CACHE_TTL` segundos). Sem `ATF_BASE_URL`, dados MOCK.
 
 Não há chave estrangeira entre as duas. **A única ponte entre uma pessoa e
@@ -51,6 +51,11 @@ erDiagram
         TEXT matricula PK "auditor; pode nao ter login"
         TEXT nome "NOT NULL"
         INTEGER supervisor "1 = chefia marcada na planilha"
+    }
+
+    config_alertas {
+        TEXT chave PK "dias_sem_designacao, dias_sem_ciencia, dias_sem_eventos, janela_dias"
+        INTEGER valor "NOT NULL; dias"
     }
 
     ordens_servico_atf {
@@ -120,6 +125,10 @@ erDiagram
 > por migração (`ALTER TABLE`) e são referências lógicas. `users.matricula`
 > e `gerencias.codigo_atf` são únicos por índice (o segundo, só entre os
 > preenchidos). Todas as ligações por matrícula são lógicas.
+>
+> **`config_alertas` não se liga a nada.** É chave/valor com os prazos que
+> o admin grava na tela; a chave que nunca foi gravada vale o padrão do
+> código (`CONFIG_ALERTAS_PADRAO`), por isso a tabela nasce vazia.
 
 ## Relações
 
@@ -174,7 +183,8 @@ duas se correspondem ainda depende de confirmação da SEFAZ.
 | `GET /ordens`, `GET /ordens/{numero}` | listagem | visibilidade |
 | `GET /ordens/{numero}/detalhe` | detalhe | visibilidade |
 | `GET /ordens/{numero}/pdf` | listagem + detalhe | visibilidade |
-| `GET /alertas` | listagem (últimos 12 meses) | visibilidade |
+| `GET /alertas` | listagem (janela configurada, até 12 meses) | visibilidade, `config_alertas` |
+| `GET /alertas/config`, `PUT /admin/alertas/config` | — | `config_alertas` |
 | `GET /admin/dashboard` | listagem | gerência por matrícula, equipes e supervisores da planilha |
 | `GET /admin/dashboard/os` | listagem | visibilidade, gerência por matrícula |
 | `GET /admin/dashboard/eventos` | eventos | — |

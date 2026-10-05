@@ -865,21 +865,6 @@ th.th-sorted .sort-arrow {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
-.alerta-card.severidade-alta {
-  border-left-color: #ef4444;
-  background: #fef2f2;
-}
-
-.alerta-card.severidade-media {
-  border-left-color: #f59e0b;
-  background: #fffbeb;
-}
-
-.alerta-card.severidade-baixa {
-  border-left-color: #22c55e;
-  background: #f0fdf4;
-}
-
 .alerta-header {
   display: flex;
   gap: 8px;
@@ -1820,8 +1805,8 @@ th.th-sorted .sort-arrow {
   padding: 20px 24px;
 }
 
-/* Aviso de que o detalhe veio de outro ambiente que a listagem. Usa o
-   ambar dos alertas de severidade media: e ressalva, nao erro. */
+/* Aviso de que o detalhe veio de outro ambiente que a listagem. Ambar:
+   e ressalva, nao erro. */
 .os-detail-aviso {
   background: #fef3c7;
   border-left: 4px solid #f59e0b;

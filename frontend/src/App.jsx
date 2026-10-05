@@ -33,6 +33,7 @@ import ChangePasswordPage from "./components/ChangePasswordPage.jsx";
 import TopBar from "./components/TopBar.jsx";
 import OrdensPanel from "./components/OrdensPanel.jsx";
 import AlertasPanel from "./components/AlertasPanel.jsx";
+import AlertasConfig from "./components/AlertasConfig.jsx";
 import DashboardPanel from "./components/DashboardPanel.jsx";
 import GerenciasAdmin from "./components/GerenciasAdmin.jsx";
 import SupervisoesAdmin from "./components/SupervisoesAdmin.jsx";
@@ -51,10 +52,13 @@ export default function App() {
   const [equipes, setEquipes] = useState([]);
   const [users, setUsers] = useState([]);
   // null = ainda nao carregados. Os alertas descem ate o ATF (uma
-  // listagem de 12 meses), entao so saem quando a aba e aberta ou no
-  // botao de atualizar — nunca no login.
+  // listagem da janela configurada, de ate 12 meses), entao so saem
+  // quando a aba e aberta ou no botao de atualizar — nunca no login.
   const [alertas, setAlertas] = useState(null);
   const [alertasCarregando, setAlertasCarregando] = useState(false);
+  // Prazos em vigor, para a aba de alertas dizer as regras com os numeros
+  // de agora. Vem junto com os alertas; e local, nao vai ao ATF.
+  const [configAlertas, setConfigAlertas] = useState(null);
 
   // ─── Navigation ─────────────────────────────────────
   const [activeMenu, setActiveMenu] = useState("ordens");
@@ -129,7 +133,12 @@ export default function App() {
   async function carregarAlertas() {
     setAlertasCarregando(true);
     try {
-      setAlertas(await apiClient.listarAlertas());
+      const [lista, config] = await Promise.all([
+        apiClient.listarAlertas(),
+        apiClient.getConfigAlertas(),
+      ]);
+      setAlertas(lista);
+      setConfigAlertas(config);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -183,6 +192,7 @@ export default function App() {
     setSupervisoes([]);
     setUsers([]);
     setAlertas(null);
+    setConfigAlertas(null);
     setResetInfo("");
     setMessage("");
     setError("");
@@ -226,8 +236,23 @@ export default function App() {
         {activeMenu === "alertas" && (
           <AlertasPanel
             alertas={alertas}
+            config={configAlertas}
+            isAdmin={authData.role === "admin"}
             carregando={alertasCarregando}
             onAtualizar={carregarAlertas}
+          />
+        )}
+
+        {authData.role === "admin" && activeMenu === "alertas-config" && (
+          <AlertasConfig
+            onSaved={(config) => {
+              // Os alertas ja carregados sairam dos prazos antigos: a
+              // proxima abertura da aba consulta de novo.
+              setConfigAlertas(config);
+              setAlertas(null);
+            }}
+            onMessage={setMessage}
+            onError={setError}
           />
         )}
 

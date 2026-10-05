@@ -2467,14 +2467,25 @@ _SITUACOES_CANCELADAS = frozenset({2, 3})
 PESO_TAXA_ENCERRAMENTO = 0.50  # (100 - taxa%) * 0.50 -> ate -50 pts
 PESO_SEM_CIENCIA = 0.50        # % sem ciencia * 0.50 -> ate -50 pts
 
-# Dias sem evento de acompanhamento a partir dos quais uma OS autorizada
-# vira alerta de "parada".
-DIAS_SEM_EVENTO_ALERTA = 15
-
-# Janela dos alertas: OS abertas nos ultimos 12 meses, o maior periodo
-# que o ATF aceita numa busca so por periodo. OS aberta antes disso e
-# ainda em execucao nao entra — a tela de alertas diz isso.
-JANELA_ALERTAS_DIAS = 365
+# Prazos dos alertas, em dias, e a janela de busca. Sao os valores de
+# partida: o admin muda cada um na tela de prazos dos alertas, que grava
+# no banco local, e o que nao foi gravado vale daqui (_config_alertas,
+# em main.py). Regras definidas pela area em 05/10/2026, cada prazo
+# contando de um marco da OS — ver gerar_alertas.
+#
+# A ciencia parte de 3 porque e o prazo em que o proprio ATF bloqueia a
+# OS. Os 15 dias sem evento sao os da regra antiga, e os 15 sem
+# designacao sao so um ponto de partida: a area nao deu numero.
+#
+# janela_dias: OS abertas nos ultimos N dias. 365 e o maior periodo que
+# o ATF aceita numa busca so por periodo; OS aberta antes disso e ainda
+# em execucao nao entra — a tela de alertas diz isso.
+CONFIG_ALERTAS_PADRAO: dict[str, int] = {
+    "dias_sem_designacao": 15,
+    "dias_sem_ciencia": 3,
+    "dias_sem_eventos": 15,
+    "janela_dias": 365,
+}
 
 # Teto do periodo de abertura: um ano, com folga para o bissexto. Mesmo
 # numero da aba de Ordens de Servico e de atfFilters.js.
@@ -2844,71 +2855,105 @@ def _data_br(valor: str | None) -> str:
     return f"{valor[8:10]}/{valor[5:7]}/{valor[:4]}"
 
 
-def gerar_alertas(ordens: list[dict[str, Any]], hoje: date) -> list[dict[str, Any]]:
+def _dias_desde(valor: str | None, hoje: date) -> int | None:
+    """Dias corridos de uma data YYYY-MM-DD ate hoje. None se nao ha data."""
+    try:
+        return (hoje - datetime.strptime(valor, "%Y-%m-%d").date()).days
+    except (TypeError, ValueError):
+        return None
+
+
+def gerar_alertas(
+    ordens: list[dict[str, Any]],
+    hoje: date,
+    config: dict[str, int] | None = None,
+    incluir_sem_designacao: bool = False,
+) -> list[dict[str, Any]]:
     """
     Alertas sobre as OS do ATF que o usuario enxerga.
 
-    Duas regras, as duas sobre dado que o ATF de fato manda:
+    Tres regras, definidas pela area em 05/10/2026. Cada uma conta de um
+    marco da OS, e o prazo em dias vem de `config` — o que o admin gravou
+    na tela de prazos, com CONFIG_ALERTAS_PADRAO no que faltar. O alerta
+    sai quando o prazo e ultrapassado. Encerrada, cancelada e substituida
+    ficam de fora de todas: nao ha mais o que esperar delas.
 
-    - os_parada: OS AUTORIZADA — a unica situacao em que se espera o
-      fiscal trabalhando — sem evento de acompanhamento ha mais de
-      DIAS_SEM_EVENTO_ALERTA dias. Sem evento nenhum, conta do inicio da
-      fiscalizacao, ou da abertura. Suspensa, em analise para
-      encerramento e aguardando autorizacao ficam de fora: nelas nao se
-      espera evento.
-    - os_sem_ciencia: fiscal designado, e nao cancelado, sem ciencia numa
-      OS que nao terminou. Severidade alta quando o ATF ja bloqueou a OS;
-      o desbloqueio e do supervisor, no ATF.
+    - os_sem_designacao: nenhum fiscal designado — designacao cancelada
+      nao conta — ha mais de dias_sem_designacao dias, desde a abertura,
+      ou desde o ultimo cancelamento, que e quando a OS ficou sem ninguem
+      de novo. So o admin recebe (`incluir_sem_designacao`): a OS se liga
+      as pessoas pela matricula do fiscal, e sem fiscal nao ha a quem
+      avisar. Designada, ela passa para a regra da ciencia, e ai o fiscal
+      e o chefe dele veem.
+    - os_sem_ciencia: fiscal designado, e nao cancelado, sem ciencia ha
+      mais de dias_sem_ciencia dias desde a propria designacao. Quando o
+      ATF ja bloqueou a OS, o texto diz que o desbloqueio e do
+      supervisor, no ATF.
+    - os_sem_eventos: OS AUTORIZADA — a unica situacao em que se espera o
+      fiscal trabalhando — sem evento ha mais de dias_sem_eventos dias,
+      contando do ultimo evento ou, se ainda nao houve nenhum, da primeira
+      ciencia. Vale o mais recente dos dois: um fiscal designado depois
+      do ultimo evento conta da ciencia dele. Sem ciencia nenhuma nao ha
+      alerta de evento — a pendencia ainda e a ciencia.
 
-    `data` e quando o problema comecou (o ultimo evento, ou a designacao
-    mais antiga ainda sem ciencia): dentro de cada severidade, o mais
-    antigo vem primeiro.
+    Nao ha severidade: a area pediu para tirar a classificacao
+    alta/media/baixa. `data` e quando o problema comecou, e o mais antigo
+    vem primeiro.
     """
+    prazos = {**CONFIG_ALERTAS_PADRAO, **(config or {})}
     alertas: list[dict[str, Any]] = []
 
     for o in ordens:
+        grupo = _grupo_situacao(o)
+        if grupo in ("encerrada", "cancelada"):
+            continue
         numero = o.get("numero_os") or ""
         razao = o.get("razao_social") or "Contribuinte nao informado"
         ie = o.get("ie") or "-"
-        situacao = (o.get("situacao") or {}).get("codigo")
+        ativos = _fiscais_ativos(o)
 
-        if situacao == _SITUACAO_AUTORIZADA:
-            referencia = (
-                o.get("data_ultimo_evento")
-                or o.get("data_inicio_fiscalizacao")
-                or o.get("data_abertura")
+        if incluir_sem_designacao and not ativos:
+            abertura = o.get("data_abertura")
+            ultimo_cancelamento = max(
+                (f["data_cancelamento"] for f in o.get("fiscais") or [] if f.get("data_cancelamento")),
+                default=None,
             )
-            try:
-                dias = (hoje - datetime.strptime(referencia, "%Y-%m-%d").date()).days
-            except (TypeError, ValueError):
-                dias = None
-            if dias is not None and dias > DIAS_SEM_EVENTO_ALERTA:
-                if o.get("data_ultimo_evento"):
-                    desde = f"Ultimo evento em {_data_br(referencia)}."
-                elif o.get("data_inicio_fiscalizacao"):
-                    desde = f"Nenhum evento desde o inicio da fiscalizacao, em {_data_br(referencia)}."
+            inicio = max(filter(None, (abertura, ultimo_cancelamento)), default=None)
+            dias = _dias_desde(inicio, hoje)
+            if dias is not None and dias > prazos["dias_sem_designacao"]:
+                if ultimo_cancelamento and inicio == ultimo_cancelamento:
+                    desde = f"A ultima designacao foi cancelada em {_data_br(inicio)}."
                 else:
-                    desde = f"Nenhum evento desde a abertura, em {_data_br(referencia)}."
+                    desde = f"Aberta em {_data_br(inicio)}."
                 alertas.append({
-                    "tipo": "os_parada",
-                    "severidade": "alta",
-                    "titulo": f"OS sem evento ha {dias} dias - {razao}",
+                    "tipo": "os_sem_designacao",
+                    "titulo": f"OS sem designacao ha {dias} dias - {razao}",
                     "descricao": (
-                        f"A OS {numero} (IE: {ie}) esta autorizada e sem evento de "
-                        f"acompanhamento ha {dias} dias. {desde}"
+                        f"A OS {numero} (IE: {ie}) esta ha {dias} dias sem fiscal "
+                        f"designado. {desde}"
                     ),
                     "referencia": numero,
-                    "data": referencia,
+                    "data": inicio,
                 })
 
-        pendentes = _fiscais_sem_ciencia(o)
-        if pendentes:
+        # Cada fiscal conta da propria designacao: o segundo designado nao
+        # herda o atraso do primeiro.
+        atrasados = []
+        for f in ativos:
+            if f.get("data_ciencia"):
+                continue
+            designacao = f.get("data_designacao") or o.get("data_abertura")
+            dias = _dias_desde(designacao, hoje)
+            if dias is not None and dias > prazos["dias_sem_ciencia"]:
+                atrasados.append((designacao, f))
+        if atrasados:
+            atrasados.sort(key=lambda par: par[0])
+            inicio = atrasados[0][0]
+            dias = _dias_desde(inicio, hoje)
             nomes = ", ".join(
-                f.get("nome") or f.get("matricula") or "fiscal sem nome" for f in pendentes
+                f.get("nome") or f.get("matricula") or "fiscal sem nome" for _, f in atrasados
             )
-            designacoes = sorted(f["data_designacao"] for f in pendentes if f.get("data_designacao"))
-            inicio = designacoes[0] if designacoes else o.get("data_abertura") or ""
-            bloqueada = _grupo_situacao(o) == "bloqueada"
+            bloqueada = grupo == "bloqueada"
             descricao = (
                 f"A OS {numero} (IE: {ie}) aguarda a ciencia de {nomes}, "
                 f"designado(s) desde {_data_br(inicio)}."
@@ -2920,15 +2965,41 @@ def gerar_alertas(ordens: list[dict[str, Any]], hoje: date) -> list[dict[str, An
                 )
             alertas.append({
                 "tipo": "os_sem_ciencia",
-                "severidade": "alta" if bloqueada else "media",
-                "titulo": f"OS {'bloqueada ' if bloqueada else ''}sem ciencia - {razao}",
+                "titulo": f"OS {'bloqueada ' if bloqueada else ''}sem ciencia ha {dias} dias - {razao}",
                 "descricao": descricao,
                 "referencia": numero,
                 "data": inicio,
             })
 
-    ordem_severidade = {"critica": 0, "alta": 1, "media": 2, "baixa": 3}
-    alertas.sort(key=lambda a: (ordem_severidade.get(a["severidade"], 9), a["data"] or ""))
+        if (o.get("situacao") or {}).get("codigo") == _SITUACAO_AUTORIZADA:
+            ciencias = [f["data_ciencia"] for f in ativos if f.get("data_ciencia")]
+            ultimo_evento = o.get("data_ultimo_evento")
+            if ciencias:
+                primeira_ciencia = min(ciencias)
+                inicio = max(filter(None, (ultimo_evento, primeira_ciencia)))
+                dias = _dias_desde(inicio, hoje)
+                if dias is not None and dias > prazos["dias_sem_eventos"]:
+                    if inicio == ultimo_evento:
+                        desde = f"Ultimo evento em {_data_br(inicio)}."
+                    elif ultimo_evento:
+                        desde = (
+                            f"O ultimo evento, em {_data_br(ultimo_evento)}, e anterior a "
+                            f"ciencia de {_data_br(inicio)}, que e de onde a contagem parte."
+                        )
+                    else:
+                        desde = f"Nenhum evento desde a ciencia, em {_data_br(inicio)}."
+                    alertas.append({
+                        "tipo": "os_sem_eventos",
+                        "titulo": f"OS sem evento ha {dias} dias - {razao}",
+                        "descricao": (
+                            f"A OS {numero} (IE: {ie}) esta autorizada e sem evento de "
+                            f"acompanhamento ha {dias} dias. {desde}"
+                        ),
+                        "referencia": numero,
+                        "data": inicio,
+                    })
+
+    alertas.sort(key=lambda a: a["data"] or "")
     return alertas
 
 
