@@ -2,8 +2,9 @@
  * DashboardGerencias.jsx – Aba "Gerencias" do Dashboard.
  *
  * Grafico horizontal da taxa de encerramento e tabela de desempenho por
- * gerencia do cadastro, sobre a listagem do ATF. Clique em uma linha
- * para filtrar/desfiltrar a gerencia.
+ * gerencia do cadastro, sobre a listagem do ATF, com as pendencias dos
+ * alertas (sem ciencia e sem evento). Clique em uma linha para
+ * filtrar/desfiltrar a gerencia.
  */
 
 import React from "react";
@@ -15,9 +16,15 @@ export function classeTaxa(taxa) {
   return taxa >= 50 ? "concluida" : taxa >= 25 ? "em_andamento" : "cancelada";
 }
 
+/** Classe do badge de uma pendencia dos alertas: qualquer uma ja pede olhar. */
+export function classePendencia(quantidade) {
+  return quantidade > 0 ? "cancelada" : "concluida";
+}
+
 export default function DashboardGerencias({
   gerenciasFiltradas,
   gerenciaFilter,
+  prazos,
   onGerenciaToggle,
 }) {
   const comOS = gerenciasFiltradas.filter((g) => g.total_os > 0);
@@ -27,7 +34,8 @@ export default function DashboardGerencias({
       <h2>Desempenho por Gerencia</h2>
       <p className="muted" style={{ marginBottom: 16 }}>
         Taxa de encerramento: encerradas sobre o total, sem as canceladas e substituidas.
-        Uma OS conta em cada gerencia que seus fiscais alcancam.
+        Sem ciencia e sem evento sao os alertas, com os prazos em vigor. Uma OS conta em cada
+        gerencia que seus fiscais alcancam.
         {!gerenciaFilter && " Clique em uma linha para filtrar."}
       </p>
 
@@ -56,7 +64,7 @@ export default function DashboardGerencias({
                     afterLabel: function (ctx) {
                       const g = comOS[ctx.dataIndex];
                       if (!g) return "";
-                      return `Total: ${g.total_os} | Em andamento: ${g.em_andamento}\nBloqueadas: ${g.bloqueadas} | Encerradas: ${g.encerradas}\nSem ciencia: ${g.os_sem_ciencia}`;
+                      return `Total: ${g.total_os} | Em andamento: ${g.em_andamento}\nBloqueadas: ${g.bloqueadas} | Encerradas: ${g.encerradas}\nSem ciencia: ${g.os_sem_ciencia} | Sem evento: ${g.os_sem_eventos}`;
                     },
                   },
                 },
@@ -80,7 +88,8 @@ export default function DashboardGerencias({
               <th>Encerradas</th>
               <th>Canceladas</th>
               <th>Taxa de encerramento</th>
-              <th>Sem Ciencia</th>
+              <th>Sem ciencia (+{prazos.dias_sem_ciencia}d)</th>
+              <th>Sem evento (+{prazos.dias_sem_eventos}d)</th>
             </tr>
           </thead>
           <tbody>
@@ -105,8 +114,13 @@ export default function DashboardGerencias({
                   )}
                 </td>
                 <td>
-                  <span className={`badge ${g.os_sem_ciencia > 0 ? "cancelada" : "concluida"}`}>
+                  <span className={`badge ${classePendencia(g.os_sem_ciencia)}`}>
                     {formatarNumero(g.os_sem_ciencia)}
+                  </span>
+                </td>
+                <td>
+                  <span className={`badge ${classePendencia(g.os_sem_eventos)}`}>
+                    {formatarNumero(g.os_sem_eventos)}
                   </span>
                 </td>
               </tr>

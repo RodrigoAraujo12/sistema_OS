@@ -2546,15 +2546,67 @@ def _fiscais_ativos(o: dict[str, Any]) -> list[dict[str, Any]]:
     return [f for f in o.get("fiscais") or [] if not f.get("data_cancelamento")]
 
 
-def _fiscais_sem_ciencia(o: dict[str, Any]) -> list[dict[str, Any]]:
-    """Fiscais que ainda devem ciencia numa OS que nao terminou."""
+def _pendencias(o: dict[str, Any], hoje: date, prazos: dict[str, int]) -> dict[str, Any]:
+    """
+    As tres regras dos alertas aplicadas a uma OS, sem o texto: de quando
+    conta cada atraso que ja passou do prazo. Os alertas escrevem daqui e
+    o dashboard de desempenho conta daqui, para as duas telas darem o
+    mesmo numero sobre as mesmas OS. As regras estao em gerar_alertas.
+
+    - sem_designacao: data de onde a OS conta sem fiscal, ou None;
+    - sem_ciencia: [(designacao, fiscal)] de quem passou do prazo, o mais
+      antigo primeiro;
+    - sem_eventos: data de onde a OS conta sem evento, ou None.
+
+    Ate 06/10/2026 o dashboard contava qualquer fiscal sem ciencia, sem
+    prazo — a regra antiga —, e um fiscal designado na vespera ja pesava
+    no Termometro da gerencia dele.
+    """
+    pendencias: dict[str, Any] = {"sem_designacao": None, "sem_ciencia": [], "sem_eventos": None}
     if _grupo_situacao(o) in ("encerrada", "cancelada"):
-        return []
-    return [f for f in _fiscais_ativos(o) if not f.get("data_ciencia")]
+        return pendencias
+    ativos = _fiscais_ativos(o)
+
+    if not ativos:
+        ultimo_cancelamento = max(
+            (f["data_cancelamento"] for f in o.get("fiscais") or [] if f.get("data_cancelamento")),
+            default=None,
+        )
+        inicio = max(filter(None, (o.get("data_abertura"), ultimo_cancelamento)), default=None)
+        dias = _dias_desde(inicio, hoje)
+        if dias is not None and dias > prazos["dias_sem_designacao"]:
+            pendencias["sem_designacao"] = inicio
+
+    # Cada fiscal conta da propria designacao: o segundo designado nao
+    # herda o atraso do primeiro.
+    for f in ativos:
+        if f.get("data_ciencia"):
+            continue
+        designacao = f.get("data_designacao") or o.get("data_abertura")
+        dias = _dias_desde(designacao, hoje)
+        if dias is not None and dias > prazos["dias_sem_ciencia"]:
+            pendencias["sem_ciencia"].append((designacao, f))
+    pendencias["sem_ciencia"].sort(key=lambda par: par[0])
+
+    if (o.get("situacao") or {}).get("codigo") == _SITUACAO_AUTORIZADA:
+        ciencias = [f["data_ciencia"] for f in ativos if f.get("data_ciencia")]
+        if ciencias:
+            inicio = max(filter(None, (o.get("data_ultimo_evento"), min(ciencias))))
+            dias = _dias_desde(inicio, hoje)
+            if dias is not None and dias > prazos["dias_sem_eventos"]:
+                pendencias["sem_eventos"] = inicio
+
+    return pendencias
 
 
-def _metricas_desempenho(os_list: list[dict[str, Any]]) -> dict[str, Any]:
-    """Contagem por grupo de situacao, OS sem ciencia e taxa de encerramento."""
+def _metricas_desempenho(
+    os_list: list[dict[str, Any]], pendencias: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Contagem por grupo de situacao, taxa de encerramento e quantas OS
+    estao em cada pendencia dos alertas. `pendencias` e o _pendencias de
+    cada OS, por id (ver gerar_dashboard_desempenho).
+    """
     grupos = Counter(_grupo_situacao(o) for o in os_list)
     total = len(os_list)
     validas = total - grupos["cancelada"]
@@ -2564,7 +2616,9 @@ def _metricas_desempenho(os_list: list[dict[str, Any]]) -> dict[str, Any]:
         "bloqueadas": grupos["bloqueada"],
         "encerradas": grupos["encerrada"],
         "canceladas": grupos["cancelada"],
-        "os_sem_ciencia": sum(1 for o in os_list if _fiscais_sem_ciencia(o)),
+        "os_sem_designacao": sum(1 for o in os_list if pendencias[id(o)]["sem_designacao"]),
+        "os_sem_ciencia": sum(1 for o in os_list if pendencias[id(o)]["sem_ciencia"]),
+        "os_sem_eventos": sum(1 for o in os_list if pendencias[id(o)]["sem_eventos"]),
         "taxa_encerramento": round(grupos["encerrada"] / validas * 100, 1) if validas else 0,
     }
 
@@ -2575,7 +2629,8 @@ def _indice_saude(linha: dict[str, Any]) -> dict[str, Any]:
     que o explicam:
 
       - taxa de encerramento baixa: (100 - taxa%) * 0.50 -> ate -50 pts
-      - OS sem ciencia: % do total * 0.50 -> ate -50 pts
+      - OS com ciencia atrasada (a regra do alerta, com o prazo dele):
+        % do total * 0.50 -> ate -50 pts
 
     Numa janela recente quase nada teve tempo de encerrar: ali a taxa
     baixa e calendario, nao desempenho. A tela lembra disso.
@@ -2600,9 +2655,9 @@ def _indice_saude(linha: dict[str, Any]) -> dict[str, Any]:
 
     problemas: list[str] = []
     if pct_sem_ciencia > 10:
-        problemas.append(f"{sem_ciencia} OS sem ciencia ({round(pct_sem_ciencia)}%)")
+        problemas.append(f"{sem_ciencia} OS com ciencia atrasada ({round(pct_sem_ciencia)}%)")
     elif sem_ciencia > 0:
-        problemas.append(f"{sem_ciencia} OS sem ciencia")
+        problemas.append(f"{sem_ciencia} OS com ciencia atrasada")
     if linha["taxa_encerramento"] < 30:
         problemas.append(f"Taxa de encerramento {linha['taxa_encerramento']}%")
 
@@ -2678,17 +2733,22 @@ def _evolucao_mensal(ordens: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _comparativo_mensal(ordens: list[dict[str, Any]]) -> dict[str, Any]:
+def _comparativo_mensal(
+    ordens: list[dict[str, Any]], pendencias: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
     """
     Os indicadores das OS abertas no ultimo mes do periodo contra as do
     mes anterior. Vazio com menos de dois meses: nao ha o que comparar.
+
+    Sem eventos e sem designacao ficam fora: a OS aberta neste mes mal
+    teve tempo de passar do prazo deles, e o delta sairia sempre "bom".
     """
     meses = sorted({_mes_abertura(o) for o in ordens} - {""})
     if len(meses) < 2:
         return {}
     mes_anterior, mes_atual = meses[-2], meses[-1]
-    atual = _metricas_desempenho([o for o in ordens if _mes_abertura(o) == mes_atual])
-    anterior = _metricas_desempenho([o for o in ordens if _mes_abertura(o) == mes_anterior])
+    atual = _metricas_desempenho([o for o in ordens if _mes_abertura(o) == mes_atual], pendencias)
+    anterior = _metricas_desempenho([o for o in ordens if _mes_abertura(o) == mes_anterior], pendencias)
 
     comparativo: dict[str, Any] = {
         chave: {
@@ -2702,8 +2762,14 @@ def _comparativo_mensal(ordens: list[dict[str, Any]]) -> dict[str, Any]:
     return comparativo
 
 
+def _chave_pessoa(f: dict[str, Any]) -> str:
+    """Matricula do fiscal, ou o nome quando ela nao vem."""
+    return (f.get("matricula") or "").strip() or (f.get("nome") or "").strip()
+
+
 def _carga_fiscais(
     ordens: list[dict[str, Any]],
+    pendencias: dict[int, dict[str, Any]],
     gerencia_por_matricula: dict[str, dict[str, Any]],
     equipes_por_matricula: dict[str, list[int]],
 ) -> list[dict[str, Any]]:
@@ -2712,6 +2778,11 @@ def _carga_fiscais(
     primeiro. So entra quem tem pelo menos uma, e so pela designacao que
     vale: o fiscal cancelado na OS nao carrega ela.
 
+    Das ativas, quantas tem pendencia de alerta com ele: `os_sem_ciencia`
+    so onde a ciencia atrasada e DELE — cada fiscal conta da propria
+    designacao —, e `os_sem_eventos` em todo fiscal da OS parada, que e a
+    quem o alerta chega.
+
     Cada linha leva a gerencia e as equipes da matricula, para a tela
     recortar a carga pelos mesmos filtros das outras abas.
     """
@@ -2719,11 +2790,13 @@ def _carga_fiscais(
     for o in ordens:
         if _grupo_situacao(o) not in ("em_andamento", "bloqueada"):
             continue
+        pendencia = pendencias[id(o)]
+        devem_ciencia = {_chave_pessoa(f) for _, f in pendencia["sem_ciencia"]}
         vistos: set[str] = set()
         for f in _fiscais_ativos(o):
             matricula = (f.get("matricula") or "").strip()
             nome = (f.get("nome") or "").strip()
-            chave = matricula or nome
+            chave = _chave_pessoa(f)
             # A mesma pessoa pode aparecer duas vezes na lista (designada,
             # cancelada e designada de novo): conta a OS uma vez so.
             if not chave or chave in vistos:
@@ -2733,10 +2806,16 @@ def _carga_fiscais(
                 "matricula": matricula or None,
                 "nome": nome or matricula,
                 "os_ativas": 0,
+                "os_sem_ciencia": 0,
+                "os_sem_eventos": 0,
                 "gerencia_id": (gerencia_por_matricula.get(matricula) or {}).get("id"),
                 "equipes": equipes_por_matricula.get(matricula, []),
             })
             linha["os_ativas"] += 1
+            if chave in devem_ciencia:
+                linha["os_sem_ciencia"] += 1
+            if pendencia["sem_eventos"]:
+                linha["os_sem_eventos"] += 1
     return sorted(carga.values(), key=lambda l: (-l["os_ativas"], l["nome"]))
 
 
@@ -2745,6 +2824,8 @@ def gerar_dashboard_desempenho(
     gerencias: list[dict[str, Any]],
     gerencia_por_matricula: dict[str, dict[str, Any]],
     equipes: list[dict[str, Any]],
+    hoje: date,
+    config: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """
     Visao geral, gerencias, equipes e carga por fiscal sobre a listagem
@@ -2760,8 +2841,18 @@ def gerar_dashboard_desempenho(
 
     Uma OS conta em cada gerencia e em cada equipe que os seus fiscais
     alcancam: a soma das linhas pode passar do total, de proposito.
+
+    As pendencias (sem designacao, sem ciencia, sem eventos) sao as dos
+    alertas, com os prazos de `config` — o que o admin gravou, com
+    CONFIG_ALERTAS_PADRAO no que faltar — e contadas em `hoje`: e a
+    situacao de agora das OS abertas no periodo.
     """
-    geral = _metricas_desempenho(ordens)
+    prazos = {**CONFIG_ALERTAS_PADRAO, **(config or {})}
+    # Por id da OS: ela entra no geral, em cada gerencia e equipe que
+    # alcanca e no comparativo, e a regra roda uma vez so. O dict da OS
+    # vem do cache da listagem, por isso a pendencia nao e gravada nele.
+    pendencias = {id(o): _pendencias(o, hoje, prazos) for o in ordens}
+    geral = _metricas_desempenho(ordens, pendencias)
 
     # ── Gerencias: todas as do cadastro, mesmo sem OS no periodo ──
     os_por_gerencia: dict[Any, list[dict[str, Any]]] = defaultdict(list)
@@ -2776,7 +2867,7 @@ def gerar_dashboard_desempenho(
 
     desempenho_gerencias = sorted(
         (
-            {"id": g["id"], "nome": g["nome"], **_metricas_desempenho(os_por_gerencia.get(g["id"], []))}
+            {"id": g["id"], "nome": g["nome"], **_metricas_desempenho(os_por_gerencia.get(g["id"], []), pendencias)}
             for g in gerencias
         ),
         key=_ordem_desempenho,
@@ -2819,14 +2910,14 @@ def gerar_dashboard_desempenho(
                 "id": e["codigo"], "nome": e["nome"],
                 "gerencia_id": e.get("gerencia_id"), "gerencia_nome": e.get("gerencia_nome"),
                 "supervisores": e.get("supervisores", []),
-                **_metricas_desempenho(os_por_equipe.get(e["codigo"], [])),
+                **_metricas_desempenho(os_por_equipe.get(e["codigo"], []), pendencias),
             }
             for e in equipes
         ),
         key=_ordem_desempenho,
     )
 
-    carga_fiscais = _carga_fiscais(ordens, gerencia_por_matricula, equipes_por_matricula)
+    carga_fiscais = _carga_fiscais(ordens, pendencias, gerencia_por_matricula, equipes_por_matricula)
 
     return {
         "visao_geral": {
@@ -2838,13 +2929,16 @@ def gerar_dashboard_desempenho(
             "os_sem_gerencia": sem_gerencia,
             "os_sem_equipe": sem_equipe,
         },
-        "comparativo_mensal": _comparativo_mensal(ordens),
+        "comparativo_mensal": _comparativo_mensal(ordens, pendencias),
         "por_situacao": _por_situacao(ordens),
         "evolucao_mensal": _evolucao_mensal(ordens),
         "desempenho_gerencias": desempenho_gerencias,
         "ranking_criticidade": ranking_criticidade,
         "desempenho_equipes": desempenho_equipes,
         "carga_fiscais": carga_fiscais,
+        # Os prazos com que as pendencias foram contadas, para a tela e o
+        # relatorio dizerem "ha mais de N dias" com o N que valeu.
+        "config_alertas": prazos,
     }
 
 
@@ -2899,61 +2993,45 @@ def gerar_alertas(
     Nao ha severidade: a area pediu para tirar a classificacao
     alta/media/baixa. `data` e quando o problema comecou, e o mais antigo
     vem primeiro.
+
+    A conta de cada regra fica em _pendencias, que o dashboard de
+    desempenho tambem usa: aqui so se escreve o texto.
     """
     prazos = {**CONFIG_ALERTAS_PADRAO, **(config or {})}
     alertas: list[dict[str, Any]] = []
 
     for o in ordens:
-        grupo = _grupo_situacao(o)
-        if grupo in ("encerrada", "cancelada"):
-            continue
+        pendencia = _pendencias(o, hoje, prazos)
         numero = o.get("numero_os") or ""
         razao = o.get("razao_social") or "Contribuinte nao informado"
         ie = o.get("ie") or "-"
-        ativos = _fiscais_ativos(o)
 
-        if incluir_sem_designacao and not ativos:
-            abertura = o.get("data_abertura")
-            ultimo_cancelamento = max(
-                (f["data_cancelamento"] for f in o.get("fiscais") or [] if f.get("data_cancelamento")),
-                default=None,
-            )
-            inicio = max(filter(None, (abertura, ultimo_cancelamento)), default=None)
+        inicio = pendencia["sem_designacao"]
+        if incluir_sem_designacao and inicio:
             dias = _dias_desde(inicio, hoje)
-            if dias is not None and dias > prazos["dias_sem_designacao"]:
-                if ultimo_cancelamento and inicio == ultimo_cancelamento:
-                    desde = f"A ultima designacao foi cancelada em {_data_br(inicio)}."
-                else:
-                    desde = f"Aberta em {_data_br(inicio)}."
-                alertas.append({
-                    "tipo": "os_sem_designacao",
-                    "titulo": f"OS sem designacao ha {dias} dias - {razao}",
-                    "descricao": (
-                        f"A OS {numero} (IE: {ie}) esta ha {dias} dias sem fiscal "
-                        f"designado. {desde}"
-                    ),
-                    "referencia": numero,
-                    "data": inicio,
-                })
+            if any(f.get("data_cancelamento") == inicio for f in o.get("fiscais") or []):
+                desde = f"A ultima designacao foi cancelada em {_data_br(inicio)}."
+            else:
+                desde = f"Aberta em {_data_br(inicio)}."
+            alertas.append({
+                "tipo": "os_sem_designacao",
+                "titulo": f"OS sem designacao ha {dias} dias - {razao}",
+                "descricao": (
+                    f"A OS {numero} (IE: {ie}) esta ha {dias} dias sem fiscal "
+                    f"designado. {desde}"
+                ),
+                "referencia": numero,
+                "data": inicio,
+            })
 
-        # Cada fiscal conta da propria designacao: o segundo designado nao
-        # herda o atraso do primeiro.
-        atrasados = []
-        for f in ativos:
-            if f.get("data_ciencia"):
-                continue
-            designacao = f.get("data_designacao") or o.get("data_abertura")
-            dias = _dias_desde(designacao, hoje)
-            if dias is not None and dias > prazos["dias_sem_ciencia"]:
-                atrasados.append((designacao, f))
+        atrasados = pendencia["sem_ciencia"]
         if atrasados:
-            atrasados.sort(key=lambda par: par[0])
             inicio = atrasados[0][0]
             dias = _dias_desde(inicio, hoje)
             nomes = ", ".join(
                 f.get("nome") or f.get("matricula") or "fiscal sem nome" for _, f in atrasados
             )
-            bloqueada = grupo == "bloqueada"
+            bloqueada = _grupo_situacao(o) == "bloqueada"
             descricao = (
                 f"A OS {numero} (IE: {ie}) aguarda a ciencia de {nomes}, "
                 f"designado(s) desde {_data_br(inicio)}."
@@ -2971,33 +3049,29 @@ def gerar_alertas(
                 "data": inicio,
             })
 
-        if (o.get("situacao") or {}).get("codigo") == _SITUACAO_AUTORIZADA:
-            ciencias = [f["data_ciencia"] for f in ativos if f.get("data_ciencia")]
+        inicio = pendencia["sem_eventos"]
+        if inicio:
+            dias = _dias_desde(inicio, hoje)
             ultimo_evento = o.get("data_ultimo_evento")
-            if ciencias:
-                primeira_ciencia = min(ciencias)
-                inicio = max(filter(None, (ultimo_evento, primeira_ciencia)))
-                dias = _dias_desde(inicio, hoje)
-                if dias is not None and dias > prazos["dias_sem_eventos"]:
-                    if inicio == ultimo_evento:
-                        desde = f"Ultimo evento em {_data_br(inicio)}."
-                    elif ultimo_evento:
-                        desde = (
-                            f"O ultimo evento, em {_data_br(ultimo_evento)}, e anterior a "
-                            f"ciencia de {_data_br(inicio)}, que e de onde a contagem parte."
-                        )
-                    else:
-                        desde = f"Nenhum evento desde a ciencia, em {_data_br(inicio)}."
-                    alertas.append({
-                        "tipo": "os_sem_eventos",
-                        "titulo": f"OS sem evento ha {dias} dias - {razao}",
-                        "descricao": (
-                            f"A OS {numero} (IE: {ie}) esta autorizada e sem evento de "
-                            f"acompanhamento ha {dias} dias. {desde}"
-                        ),
-                        "referencia": numero,
-                        "data": inicio,
-                    })
+            if inicio == ultimo_evento:
+                desde = f"Ultimo evento em {_data_br(inicio)}."
+            elif ultimo_evento:
+                desde = (
+                    f"O ultimo evento, em {_data_br(ultimo_evento)}, e anterior a "
+                    f"ciencia de {_data_br(inicio)}, que e de onde a contagem parte."
+                )
+            else:
+                desde = f"Nenhum evento desde a ciencia, em {_data_br(inicio)}."
+            alertas.append({
+                "tipo": "os_sem_eventos",
+                "titulo": f"OS sem evento ha {dias} dias - {razao}",
+                "descricao": (
+                    f"A OS {numero} (IE: {ie}) esta autorizada e sem evento de "
+                    f"acompanhamento ha {dias} dias. {desde}"
+                ),
+                "referencia": numero,
+                "data": inicio,
+            })
 
     alertas.sort(key=lambda a: a["data"] or "")
     return alertas

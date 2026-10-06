@@ -313,6 +313,7 @@ export default function DashboardPanel({ onError }) {
   }
 
   const visao = dados.visao_geral;
+  const prazos = dados.config_alertas;
 
   return (
     <>
@@ -329,24 +330,43 @@ export default function DashboardPanel({ onError }) {
           <div className="stat-value">{formatarNumero(kpis.em_andamento)} {renderDelta("em_andamento", true)}</div>
           <div className="stat-label">Em andamento</div>
         </div>
-        <div className="stat-card concluida">
-          <div className="stat-value">{kpis.taxa_encerramento}%</div>
-          <div className="stat-label">Taxa de encerramento</div>
-        </div>
-        <div className="stat-card alta">
-          <div className="stat-value">{formatarNumero(kpis.os_sem_ciencia)} {renderDelta("os_sem_ciencia", true)}</div>
-          <div className="stat-label">OS sem ciencia</div>
-        </div>
-      </div>
-
-      <div className="stats-row">
         <div className="stat-card normal">
           <div className="stat-value">{formatarNumero(kpis.encerradas)} {renderDelta("encerradas", false)}</div>
           <div className="stat-label">Encerradas</div>
         </div>
+        <div className="stat-card concluida">
+          <div className="stat-value">{kpis.taxa_encerramento}%</div>
+          <div className="stat-label">Taxa de encerramento</div>
+        </div>
         <div className="stat-card normal">
           <div className="stat-value">{formatarNumero(kpis.bloqueadas)} {renderDelta("bloqueadas", true)}</div>
           <div className="stat-label">Bloqueadas</div>
+        </div>
+      </div>
+
+      {/* As tres pendencias sao as regras dos alertas, com os prazos que
+          valeram nesta consulta (config_alertas). */}
+      <div className="stats-row" style={{ marginTop: 16 }}>
+        <div
+          className="stat-card alta"
+          title={`Nenhum fiscal designado ha mais de ${prazos.dias_sem_designacao} dias, da abertura ou do ultimo cancelamento`}
+        >
+          <div className="stat-value">{formatarNumero(kpis.os_sem_designacao)}</div>
+          <div className="stat-label">Sem designacao (+{prazos.dias_sem_designacao} dias)</div>
+        </div>
+        <div
+          className="stat-card alta"
+          title={`Fiscal sem ciencia ha mais de ${prazos.dias_sem_ciencia} dias da propria designacao`}
+        >
+          <div className="stat-value">{formatarNumero(kpis.os_sem_ciencia)} {renderDelta("os_sem_ciencia", true)}</div>
+          <div className="stat-label">Sem ciencia (+{prazos.dias_sem_ciencia} dias)</div>
+        </div>
+        <div
+          className="stat-card alta"
+          title={`OS autorizada sem evento ha mais de ${prazos.dias_sem_eventos} dias, do ultimo evento ou da ciencia`}
+        >
+          <div className="stat-value">{formatarNumero(kpis.os_sem_eventos)}</div>
+          <div className="stat-label">Sem evento (+{prazos.dias_sem_eventos} dias)</div>
         </div>
         <div className="stat-card normal">
           <div className="stat-value">{formatarNumero(kpis.total_fiscais)}</div>
@@ -358,13 +378,19 @@ export default function DashboardPanel({ onError }) {
         </div>
       </div>
 
-      {!gerenciaFilter && !equipeFilter && (visao.os_sem_gerencia > 0 || visao.os_sem_equipe > 0) && (
-        <p className="muted" style={{ marginTop: 0 }}>
-          {formatarNumero(visao.os_sem_gerencia)} OS nao alcancam nenhuma gerencia do cadastro e
-          {" "}{formatarNumero(visao.os_sem_equipe)} nenhuma equipe fiscal: entram no total, mas
-          ficam fora dos cortes. Uma OS conta em cada gerencia e equipe que seus fiscais alcancam.
-        </p>
-      )}
+      <p className="muted" style={{ marginTop: 8 }}>
+        Sem designacao, sem ciencia e sem evento sao as regras dos Alertas, com os prazos de
+        {" "}<strong>Cadastros &gt; Prazos dos alertas</strong>, contadas hoje sobre as OS abertas no
+        periodo. A aba Alertas olha as abertas nos ultimos {prazos.janela_dias} dias: os totais
+        so coincidem quando o periodo e o mesmo.
+        {!gerenciaFilter && !equipeFilter && (visao.os_sem_gerencia > 0 || visao.os_sem_equipe > 0) && (
+          <>
+            {" "}{formatarNumero(visao.os_sem_gerencia)} OS nao alcancam nenhuma gerencia do cadastro
+            e {formatarNumero(visao.os_sem_equipe)} nenhuma equipe fiscal: entram no total, mas
+            ficam fora dos cortes. Uma OS conta em cada gerencia e equipe que seus fiscais alcancam.
+          </>
+        )}
+      </p>
 
       {/* ===== TAB CONTENT ===== */}
       {view === "geral" && (
@@ -380,6 +406,7 @@ export default function DashboardPanel({ onError }) {
         <DashboardGerencias
           gerenciasFiltradas={gerenciasFiltradas}
           gerenciaFilter={gerenciaFilter}
+          prazos={prazos}
           onGerenciaToggle={(id) => {
             setGerenciaFilter(String(gerenciaFilter) === String(id) ? "" : String(id));
             setEquipeFilter("");
@@ -392,6 +419,7 @@ export default function DashboardPanel({ onError }) {
           equipesFiltradas={equipesFiltradas}
           gerenciaFilter={gerenciaFilter}
           equipeFilter={equipeFilter}
+          prazos={prazos}
           onEquipeSelect={(id) => { setEquipeFilter(String(id)); setView("fiscais"); }}
         />
       )}
@@ -401,6 +429,7 @@ export default function DashboardPanel({ onError }) {
           fiscaisFiltrados={fiscaisFiltrados}
           gerenciaFilter={gerenciaFilter}
           equipeFilter={equipeFilter}
+          prazos={prazos}
         />
       )}
     </>

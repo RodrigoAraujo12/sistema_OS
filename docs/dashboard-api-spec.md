@@ -5,8 +5,8 @@
 **URL:** `GET /admin/dashboard`
 **Autenticação:** Bearer Token (somente role `admin`)
 **Fonte:** listagem real do ATF (`listarOrdensServicoWebService`)
-**Descrição:** desempenho das OS (situação, ciência, taxa de encerramento
-e carga) para as abas **Visão Geral, Gerências, Supervisões e Fiscais**
+**Descrição:** desempenho das OS (situação, pendências dos alertas, taxa de
+encerramento e carga) para as abas **Visão Geral, Gerências, Supervisões e Fiscais**
 do Dashboard. Os relatórios `/relatorios/dashboard` (CSV) e
 `/relatorios/dashboard/pdf` imprimem este mesmo retorno.
 
@@ -18,7 +18,7 @@ campo do ATF que responde à mesma pergunta:
 | Antes (mock)                                | Agora (ATF)                                                        |
 |---------------------------------------------|--------------------------------------------------------------------|
 | status aberta/andamento/concluída/cancelada | situação da OS (`statusOS`), agrupada — ver tabela abaixo          |
-| "sem ciência" (OS aberta sem data)          | fiscal designado, e não cancelado, sem `dataCiencia`, em OS que não terminou |
+| "sem ciência" (OS aberta sem data)          | a regra do alerta `os_sem_ciencia`, com o prazo dele — ver métricas abaixo |
 | supervisão (cadastro local)                 | **equipe fiscal** do ATF, com os supervisores marcados na planilha |
 | taxa de conclusão                           | taxa de encerramento (encerradas ÷ total sem canceladas/substituídas) |
 | prioridade                                  | não existe no ATF                                                  |
@@ -65,14 +65,26 @@ Métricas de grupo (valem para `visao_geral`, cada gerência e cada equipe):
 | `bloqueadas`        | int   | Grupo `bloqueada`                                  |
 | `encerradas`        | int   | Grupo `encerrada`                                  |
 | `canceladas`        | int   | Grupo `cancelada`                                  |
-| `os_sem_ciencia`    | int   | OS que não terminou com fiscal ativo sem ciência   |
+| `os_sem_designacao` | int   | Regra do alerta `os_sem_designacao`                |
+| `os_sem_ciencia`    | int   | Regra do alerta `os_sem_ciencia`                   |
+| `os_sem_eventos`    | int   | Regra do alerta `os_sem_eventos`                   |
 | `taxa_encerramento` | float | `encerradas ÷ (total_os − canceladas) × 100`       |
+
+As três pendências são as regras dos Alertas (ver README), contadas por
+`_pendencias` — a mesma função que gera os alertas — com os prazos em
+vigor (`config_alertas` no retorno) e a data de hoje. Sobre as mesmas
+OS, os dois dão o mesmo número. Até 06/10/2026 `os_sem_ciencia` contava
+qualquer fiscal sem ciência, sem prazo.
+
+Conferido em homologação em 06/10/2026, sobre as OS de jan–jul/2026: o
+painel e os alertas deram os mesmos três números para as mesmas OS.
 
 ```json
 {
   "visao_geral": {
     "total_os": 4499, "em_andamento": 1107, "bloqueadas": 44,
-    "encerradas": 3282, "canceladas": 66, "os_sem_ciencia": 63,
+    "encerradas": 3282, "canceladas": 66,
+    "...": "os_sem_designacao, os_sem_ciencia e os_sem_eventos (ver as métricas acima)",
     "taxa_encerramento": 74.0,
     "total_fiscais": 151,
     "total_equipes": 21,
@@ -99,7 +111,7 @@ Métricas de grupo (valem para `visao_geral`, cada gerência e cada equipe):
       "id": 2, "nome": "Gerencia de Arrecadacao", "total_os": 11,
       "os_sem_ciencia": 9, "taxa_encerramento": 10.0,
       "indice_saude": 14.1, "nivel": "emergencia", "pct_sem_ciencia": 81.8,
-      "problemas": ["9 OS sem ciencia (82%)", "Taxa de encerramento 10.0%"]
+      "problemas": ["9 OS com ciencia atrasada (82%)", "Taxa de encerramento 10.0%"]
     }
   ],
   "desempenho_equipes": [
@@ -110,8 +122,14 @@ Métricas de grupo (valem para `visao_geral`, cada gerência e cada equipe):
     }
   ],
   "carga_fiscais": [
-    { "matricula": "1234567", "nome": "Nome do Fiscal", "os_ativas": 12, "gerencia_id": 1, "equipes": [545] }
+    {
+      "matricula": "1234567", "nome": "Nome do Fiscal", "os_ativas": 12,
+      "os_sem_ciencia": 1, "os_sem_eventos": 4, "gerencia_id": 1, "equipes": [545]
+    }
   ],
+  "config_alertas": {
+    "dias_sem_designacao": 15, "dias_sem_ciencia": 3, "dias_sem_eventos": 15, "janela_dias": 365
+  },
   "periodo": { "inicio": "2026-01-01", "fim": "2026-07-31" }
 }
 ```
@@ -124,7 +142,9 @@ Métricas de grupo (valem para `visao_geral`, cada gerência e cada equipe):
   equipe do cadastro alcança. Entram no total e ficam fora dos cortes.
 - **`comparativo_mensal`**: OS abertas no último mês do período contra as
   do mês anterior. Vazio (`{}`) com menos de dois meses de dados. A tela
-  só mostra os deltas sem filtro de gerência ou equipe.
+  só mostra os deltas sem filtro de gerência ou equipe. Sem designação e
+  sem eventos ficam fora: a OS aberta no último mês mal teve tempo de
+  passar do prazo deles.
 - **`por_situacao`**: uma linha por código, com o nome que o **serviço**
   manda (`noStatusOS`). Ele diverge da doc ("EM ANÁLISE DE ENCERRAMENTO").
 - **`evolucao_mensal`**: por safra. `encerradas` são as OS **abertas**
@@ -135,6 +155,7 @@ Métricas de grupo (valem para `visao_geral`, cada gerência e cada equipe):
   conta em cada gerência que seus fiscais alcançam.
 - **`ranking_criticidade`** (Termômetro): só gerências com OS no período.
   `indice_saude = 100 − (100 − taxa_encerramento) × 0,5 − %sem_ciencia × 0,5`,
+  com `os_sem_ciencia` pela regra do alerta (ciência atrasada, não qualquer uma),
   limitado a 0–100. Níveis: saudável ≥ 75, atenção ≥ 50, crítico ≥ 25,
   emergência abaixo disso. Numa janela recente a taxa é baixa por
   calendário: as OS ainda não tiveram tempo de encerrar.
@@ -145,8 +166,14 @@ Métricas de grupo (valem para `visao_geral`, cada gerência e cada equipe):
   manual (`users.equipe_codigo`). Decisão de 25/09/2026: o cadastro local
   de supervisões só tem as de exemplo.
 - **`carga_fiscais`**: OS ativas (em andamento ou bloqueadas) por fiscal,
-  só pela designação válida (sem `dataCancelamento`). `gerencia_id` e
-  `equipes` servem para a tela recortar pelos filtros.
+  só pela designação válida (sem `dataCancelamento`). Das ativas,
+  `os_sem_ciencia` conta só aquelas em que a ciência atrasada é **dele**
+  (cada fiscal conta da própria designação), e `os_sem_eventos` conta a
+  OS parada em todo fiscal dela, que é a quem o alerta chega. `gerencia_id`
+  e `equipes` servem para a tela recortar pelos filtros.
+- **`config_alertas`**: os prazos com que as pendências foram contadas,
+  para a tela e o relatório escreverem "há mais de N dias" com o N que
+  valeu.
 
 Os filtros de gerência e equipe da tela recortam este retorno no
 navegador, sem nova consulta.

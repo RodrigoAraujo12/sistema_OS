@@ -21,6 +21,7 @@ export default function DashboardGeral({
   onGerenciaSelect,
 }) {
   const ranking = dados.ranking_criticidade || [];
+  const prazos = dados.config_alertas;
 
   // Pizza: sem filtro, uma fatia por situacao do ATF. Com gerencia, a
   // linha dela so tem os quatro grupos — o backend nao abre situacao por
@@ -51,7 +52,8 @@ export default function DashboardGeral({
           <div className="termometro-header">
             <h2>Termometro da Fiscalizacao</h2>
             <p className="muted">
-              Indice de Saude por gerencia, sobre a taxa de encerramento e as OS sem ciencia.
+              Indice de Saude por gerencia, sobre a taxa de encerramento e as OS com ciencia
+              atrasada (mais de {prazos.dias_sem_ciencia} dias da designacao, o prazo do alerta).
               Clique para detalhar. Em periodos recentes a taxa e baixa por natureza: as OS
               ainda nao tiveram tempo de encerrar.
             </p>
@@ -115,7 +117,7 @@ export default function DashboardGeral({
                   </div>
                   <div className="termometro-metrica">
                     <span className={`termometro-metrica-valor ${g.pct_sem_ciencia > 20 ? "text-danger" : g.pct_sem_ciencia > 0 ? "text-warning" : ""}`}>{g.pct_sem_ciencia}%</span>
-                    <span className="termometro-metrica-label">Sem Ciencia ({g.os_sem_ciencia})</span>
+                    <span className="termometro-metrica-label">Ciencia atrasada ({g.os_sem_ciencia})</span>
                   </div>
                   <div className="termometro-metrica">
                     <span className={`termometro-metrica-valor ${g.taxa_encerramento < 25 ? "text-danger" : g.taxa_encerramento < 50 ? "text-warning" : ""}`}>{g.taxa_encerramento}%</span>
@@ -267,7 +269,7 @@ export default function DashboardGeral({
                       afterBody: function (ctx) {
                         const g = gerenciasParaChart[ctx[0].dataIndex];
                         if (!g) return "";
-                        return `Total: ${g.total_os} | Taxa de encerramento: ${g.taxa_encerramento}%\nSem ciencia: ${g.os_sem_ciencia}`;
+                        return `Total: ${g.total_os} | Taxa de encerramento: ${g.taxa_encerramento}%\nSem ciencia: ${g.os_sem_ciencia} | Sem evento: ${g.os_sem_eventos}`;
                       },
                     },
                   },

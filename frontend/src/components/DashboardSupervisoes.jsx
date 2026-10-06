@@ -14,12 +14,13 @@
 import React from "react";
 import { Bar } from "react-chartjs-2";
 import { COR_GRUPO, TOPO_GRAFICO, formatarNumero } from "../dashboardShared.js";
-import { classeTaxa } from "./DashboardGerencias.jsx";
+import { classePendencia, classeTaxa } from "./DashboardGerencias.jsx";
 
 export default function DashboardSupervisoes({
   equipesFiltradas,
   gerenciaFilter,
   equipeFilter,
+  prazos,
   onEquipeSelect,
 }) {
   // O grafico mostra as maiores; a tabela, todas — inclusive as que nao
@@ -36,8 +37,8 @@ export default function DashboardSupervisoes({
         {gerenciaFilter
           ? "Equipes da gerencia selecionada."
           : "Todas as equipes fiscais do ATF. Filtre por gerencia para refinar."}
-        {" "}Cada equipe conta as OS dos seus membros, como o supervisor dela ve.
-        Clique em uma linha para ver os fiscais.
+        {" "}Cada equipe conta as OS dos seus membros, como o supervisor dela ve. Sem ciencia e
+        sem evento sao os alertas, com os prazos em vigor. Clique em uma linha para ver os fiscais.
       </p>
 
       {topo.length > 0 && (
@@ -81,7 +82,7 @@ export default function DashboardSupervisoes({
                         `Gerencia: ${e.gerencia_nome || "-"}`,
                         `Supervisor(es): ${e.supervisores.join(", ") || "-"}`,
                         `Total: ${e.total_os} | Taxa de encerramento: ${e.taxa_encerramento}%`,
-                        `Sem ciencia: ${e.os_sem_ciencia}`,
+                        `Sem ciencia: ${e.os_sem_ciencia} | Sem evento: ${e.os_sem_eventos}`,
                       ];
                     },
                   },
@@ -114,7 +115,8 @@ export default function DashboardSupervisoes({
               <th>Bloqueadas</th>
               <th>Encerradas</th>
               <th>Taxa de encerramento</th>
-              <th>Sem Ciencia</th>
+              <th>Sem ciencia (+{prazos.dias_sem_ciencia}d)</th>
+              <th>Sem evento (+{prazos.dias_sem_eventos}d)</th>
             </tr>
           </thead>
           <tbody>
@@ -142,8 +144,13 @@ export default function DashboardSupervisoes({
                   )}
                 </td>
                 <td>
-                  <span className={`badge ${e.os_sem_ciencia > 0 ? "cancelada" : "concluida"}`}>
+                  <span className={`badge ${classePendencia(e.os_sem_ciencia)}`}>
                     {formatarNumero(e.os_sem_ciencia)}
+                  </span>
+                </td>
+                <td>
+                  <span className={`badge ${classePendencia(e.os_sem_eventos)}`}>
+                    {formatarNumero(e.os_sem_eventos)}
                   </span>
                 </td>
               </tr>

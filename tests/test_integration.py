@@ -1233,6 +1233,18 @@ class TestDashboardEndpoints(IntegrationTestBase):
         )
         self.assertEqual(sum(l["total"] for l in corpo["por_situacao"]), v["total_os"])
 
+    def test_pendencias_com_os_prazos_gravados_dos_alertas(self):
+        H = self._admin_header()
+        config = {
+            "dias_sem_designacao": 7, "dias_sem_ciencia": 2,
+            "dias_sem_eventos": 30, "janela_dias": 90,
+        }
+        self.assertEqual(self.client.put("/admin/alertas/config", json=config, headers=H).status_code, 200)
+        corpo = self.client.get(f"/admin/dashboard?{_PERIODO_MOCK}", headers=H).json()
+        self.assertEqual(corpo["config_alertas"], config)
+        for chave in ("os_sem_designacao", "os_sem_ciencia", "os_sem_eventos"):
+            self.assertIn(chave, corpo["visao_geral"])
+
     def test_periodo_e_obrigatorio_e_de_no_maximo_um_ano(self):
         h = self._admin_header()
         for query in ("", "?data_inicio=2026-01-01", "?data_inicio=2024-01-01&data_fim=2026-01-01"):

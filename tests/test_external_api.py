@@ -11,11 +11,13 @@ from __future__ import annotations
 import re
 import unittest
 import xml.etree.ElementTree as ET
+from collections import Counter
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
 from xml.sax.saxutils import escape
 
 from backend.external_api import (
+    CONFIG_ALERTAS_PADRAO,
     _chamar_atf_https,
     _chamar_detalhe_atf_https,
     _float_ou_none,
@@ -975,6 +977,8 @@ class TestGerarDashboardDesempenho(unittest.TestCase):
     listagem do ATF.
     """
 
+    HOJE = date(2026, 3, 1)
+
     def setUp(self):
         self.gerencias = [
             {"id": 1, "nome": "GOFE"}, {"id": 2, "nome": "GOAC"}, {"id": 3, "nome": "GECOF"},
@@ -997,10 +1001,11 @@ class TestGerarDashboardDesempenho(unittest.TestCase):
             _os_atf("F", 1, [_fiscal("10"), _fiscal("20")], data_abertura="2026-02-11"),
         ]
 
-    def _gerar(self, ordens=None):
+    def _gerar(self, ordens=None, **kwargs):
         return gerar_dashboard_desempenho(
             self.ordens if ordens is None else ordens,
             self.gerencias, self.gerencia_por_matricula, self.equipes,
+            hoje=kwargs.pop("hoje", self.HOJE), **kwargs,
         )
 
     def test_visao_geral_pelos_grupos_de_situacao(self):
@@ -1067,6 +1072,66 @@ class TestGerarDashboardDesempenho(unittest.TestCase):
         comp = self._gerar()["comparativo_mensal"]
         self.assertEqual(comp["total_os"], {"atual": 4, "anterior": 2, "delta": 2})
         self.assertEqual(comp["_labels"], {"mes_atual": "2026-02", "mes_anterior": "2026-01"})
+
+    # ── pendencias: as regras dos alertas ────────────────────────
+
+    def test_pendencias_pelas_regras_dos_alertas(self):
+        v = self._gerar()["visao_geral"]
+        # B e C devem ciencia desde janeiro; E e F, autorizadas, nunca
+        # tiveram evento desde a ciencia de 02/01. B tambem e autorizada,
+        # mas sem ciencia nenhuma a pendencia dela ainda e a ciencia.
+        self.assertEqual(
+            (v["os_sem_designacao"], v["os_sem_ciencia"], v["os_sem_eventos"]), (0, 2, 2),
+        )
+
+    def test_sem_ciencia_respeita_o_prazo(self):
+        """Fiscal designado na vespera ainda esta no prazo: nao pesa no painel."""
+        recem = [_os_atf("R", 7, [_fiscal("10", ciencia=None, designacao="2026-02-28")],
+                         data_abertura="2026-02-27")]
+        self.assertEqual(self._gerar(recem)["visao_geral"]["os_sem_ciencia"], 0)
+        self.assertEqual(
+            self._gerar(recem, config={"dias_sem_ciencia": 0})["visao_geral"]["os_sem_ciencia"], 1,
+        )
+
+    def test_conta_igual_aos_alertas(self):
+        """Mesmas OS, mesmo dia e mesmos prazos: o painel e a aba de alertas dizem o mesmo."""
+        ordens = self.ordens + [
+            _os_atf("S", 0, [], data_abertura="2026-01-20"),
+            _os_atf("T", 1, [_fiscal("10", cancelamento="2026-02-25")], data_abertura="2026-01-20"),
+            _os_atf("U", 1, [_fiscal("20")], data_abertura="2026-01-20", data_ultimo_evento="2026-02-20"),
+        ]
+        config = {"dias_sem_designacao": 10, "dias_sem_ciencia": 3, "dias_sem_eventos": 15}
+        v = self._gerar(ordens, config=config)["visao_geral"]
+        tipos = Counter(
+            a["tipo"] for a in gerar_alertas(ordens, self.HOJE, config, incluir_sem_designacao=True)
+        )
+        self.assertEqual(
+            (v["os_sem_designacao"], v["os_sem_ciencia"], v["os_sem_eventos"]),
+            (tipos["os_sem_designacao"], tipos["os_sem_ciencia"], tipos["os_sem_eventos"]),
+        )
+        self.assertEqual(tipos["os_sem_designacao"], 1)  # S; T perdeu o fiscal ha 4 dias
+
+    def test_prazos_em_vigor_vao_na_resposta(self):
+        self.assertEqual(self._gerar()["config_alertas"], CONFIG_ALERTAS_PADRAO)
+        self.assertEqual(
+            self._gerar(config={"dias_sem_eventos": 30})["config_alertas"]["dias_sem_eventos"], 30,
+        )
+
+    def test_termometro_pesa_so_a_ciencia_atrasada(self):
+        recem = [_os_atf("R", 7, [_fiscal("10", ciencia=None, designacao="2026-02-28")],
+                         data_abertura="2026-02-27")]
+        gofe = self._gerar(recem)["ranking_criticidade"][0]
+        self.assertEqual((gofe["os_sem_ciencia"], gofe["pct_sem_ciencia"]), (0, 0))
+
+    def test_carga_traz_as_pendencias_de_cada_fiscal(self):
+        ordens = self.ordens + [
+            # So o 20 deve ciencia aqui: o 10 ja deu.
+            _os_atf("H", 7, [_fiscal("10"), _fiscal("20", ciencia=None)], data_abertura="2026-02-12"),
+        ]
+        carga = {f["matricula"]: f for f in self._gerar(ordens)["carga_fiscais"]}
+        # 10: deve ciencia em B; F parada sem evento. 20: deve em C e H; F parada.
+        self.assertEqual((carga["10"]["os_sem_ciencia"], carga["10"]["os_sem_eventos"]), (1, 1))
+        self.assertEqual((carga["20"]["os_sem_ciencia"], carga["20"]["os_sem_eventos"]), (2, 1))
 
     def test_sem_os_nao_quebra(self):
         dados = self._gerar([])

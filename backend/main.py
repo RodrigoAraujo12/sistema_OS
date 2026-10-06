@@ -1422,6 +1422,9 @@ def _dashboard_desempenho(data_inicio: str | None, data_fim: str | None) -> dict
     O periodo de abertura e obrigatorio e de no maximo um ano, como na aba
     de Ordens de Servico — e a consulta e a mesma listagem dela, entao o
     mesmo periodo nas duas abas sai do cache do ATF na segunda.
+
+    As pendencias saem com os prazos dos alertas em vigor, para o painel e
+    a aba de alertas contarem igual as mesmas OS.
     """
     try:
         validar_periodo_abertura(data_inicio, data_fim)
@@ -1437,6 +1440,8 @@ def _dashboard_desempenho(data_inicio: str | None, data_fim: str | None) -> dict
         [{"id": g["id"], "nome": g["name"]} for g in gerencia_repo.list_gerencias()],
         _gerencia_por_matricula(),
         _equipes_do_painel(),
+        hoje=date.today(),
+        config=_config_alertas(),
     )
     dashboard["periodo"] = {"inicio": data_inicio, "fim": data_fim}
     return dashboard
@@ -1968,30 +1973,38 @@ def _secoes_desempenho(dashboard: dict[str, Any]) -> list[tuple[str, list[str], 
     return [
         (
             "Resumo geral",
-            colunas + ["Canceladas", "Sem ciencia", "Taxa encerr. (%)"],
-            [_numeros(v) + [v["canceladas"], v["os_sem_ciencia"], v["taxa_encerramento"]]],
+            colunas + ["Canceladas", "Taxa encerr. (%)", "Sem designacao", "Sem ciencia", "Sem evento"],
+            [_numeros(v) + [
+                v["canceladas"], v["taxa_encerramento"],
+                v["os_sem_designacao"], v["os_sem_ciencia"], v["os_sem_eventos"],
+            ]],
         ),
         (
             "Desempenho por gerencia",
-            ["Gerencia"] + colunas + ["Canceladas", "Taxa encerr. (%)", "Sem ciencia"],
+            ["Gerencia"] + colunas + ["Canceladas", "Taxa encerr. (%)", "Sem ciencia", "Sem evento"],
             [
-                [g["nome"]] + _numeros(g) + [g["canceladas"], g["taxa_encerramento"], g["os_sem_ciencia"]]
+                [g["nome"]] + _numeros(g)
+                + [g["canceladas"], g["taxa_encerramento"], g["os_sem_ciencia"], g["os_sem_eventos"]]
                 for g in dashboard["desempenho_gerencias"]
             ],
         ),
         (
             "Desempenho por equipe fiscal",
-            ["Equipe", "Gerencia", "Supervisor(es)"] + colunas + ["Taxa encerr. (%)", "Sem ciencia"],
+            ["Equipe", "Gerencia", "Supervisor(es)"] + colunas
+            + ["Taxa encerr. (%)", "Sem ciencia", "Sem evento"],
             [
                 [e["nome"], e["gerencia_nome"] or "-", ", ".join(e["supervisores"]) or "-"]
-                + _numeros(e) + [e["taxa_encerramento"], e["os_sem_ciencia"]]
+                + _numeros(e) + [e["taxa_encerramento"], e["os_sem_ciencia"], e["os_sem_eventos"]]
                 for e in dashboard["desempenho_equipes"] if e["total_os"]
             ],
         ),
         (
             "Carga por fiscal (OS ativas)",
-            ["Fiscal", "Matricula", "OS ativas"],
-            [[f["nome"], f["matricula"] or "-", f["os_ativas"]] for f in dashboard["carga_fiscais"]],
+            ["Fiscal", "Matricula", "OS ativas", "Sem ciencia", "Sem evento"],
+            [
+                [f["nome"], f["matricula"] or "-", f["os_ativas"], f["os_sem_ciencia"], f["os_sem_eventos"]]
+                for f in dashboard["carga_fiscais"]
+            ],
         ),
     ]
 
@@ -2004,10 +2017,16 @@ def _notas_desempenho(dashboard: dict[str, Any]) -> list[str]:
         for chave in ("inicio", "fim")
     )
     v = dashboard["visao_geral"]
+    prazos = dashboard["config_alertas"]
     return [
         f"OS abertas de {inicio} a {fim}, dados do ATF.",
         f"OS sem gerencia cadastrada: {v['os_sem_gerencia']}. OS sem equipe fiscal: {v['os_sem_equipe']}.",
         "Uma OS conta em cada gerencia e equipe que os seus fiscais alcancam.",
+        (
+            f"Pendencias em {date.today().strftime('%d/%m/%Y')}, com os prazos dos alertas: "
+            f"sem designacao ha mais de {prazos['dias_sem_designacao']} dias, sem ciencia ha mais "
+            f"de {prazos['dias_sem_ciencia']}, sem evento ha mais de {prazos['dias_sem_eventos']}."
+        ),
     ]
 
 
@@ -2024,10 +2043,10 @@ def _caber(pdf: FPDF, texto: Any, largura: float) -> str:
 # Larguras das colunas de cada secao no PDF (A4 paisagem, ~277 mm uteis),
 # na ordem de _secoes_desempenho.
 _LARGURAS_PDF_DESEMPENHO = [
-    [38, 38, 38, 38, 38, 38, 38],
-    [80, 22, 28, 26, 26, 26, 28, 26],
-    [58, 38, 58, 14, 22, 19, 19, 24, 20],
-    [150, 50, 50],
+    [30, 30, 30, 30, 30, 30, 30, 30, 30],
+    [72, 22, 26, 24, 24, 24, 26, 26, 26],
+    [54, 34, 52, 14, 22, 19, 19, 22, 20, 20],
+    [130, 40, 35, 35, 35],
 ]
 
 

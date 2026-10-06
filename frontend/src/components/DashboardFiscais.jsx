@@ -2,12 +2,15 @@
  * DashboardFiscais.jsx – Aba "Fiscais" do Dashboard.
  *
  * Carga de trabalho por fiscal: OS ativas (em andamento ou bloqueadas)
- * em que ele esta designado no ATF, sem contar designacao cancelada.
+ * em que ele esta designado no ATF, sem contar designacao cancelada, e
+ * quantas delas tem pendencia de alerta com ele — a ciencia atrasada e
+ * so a dele, a OS sem evento conta para todo fiscal dela.
  */
 
 import React from "react";
 import { Bar } from "react-chartjs-2";
 import { TOPO_GRAFICO, formatarNumero } from "../dashboardShared.js";
+import { classePendencia } from "./DashboardGerencias.jsx";
 
 function classeCarga(osAtivas) {
   return osAtivas > 3 ? "cancelada" : osAtivas > 1 ? "em_andamento" : "concluida";
@@ -17,6 +20,7 @@ export default function DashboardFiscais({
   fiscaisFiltrados,
   gerenciaFilter,
   equipeFilter,
+  prazos,
 }) {
   // Sao centenas de fiscais: o grafico mostra os mais carregados e a
   // tabela logo abaixo, todos.
@@ -32,6 +36,8 @@ export default function DashboardFiscais({
           ? "Fiscais da gerencia selecionada"
           : "Todos os fiscais com OS ativa"}
         {" "}(mais carregados primeiro). Conta as OS em andamento ou bloqueadas abertas no periodo.
+        Sem ciencia: OS em que o proprio fiscal passou de {prazos.dias_sem_ciencia} dias sem dar
+        ciencia. Sem evento: OS dele autorizada e sem evento ha mais de {prazos.dias_sem_eventos} dias.
       </p>
 
       {topo.length > 0 && (
@@ -72,6 +78,8 @@ export default function DashboardFiscais({
                 <th>Fiscal</th>
                 <th>Matricula</th>
                 <th>OS ativas</th>
+                <th>Sem ciencia (+{prazos.dias_sem_ciencia}d)</th>
+                <th>Sem evento (+{prazos.dias_sem_eventos}d)</th>
               </tr>
             </thead>
             <tbody>
@@ -82,6 +90,16 @@ export default function DashboardFiscais({
                   <td>
                     <span className={`badge ${classeCarga(f.os_ativas)}`}>
                       {formatarNumero(f.os_ativas)}
+                    </span>
+                  </td>
+                  <td>
+                    <span className={`badge ${classePendencia(f.os_sem_ciencia)}`}>
+                      {formatarNumero(f.os_sem_ciencia)}
+                    </span>
+                  </td>
+                  <td>
+                    <span className={`badge ${classePendencia(f.os_sem_eventos)}`}>
+                      {formatarNumero(f.os_sem_eventos)}
                     </span>
                   </td>
                 </tr>

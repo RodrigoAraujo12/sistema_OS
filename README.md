@@ -36,7 +36,7 @@ O Sistema SEFAZ PB permite que auditores fiscais, supervisores, gerentes e admin
 - **Painel de OS** com filtros por situacao, modelo, motivo, equipe fiscal, orgao executor, contribuinte e periodos de abertura, ciencia e encerramento
 - **Detalhe da OS** com eventos, prorrogacoes, notificacoes, justificativas e recolhimentos, e PDF de cada OS
 - **Dashboard** com KPIs, comparativo mensal e cortes por gerencia, equipe fiscal, fiscal, motivo e tipo, alem de uma aba so de eventos de acompanhamento
-- **Termometro da Fiscalizacao** – ranking de saude por gerencia, sobre a taxa de encerramento e a ciencia das OS do ATF
+- **Termometro da Fiscalizacao** – ranking de saude por gerencia, sobre a taxa de encerramento e a ciencia atrasada das OS do ATF
 - **Alertas automaticos** para OS sem designacao, fiscal sem ciencia (incluindo OS bloqueada) e OS sem evento de acompanhamento, com os prazos em dias configurados pelo admin
 - **Relatorios exportaveis** em CSV e PDF (OS e Dashboard)
 - **Controle de acesso hierarquico** – cada perfil ve apenas o que lhe compete
@@ -300,6 +300,13 @@ na tabela `config_alertas`. Chave que nunca foi gravada vale o padrao do
 codigo (`CONFIG_ALERTAS_PADRAO`). A mudanca vale da proxima consulta em
 diante. A aba de alertas mostra as regras com os prazos em vigor.
 
+**O Dashboard conta as mesmas regras.** A conta de cada regra fica em
+`_pendencias` (`backend/external_api.py`), que os alertas e o dashboard
+de desempenho usam, com os mesmos prazos. Sobre as mesmas OS, no mesmo
+dia, os dois dao o mesmo numero. O que muda e o universo: o dashboard
+conta as OS abertas no periodo escolhido, e os alertas, as abertas na
+janela.
+
 **Sem designacao so para o admin.** A OS se liga as pessoas pela
 matricula do fiscal: sem fiscal, nao ha fiscal nem chefe a avisar. Quando
 alguem e designado, a OS passa para a regra da ciencia, e o fiscal e o
@@ -351,15 +358,17 @@ filtros de gerencia e equipe aplicados no navegador. Contrato em
 [`docs/dashboard-api-spec.md`](docs/dashboard-api-spec.md).
 
 ### KPIs (Indicadores-Chave)
-8 cards nas abas de desempenho, com **deltas mensais** (setas coloridas):
-- Total de OS
-- Em andamento (seta vermelha = aumento e ruim)
-- Taxa de encerramento
-- OS sem ciencia
-- Encerradas
-- Bloqueadas
-- Fiscais com OS ativa
-- Equipes com OS
+10 cards nas abas de desempenho, em duas linhas, alguns com **deltas
+mensais** (setas coloridas):
+- Total de OS, Em andamento (seta vermelha = aumento e ruim), Encerradas,
+  Taxa de encerramento e Bloqueadas
+- Sem designacao, Sem ciencia e Sem evento: as regras dos alertas, com
+  os prazos em vigor no rotulo ("+15 dias") e contadas hoje sobre as OS
+  abertas no periodo
+- Fiscais com OS ativa e Equipes com OS
+
+Sem designacao e sem evento nao tem delta: a OS aberta no ultimo mes mal
+teve tempo de passar do prazo, e a seta sairia sempre "boa".
 
 O **comparativo mensal** compara as OS abertas no ultimo mes do periodo
 com as do mes anterior, e so aparece sem filtro de gerencia ou equipe.
@@ -369,9 +378,9 @@ com as do mes anterior, e so aparece sem filtro de gerencia ou equipe.
 | Aba          | Conteudo                                                                |
 | ------------ | ----------------------------------------------------------------------- |
 | Visao Geral  | Termometro, pizza por situacao do ATF, evolucao mensal por safra, comparativo por gerencia |
-| Gerencias    | Taxa de encerramento + tabela por gerencia do cadastro                 |
-| Supervisoes  | Uma linha por **equipe fiscal** do ATF, com os supervisores da planilha |
-| Fiscais      | Carga de trabalho (OS ativas) por fiscal                                |
+| Gerencias    | Taxa de encerramento + tabela por gerencia do cadastro, com sem ciencia e sem evento |
+| Supervisoes  | Uma linha por **equipe fiscal** do ATF, com os supervisores da planilha, sem ciencia e sem evento |
+| Fiscais      | Carga de trabalho (OS ativas) por fiscal, e quantas delas estao sem ciencia (dele) ou sem evento |
 | Ordens de Servico | Quantidade de OS e tempo medio de execucao por gerencia, orgao executor, fiscal, motivo, tipo e mes (`/admin/dashboard/os`) |
 | Eventos      | Quantidade de eventos de acompanhamento por gerencia, equipe, procedimento, motivo, tipo e mes (`/admin/dashboard/eventos`) |
 
@@ -399,7 +408,9 @@ Score = 100
 
 Onde:
 - **Taxa de encerramento** = encerradas / (total - canceladas e substituidas) x 100
-- **OS sem ciencia** = OS que nao terminou com fiscal designado, e nao cancelado, sem `dataCiencia`
+- **OS sem ciencia** = a regra do alerta `os_sem_ciencia`: OS que nao terminou com fiscal designado,
+  e nao cancelado, sem `dataCiencia` ha mais de `dias_sem_ciencia` dias (3 de partida). Ate
+  06/10/2026 entrava qualquer fiscal sem ciencia, e quem foi designado na vespera ja pesava
 - Score final limitado entre 0 e 100
 - Gerencia sem OS no periodo fica fora do Termometro (sairia com 100 sem ter sido medida)
 
@@ -716,7 +727,7 @@ possiveis para a visibilidade em
 
 ### Resposta do Dashboard (`GET /admin/dashboard`)
 
-Visao geral (grupos de situacao, OS sem ciencia, taxa de encerramento),
+Visao geral (grupos de situacao, pendencias dos alertas, taxa de encerramento),
 comparativo mensal, pizza por situacao, evolucao mensal por safra,
 desempenho por gerencia e por equipe fiscal, Termometro e carga por
 fiscal. O JSON completo, a tabela de grupos de situacao e como cada corte
