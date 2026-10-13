@@ -35,6 +35,7 @@ from backend.external_api import (
     limpar_cache_atf,
     listar_ordens_atf,
     mesclar_detalhe_os,
+    sequencias_por_procedimento,
     url_base_detalhe_atf,
     validar_periodo_abertura,
 )
@@ -1434,6 +1435,116 @@ class TestSingleFlightEBuscaEmCache(unittest.TestCase):
                 _chamar_atf_https("https://atf.teste", numero_os="OS-2")
             self.assertEqual(_chamar_atf_https("https://atf.teste", numero_os="OS-2")[0]["numero_os"], "OS-2")
             self.assertEqual(post.call_count, 2)
+
+
+
+def _evento(numero: str, procedimento: int, inclusao: str, codigo: int = 0) -> dict:
+    """Evento no formato do servico de eventos em lote, so com o que a regra le."""
+    return {
+        "numero_os": numero,
+        "codigo_evento": codigo,
+        "procedimento_codigo": procedimento,
+        "procedimento": f"PROCEDIMENTO {procedimento}",
+        "data_inclusao": inclusao,
+    }
+
+
+class TestPrazosPorProcedimento(unittest.TestCase):
+    """
+    Prazo do "sem evento" por gerencia e procedimento do ultimo evento
+    (13/10/2026). Eventos seguidos do mesmo procedimento contam como um so:
+    a OS nao andou.
+    """
+
+    HOJE = date(2026, 9, 25)
+    # Fiscal 1 e da gerencia 7, fiscal 2 da 8, fiscal 3 de nenhuma.
+    GERENCIAS = {"1": {"id": 7, "nome": "G7"}, "2": {"id": 8, "nome": "G8"}}
+
+    def _os(self, *fiscais, ultimo="2026-09-20"):
+        return _os_atf("OS-1", 1, fiscais or [_fiscal("1")], data_ultimo_evento=ultimo)
+
+    def _seq(self, ordens, eventos, prazos):
+        return sequencias_por_procedimento(ordens, eventos, self.GERENCIAS, prazos)
+
+    def test_eventos_seguidos_do_mesmo_procedimento_contam_do_primeiro(self):
+        os_ = self._os()
+        eventos = [
+            _evento("OS-1", 10, "2026-08-01"),
+            _evento("OS-1", 19, "2026-09-01"),
+            _evento("OS-1", 19, "2026-09-20"),
+        ]
+        seq = self._seq([os_], eventos, {7: {19: 10}})
+        self.assertEqual(
+            seq["OS-1"],
+            {"procedimento_codigo": 19, "procedimento": "PROCEDIMENTO 19",
+             "desde": "2026-09-01", "eventos": 2, "prazo": 10},
+        )
+        # Pelo prazo geral (15 dias do ultimo evento, 20/09) nao haveria alerta.
+        self.assertEqual(gerar_alertas([os_], self.HOJE), [])
+        alertas = gerar_alertas([os_], self.HOJE, por_procedimento=seq)
+        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_eventos"])
+        self.assertEqual(alertas[0]["data"], "2026-09-01")
+        self.assertIn("24 dias", alertas[0]["titulo"])
+        self.assertIn("ultimos 2 eventos", alertas[0]["descricao"])
+        self.assertIn("10 dias", alertas[0]["descricao"])
+
+    def test_prazo_maior_que_o_geral_segura_o_alerta(self):
+        os_ = self._os(ultimo="2026-09-01")
+        seq = self._seq([os_], [_evento("OS-1", 19, "2026-09-01")], {7: {19: 30}})
+        self.assertEqual(seq["OS-1"]["eventos"], 1)
+        self.assertEqual(len(gerar_alertas([os_], self.HOJE)), 1)
+        self.assertEqual(gerar_alertas([os_], self.HOJE, por_procedimento=seq), [])
+
+    def test_procedimento_sem_prazo_fica_na_regra_geral(self):
+        eventos = [_evento("OS-1", 19, "2026-09-01"), _evento("OS-1", 10, "2026-09-20")]
+        self.assertEqual(self._seq([self._os()], eventos, {7: {19: 5}}), {})
+
+    def test_prazo_de_outra_gerencia_nao_vale(self):
+        os_ = self._os(_fiscal("3"))
+        self.assertEqual(self._seq([os_], [_evento("OS-1", 19, "2026-09-01")], {7: {19: 5}}), {})
+
+    def test_os_em_duas_gerencias_fica_com_o_menor_prazo(self):
+        os_ = self._os(_fiscal("1"), _fiscal("2"))
+        seq = self._seq([os_], [_evento("OS-1", 19, "2026-09-01")], {7: {19: 20}, 8: {19: 5}})
+        self.assertEqual(seq["OS-1"]["prazo"], 5)
+
+    def test_ordem_e_pela_data_de_inclusao(self):
+        """O servico nao devolve em ordem; o ultimo e o de inclusao mais recente."""
+        eventos = [
+            _evento("OS-1", 19, "2026-09-20", codigo=3),
+            _evento("OS-1", 10, "2026-08-01", codigo=1),
+            _evento("OS-1", 19, "2026-09-01", codigo=2),
+        ]
+        seq = self._seq([self._os()], eventos, {7: {19: 10}})
+        self.assertEqual((seq["OS-1"]["desde"], seq["OS-1"]["eventos"]), ("2026-09-01", 2))
+
+    def test_ciencia_depois_da_sequencia_conta_da_ciencia(self):
+        """Fiscal que chegou no meio da sequencia nao herda o atraso."""
+        os_ = self._os(_fiscal("1", designacao="2026-09-10", ciencia="2026-09-15"))
+        eventos = [_evento("OS-1", 19, "2026-08-01"), _evento("OS-1", 19, "2026-09-20")]
+        seq = self._seq([os_], eventos, {7: {19: 5}})
+        alertas = gerar_alertas([os_], self.HOJE, por_procedimento=seq)
+        self.assertEqual(alertas[0]["data"], "2026-09-15")
+        self.assertIn("antes da ciencia", alertas[0]["descricao"])
+
+    def test_tabela_vazia_nao_monta_nada(self):
+        self.assertEqual(self._seq([self._os()], [_evento("OS-1", 19, "2026-09-01")], {}), {})
+
+    def test_dashboard_conta_igual_aos_alertas(self):
+        os_ = self._os()
+        eventos = [_evento("OS-1", 19, "2026-09-01"), _evento("OS-1", 19, "2026-09-20")]
+        seq = self._seq([os_], eventos, {7: {19: 10}})
+        painel = gerar_dashboard_desempenho(
+            [os_], [{"id": 7, "nome": "G7"}], self.GERENCIAS, [], hoje=self.HOJE,
+            por_procedimento=seq,
+        )
+        self.assertEqual(painel["visao_geral"]["os_sem_eventos"], 1)
+        self.assertEqual(
+            gerar_dashboard_desempenho(
+                [os_], [{"id": 7, "nome": "G7"}], self.GERENCIAS, [], hoje=self.HOJE,
+            )["visao_geral"]["os_sem_eventos"],
+            0,
+        )
 
 
 if __name__ == "__main__":

@@ -49,6 +49,7 @@ from .db import (
     Database,
     EquipeFiscalRepository,
     GerenciaRepository,
+    PrazosProcedimentoRepository,
     SupervisaoRepository,
     UserRepository,
 )
@@ -66,6 +67,7 @@ from .external_api import (
     listar_eventos_atf,
     listar_ordens_atf,
     mesclar_detalhe_os,
+    sequencias_por_procedimento,
     universo_ordens_atf,
     validar_periodo_abertura,
 )
@@ -84,6 +86,8 @@ from .schemas import (
     OSDetalheCompletoResponse,
     OSDetalheResponse,
     PasswordChangeRequest,
+    PrazoProcedimento,
+    PrazosProcedimentoGerencia,
     PasswordResetResponse,
     SupervisaoCreateRequest,
     SupervisaoResponse,
@@ -157,6 +161,7 @@ gerencia_repo = GerenciaRepository(database)
 supervisao_repo = SupervisaoRepository(database)
 equipe_repo = EquipeFiscalRepository(database)
 config_alertas_repo = ConfigAlertasRepository(database)
+prazos_procedimento_repo = PrazosProcedimentoRepository(database)
 auth_service = AuthService(user_repo, PasswordHasher(), TokenStore())
 limitador_login = LimitadorLogin()
 
@@ -1325,9 +1330,10 @@ def list_alertas(
 
     config = _config_alertas()
     hoje = date.today()
+    data_inicio = (hoje - timedelta(days=config["janela_dias"])).isoformat()
     try:
         ordens = universo_ordens_atf(
-            data_inicio=(hoje - timedelta(days=config["janela_dias"])).isoformat(),
+            data_inicio=data_inicio,
             data_fim=hoje.isoformat(),
             matriculas_visiveis=matriculas,
         )
@@ -1337,8 +1343,44 @@ def list_alertas(
         raise _erro_transporte_atf(e, "Alertas")
     alertas = gerar_alertas(
         ordens, hoje, config, incluir_sem_designacao=user["role"] == "admin",
+        por_procedimento=_sequencias_por_procedimento(ordens, data_inicio, hoje.isoformat()),
     )
     return [AlertaResponse(**a) for a in alertas]
+
+
+def _sequencias_por_procedimento(
+    ordens: list[dict[str, Any]],
+    data_inicio: str,
+    data_fim: str,
+    gerencia_por_matricula: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """
+    Prazos por procedimento das OS de `ordens`, abertas de data_inicio a
+    data_fim (ver sequencias_por_procedimento).
+
+    So vai ao servico de eventos quando alguma gerencia gravou prazo: sem
+    tabela, a regra e a de sempre e nao custa chamada nenhuma. A consulta
+    e uma so, pelo mesmo periodo de abertura das OS — medida em producao
+    em 13/10/2026: um ano, 9222 eventos, 5,7 s.
+
+    Se o servico de eventos falhar, alertas e dashboard saem pelo prazo
+    geral em vez de nao sairem: ele ja sumiu de producao uma vez
+    (08/09/2026), e a regra geral continua certa sem ele.
+    """
+    prazos = prazos_procedimento_repo.listar()
+    if not prazos or not ordens:
+        return {}
+    try:
+        eventos = listar_eventos_atf(data_abertura_ini=data_inicio, data_abertura_fim=data_fim)
+    except (ValueError, requests.RequestException):
+        logger.warning(
+            "Servico de eventos falhou: o alerta sem evento sai so com o prazo geral.",
+            exc_info=True,
+        )
+        return {}
+    return sequencias_por_procedimento(
+        ordens, eventos, gerencia_por_matricula or _gerencia_por_matricula(), prazos,
+    )
 
 
 @app.get("/alertas/config", response_model=ConfigAlertas)
@@ -1348,6 +1390,58 @@ def get_config_alertas(user: dict[str, Any] = Depends(get_active_user)) -> Confi
     mostra as regras com os numeros de agora.
     """
     return ConfigAlertas(**_config_alertas())
+
+
+@app.get("/admin/alertas/prazos-procedimento", response_model=list[PrazosProcedimentoGerencia])
+def list_prazos_procedimento(
+    user: dict[str, Any] = Depends(get_active_user),
+) -> list[PrazosProcedimentoGerencia]:
+    """Prazos por procedimento de todas as gerencias que gravaram algum. Apenas admin."""
+    require_admin(user)
+    return [
+        PrazosProcedimentoGerencia(
+            gerencia_id=gerencia_id,
+            prazos=[
+                PrazoProcedimento(procedimento_codigo=codigo, dias=dias)
+                for codigo, dias in sorted(prazos.items())
+            ],
+        )
+        for gerencia_id, prazos in sorted(prazos_procedimento_repo.listar().items())
+    ]
+
+
+@app.put(
+    "/admin/alertas/prazos-procedimento/{gerencia_id}",
+    response_model=PrazosProcedimentoGerencia,
+)
+def update_prazos_procedimento(
+    gerencia_id: int,
+    payload: list[PrazoProcedimento],
+    user: dict[str, Any] = Depends(get_active_user),
+) -> PrazosProcedimentoGerencia:
+    """
+    Troca a tabela inteira de uma gerencia: procedimento que nao vier
+    volta para o prazo geral. Apenas admin. Vale da proxima consulta em
+    diante.
+    """
+    require_admin(user)
+    if gerencia_repo.get_gerencia(gerencia_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gerencia nao encontrada")
+    prazos = {p.procedimento_codigo: p.dias for p in payload}
+    if len(prazos) != len(payload):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Procedimento repetido: informe um prazo so para cada um.",
+        )
+    prazos_procedimento_repo.salvar_gerencia(gerencia_id, prazos)
+    logger.info(
+        "Prazos por procedimento da gerencia %s alterados por '%s': %s.",
+        gerencia_id, user["username"], prazos,
+    )
+    return PrazosProcedimentoGerencia(
+        gerencia_id=gerencia_id,
+        prazos=[PrazoProcedimento(procedimento_codigo=c, dias=d) for c, d in sorted(prazos.items())],
+    )
 
 
 @app.put("/admin/alertas/config", response_model=ConfigAlertas)
@@ -1435,13 +1529,17 @@ def _dashboard_desempenho(data_inicio: str | None, data_fim: str | None) -> dict
     except requests.RequestException as e:
         raise _erro_transporte_atf(e, "Dashboard de desempenho")
 
+    gerencia_por_matricula = _gerencia_por_matricula()
     dashboard = gerar_dashboard_desempenho(
         ordens,
         [{"id": g["id"], "nome": g["name"]} for g in gerencia_repo.list_gerencias()],
-        _gerencia_por_matricula(),
+        gerencia_por_matricula,
         _equipes_do_painel(),
         hoje=date.today(),
         config=_config_alertas(),
+        por_procedimento=_sequencias_por_procedimento(
+            ordens, data_inicio, data_fim, gerencia_por_matricula,
+        ),
     )
     dashboard["periodo"] = {"inicio": data_inicio, "fim": data_fim}
     return dashboard
@@ -2025,7 +2123,11 @@ def _notas_desempenho(dashboard: dict[str, Any]) -> list[str]:
         (
             f"Pendencias em {date.today().strftime('%d/%m/%Y')}, com os prazos dos alertas: "
             f"sem designacao ha mais de {prazos['dias_sem_designacao']} dias, sem ciencia ha mais "
-            f"de {prazos['dias_sem_ciencia']}, sem evento ha mais de {prazos['dias_sem_eventos']}."
+            f"de {prazos['dias_sem_ciencia']}, sem evento ha mais de {prazos['dias_sem_eventos']}"
+            + (
+                " (ou o prazo do procedimento do ultimo evento, onde a gerencia definiu)."
+                if prazos_procedimento_repo.listar() else "."
+            )
         ),
     ]
 

@@ -40,7 +40,8 @@ function descreverRegras(config, isAdmin) {
   const regras = [
     isAdmin && `OS sem fiscal designado ha mais de ${config.dias_sem_designacao} dias da abertura (so o admin ve)`,
     `fiscal sem ciencia ha mais de ${config.dias_sem_ciencia} dias da designacao`,
-    `OS autorizada sem evento ha mais de ${config.dias_sem_eventos} dias, contando do ultimo evento, ou da ciencia quando ainda nao teve nenhum`,
+    `OS autorizada sem evento ha mais de ${config.dias_sem_eventos} dias, contando do ultimo evento, ou da ciencia quando ainda nao teve nenhum`
+      + " (onde a gerencia deu prazo para o procedimento do ultimo evento, vale ele, e eventos seguidos do mesmo procedimento contam como um so)",
   ].filter(Boolean);
   return (
     `Gerados sobre as OS do ATF que voce enxerga, abertas nos ultimos ${config.janela_dias} dias: `

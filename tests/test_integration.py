@@ -41,6 +41,7 @@ def _create_app(db_path: str) -> TestClient:
         Database,
         EquipeFiscalRepository,
         GerenciaRepository,
+        PrazosProcedimentoRepository,
         SupervisaoRepository,
         UserRepository,
     )
@@ -51,6 +52,7 @@ def _create_app(db_path: str) -> TestClient:
     supervisao_repo = SupervisaoRepository(database)
     equipe_repo = EquipeFiscalRepository(database)
     config_alertas_repo = ConfigAlertasRepository(database)
+    prazos_procedimento_repo = PrazosProcedimentoRepository(database)
     auth_service = AuthService(user_repo, PasswordHasher(), TokenStore())
 
     # Patcheia os objetos do modulo main com nossas instancias isoladas
@@ -62,6 +64,7 @@ def _create_app(db_path: str) -> TestClient:
     main_module.supervisao_repo = supervisao_repo
     main_module.equipe_repo = equipe_repo
     main_module.config_alertas_repo = config_alertas_repo
+    main_module.prazos_procedimento_repo = prazos_procedimento_repo
     main_module.auth_service = auth_service
     # Sem isso o seed gera uma senha aleatoria para o admin e o teste nao
     # teria como entrar (e o proposito de nao existir senha fixa).
@@ -2402,6 +2405,73 @@ class TestEndurecimentoHTTP(IntegrationTestBase):
             headers=cabecalho,
         )
         self.assertEqual(r.status_code, 422)
+
+
+
+class TestPrazosProcedimentoEndpoints(IntegrationTestBase):
+    """Tabela gerencia x procedimento -> dias do alerta sem evento. So o admin."""
+
+    def _gerencia_id(self):
+        return self.client.get("/admin/gerencias", headers=self._admin_header()).json()[0]["id"]
+
+    def test_admin_grava_e_le(self):
+        H = self._admin_header()
+        gid = self._gerencia_id()
+        self.assertEqual(self.client.get("/admin/alertas/prazos-procedimento", headers=H).json(), [])
+        prazos = [{"procedimento_codigo": 19, "dias": 10}, {"procedimento_codigo": 10, "dias": 30}]
+        r = self.client.put(f"/admin/alertas/prazos-procedimento/{gid}", json=prazos, headers=H)
+        self.assertEqual(r.status_code, 200, r.text)
+        esperado = [{"gerencia_id": gid, "prazos": sorted(prazos, key=lambda p: p["procedimento_codigo"])}]
+        self.assertEqual(self.client.get("/admin/alertas/prazos-procedimento", headers=H).json(), esperado)
+
+    def test_quem_nao_e_admin_nao_le_nem_grava(self):
+        H = self._auth_header(self._login_como("Carlos Mendes"))
+        gid = self._gerencia_id()
+        self.assertEqual(self.client.get("/admin/alertas/prazos-procedimento", headers=H).status_code, 403)
+        r = self.client.put(f"/admin/alertas/prazos-procedimento/{gid}", json=[], headers=H)
+        self.assertEqual(r.status_code, 403)
+
+    def test_recusa_gerencia_inexistente_repetido_e_fora_dos_limites(self):
+        H = self._admin_header()
+        gid = self._gerencia_id()
+        url = f"/admin/alertas/prazos-procedimento/{gid}"
+        self.assertEqual(
+            self.client.put("/admin/alertas/prazos-procedimento/9999", json=[], headers=H).status_code, 404,
+        )
+        repetido = [{"procedimento_codigo": 19, "dias": 10}, {"procedimento_codigo": 19, "dias": 5}]
+        self.assertEqual(self.client.put(url, json=repetido, headers=H).status_code, 400)
+        for dias in (-1, 366):
+            with self.subTest(dias=dias):
+                r = self.client.put(url, json=[{"procedimento_codigo": 19, "dias": dias}], headers=H)
+                self.assertEqual(r.status_code, 422)
+
+    def test_alertas_so_consultam_eventos_com_a_tabela_preenchida(self):
+        H = self._admin_header()
+        with patch("backend.main.listar_eventos_atf", return_value=[]) as eventos:
+            self.client.get("/alertas", headers=H)
+            eventos.assert_not_called()
+            self.client.put(
+                f"/admin/alertas/prazos-procedimento/{self._gerencia_id()}",
+                json=[{"procedimento_codigo": 19, "dias": 10}], headers=H,
+            )
+            r = self.client.get("/alertas", headers=H)
+            self.assertEqual(r.status_code, 200, r.text)
+            eventos.assert_called_once()
+            kwargs = eventos.call_args.kwargs
+            self.assertIn("data_abertura_ini", kwargs)
+
+    def test_falha_no_servico_de_eventos_cai_no_prazo_geral(self):
+        import requests
+
+        H = self._admin_header()
+        self.client.put(
+            f"/admin/alertas/prazos-procedimento/{self._gerencia_id()}",
+            json=[{"procedimento_codigo": 19, "dias": 10}], headers=H,
+        )
+        com_tabela = patch("backend.main.listar_eventos_atf", side_effect=requests.ConnectionError())
+        with com_tabela, self.assertLogs("sefaz.main", level="WARNING"):
+            r = self.client.get("/alertas", headers=H)
+        self.assertEqual(r.status_code, 200, r.text)
 
 
 if __name__ == "__main__":

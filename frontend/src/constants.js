@@ -137,6 +137,45 @@ export const orgaoExecutorOptions = Object.entries(orgaoExecutorLabels)
   .map(([codigo, sigla]) => ({ codigo, sigla }))
   .sort((a, b) => a.sigla.localeCompare(b.sigla, "pt-BR"));
 
+/** Procedimentos de evento do ATF (cdProcedimento => noProcedimento).
+ *  Os 29 que aparecem nos eventos de OS abertas de 10/2025 a 10/2026,
+ *  medido em producao em 13/10/2026 — o ATF nao expoe a tabela, e os
+ *  codigos que faltam (4, 5, 8...) nao tiveram evento no periodo. E a
+ *  lista da tabela de prazos por procedimento dos alertas: procedimento
+ *  novo so ganha prazo depois de entrar aqui. Os nomes vao como o ATF
+ *  escreve, com o travessao que ele manda quebrado ja corrigido. */
+export const procedimentoLabels = {
+  1: "AUDITORIA DA CONTA CAIXA",
+  2: "AUDITORIA DA CONTA BANCOS",
+  3: "AUDITORIA DO PASSIVO",
+  6: "AUDITORIA NA ESCRITA CONTÁBIL",
+  7: "CONFRONTO FISCAL/CONTÁBIL",
+  9: "AUDITORIA NA ESCRITA FISCAL E CONTÁBIL",
+  10: "AUDITORIA NA ESCRITA FISCAL",
+  12: "ACERCA DE NÃO CONTENCIOSOS",
+  13: "LEVANTAMENTO FINANCEIRO",
+  14: "LEVANTAMENTO QUANTITATIVO DE MERCADORIAS",
+  15: "AUDITORIA - SUBSTITUIÇÃO TRIBUTÁRIA",
+  16: "CONTA MERCADORIAS",
+  17: "AUDITORIA - PROC. ELETRÔNICO DE DADOS",
+  19: "OUTROS",
+  20: "AUDITORIA - ECF",
+  21: "AUDITORIA - OBRIG. ACESSÓRIA",
+  23: "AUDITORIA - SELO DE AUTENTICAÇÃO FISCAL",
+  29: "AUDITORIA-SIMPLES NACIONAL",
+  31: "AUDITORIA OBRIGAÇÃO PRINCIPAL",
+  32: "AUDITORIA - VENDAS COM CARTÃO DE CRÉDITO/DÉBITO",
+  33: "AUDITORIA – CONFORMIDADE (EFD X DOCUMENTOS FISCAIS",
+  35: "AUDITORIA - CRÉDITOS",
+  37: "AUDITORIA - TRIBUTAÇÃO DE ITEM/PRODUTO ESPECÍFICO",
+  38: "AUDITORIA - MUDANÇA DE REGIME DE APURAÇÃO",
+  39: "AUDITORIA - ICMS DIFERENCIAL DE ALÍQUOTA/FRONTEIRA",
+  40: "AUDITORIA - CONFORMIDADE (EFD X TRANSPORTE SALDO)",
+  42: "AUDITORIA – DÉBITOS",
+  43: "AUDITORIA – CONFORMIDADE (APURAÇÃO EFD)",
+  44: "DIFAL NÃO CONTRIBUINTES",
+};
+
 /** Mantido para compatibilidade com componentes de dashboard. */
 export const statusLabels = {
   aberta: "Aberta",

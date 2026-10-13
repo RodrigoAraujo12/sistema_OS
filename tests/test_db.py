@@ -12,7 +12,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.db import Database, GerenciaRepository, SupervisaoRepository, UserRepository
+from backend.db import (
+    Database,
+    GerenciaRepository,
+    PrazosProcedimentoRepository,
+    SupervisaoRepository,
+    UserRepository,
+)
 
 # Path sentinela para in-memory, nunca sera usado de fato
 _MEMORY = Path(":memory:")
@@ -214,6 +220,36 @@ class TestSupervisaoRepository(unittest.TestCase):
         s = self.repo.get_supervisao(sid)
         self.assertEqual(s["name"], "Sup C Novo")
         self.assertEqual(s["gerencia_id"], gid2)
+
+
+
+class TestPrazosProcedimentoRepository(unittest.TestCase):
+    """Prazo do "sem evento" por gerencia e procedimento."""
+
+    def setUp(self):
+        self.db = InMemoryDatabase()
+        self.db.init_schema()
+        self.repo = PrazosProcedimentoRepository(self.db)
+        gerencias = GerenciaRepository(self.db)
+        self.g1 = gerencias.create_gerencia("G1")
+        self.g2 = gerencias.create_gerencia("G2")
+
+    def test_vazio_enquanto_ninguem_grava(self):
+        self.assertEqual(self.repo.listar(), {})
+
+    def test_grava_por_gerencia(self):
+        self.repo.salvar_gerencia(self.g1, {19: 10, 10: 30})
+        self.repo.salvar_gerencia(self.g2, {19: 5})
+        self.assertEqual(self.repo.listar(), {self.g1: {19: 10, 10: 30}, self.g2: {19: 5}})
+
+    def test_salvar_troca_a_tabela_inteira_da_gerencia(self):
+        """O que nao veio sai e volta ao prazo geral; a outra gerencia fica."""
+        self.repo.salvar_gerencia(self.g1, {19: 10, 10: 30})
+        self.repo.salvar_gerencia(self.g2, {19: 5})
+        self.repo.salvar_gerencia(self.g1, {10: 20})
+        self.assertEqual(self.repo.listar(), {self.g1: {10: 20}, self.g2: {19: 5}})
+        self.repo.salvar_gerencia(self.g1, {})
+        self.assertEqual(self.repo.listar(), {self.g2: {19: 5}})
 
 
 if __name__ == "__main__":

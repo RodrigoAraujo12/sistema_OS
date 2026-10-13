@@ -230,6 +230,22 @@ class AlertaResponse(BaseModel):
     fiscais: list[str] = []
 
 
+class PrazoProcedimento(BaseModel):
+    """
+    Prazo do alerta "sem evento" para um procedimento do ATF
+    (cdProcedimento), em dias. Substitui o prazo geral quando o ultimo
+    evento da OS e desse procedimento — ver sequencias_por_procedimento.
+    """
+    procedimento_codigo: int = Field(ge=0)
+    dias: int = Field(ge=0, le=365)
+
+
+class PrazosProcedimentoGerencia(BaseModel):
+    """Os prazos por procedimento que uma gerencia gravou."""
+    gerencia_id: int
+    prazos: list[PrazoProcedimento]
+
+
 class ConfigAlertas(BaseModel):
     """
     Prazos dos alertas, em dias, e a janela de busca (OS abertas nos

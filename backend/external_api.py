@@ -2546,7 +2546,71 @@ def _fiscais_ativos(o: dict[str, Any]) -> list[dict[str, Any]]:
     return [f for f in o.get("fiscais") or [] if not f.get("data_cancelamento")]
 
 
-def _pendencias(o: dict[str, Any], hoje: date, prazos: dict[str, int]) -> dict[str, Any]:
+def sequencias_por_procedimento(
+    ordens: list[dict[str, Any]],
+    eventos: list[dict[str, Any]],
+    gerencia_por_matricula: dict[str, dict[str, Any]],
+    prazos_por_gerencia: dict[int, dict[int, int]],
+) -> dict[str, dict[str, Any]]:
+    """
+    Por numero de OS, o procedimento em que ela esta parada e o prazo que
+    a gerencia deu para ele — so para as OS em que esse prazo existe.
+
+    Regra pedida pelo Rodrigo em 13/10/2026: a gerencia da um prazo em
+    dias para cada procedimento do ATF, e o do ULTIMO evento substitui o
+    prazo geral de "sem evento". Eventos seguidos do mesmo procedimento
+    contam como um so ("nao andou ou fez a mesma coisa"): a contagem parte
+    do primeiro da sequencia final, e nao do ultimo.
+
+    `eventos` vem do servico de eventos em lote. A ordem e pela data de
+    INCLUSAO, a mesma que o ATF usa no dataUltimoEventoOS da listagem
+    (bateu em 541 de 541 OS em 13/10/2026). A gerencia da OS sai das
+    matriculas dos fiscais, como no dashboard (ver _chaves_gerencia); OS
+    em duas gerencias com prazos diferentes fica com o menor.
+
+    Cada item: procedimento_codigo, procedimento, desde (inclusao do
+    primeiro evento da sequencia), eventos (quantos na sequencia) e prazo.
+    """
+    if not prazos_por_gerencia:
+        return {}
+    por_os: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for e in eventos:
+        if e.get("numero_os"):
+            por_os[e["numero_os"]].append(e)
+
+    sequencias: dict[str, dict[str, Any]] = {}
+    for o in ordens:
+        numero = o.get("numero_os")
+        lista = por_os.get(numero)
+        if not lista:
+            continue
+        prazos_da_os: dict[int, int] = {}
+        for gerencia_id, _ in _chaves_gerencia(o, gerencia_por_matricula):
+            for codigo, dias in (prazos_por_gerencia.get(gerencia_id) or {}).items():
+                prazos_da_os[codigo] = min(dias, prazos_da_os.get(codigo, dias))
+        lista = sorted(lista, key=lambda e: (e.get("data_inclusao") or "", e.get("codigo_evento") or 0))
+        codigo = lista[-1].get("procedimento_codigo")
+        if codigo not in prazos_da_os:
+            continue
+        seguidos = 1
+        while seguidos < len(lista) and lista[-seguidos - 1].get("procedimento_codigo") == codigo:
+            seguidos += 1
+        sequencias[numero] = {
+            "procedimento_codigo": codigo,
+            "procedimento": lista[-1].get("procedimento") or f"procedimento {codigo}",
+            "desde": lista[-seguidos].get("data_inclusao"),
+            "eventos": seguidos,
+            "prazo": prazos_da_os[codigo],
+        }
+    return sequencias
+
+
+def _pendencias(
+    o: dict[str, Any],
+    hoje: date,
+    prazos: dict[str, int],
+    sequencia: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     As tres regras dos alertas aplicadas a uma OS, sem o texto: de quando
     conta cada atraso que ja passou do prazo. Os alertas escrevem daqui e
@@ -2557,6 +2621,10 @@ def _pendencias(o: dict[str, Any], hoje: date, prazos: dict[str, int]) -> dict[s
     - sem_ciencia: [(designacao, fiscal)] de quem passou do prazo, o mais
       antigo primeiro;
     - sem_eventos: data de onde a OS conta sem evento, ou None.
+
+    `sequencia` e o item da OS em sequencias_por_procedimento, quando a
+    gerencia dela tem prazo para o procedimento do ultimo evento: ai o
+    "sem evento" usa esse prazo e conta do primeiro evento da sequencia.
 
     Ate 06/10/2026 o dashboard contava qualquer fiscal sem ciencia, sem
     prazo — a regra antiga —, e um fiscal designado na vespera ja pesava
@@ -2591,9 +2659,12 @@ def _pendencias(o: dict[str, Any], hoje: date, prazos: dict[str, int]) -> dict[s
     if (o.get("situacao") or {}).get("codigo") == _SITUACAO_AUTORIZADA:
         ciencias = [f["data_ciencia"] for f in ativos if f.get("data_ciencia")]
         if ciencias:
-            inicio = max(filter(None, (o.get("data_ultimo_evento"), min(ciencias))))
+            ultimo_evento, prazo = o.get("data_ultimo_evento"), prazos["dias_sem_eventos"]
+            if sequencia:
+                ultimo_evento, prazo = sequencia["desde"], sequencia["prazo"]
+            inicio = max(filter(None, (ultimo_evento, min(ciencias))))
             dias = _dias_desde(inicio, hoje)
-            if dias is not None and dias > prazos["dias_sem_eventos"]:
+            if dias is not None and dias > prazo:
                 pendencias["sem_eventos"] = inicio
 
     return pendencias
@@ -2826,6 +2897,7 @@ def gerar_dashboard_desempenho(
     equipes: list[dict[str, Any]],
     hoje: date,
     config: dict[str, int] | None = None,
+    por_procedimento: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Visao geral, gerencias, equipes e carga por fiscal sobre a listagem
@@ -2845,13 +2917,19 @@ def gerar_dashboard_desempenho(
     As pendencias (sem designacao, sem ciencia, sem eventos) sao as dos
     alertas, com os prazos de `config` — o que o admin gravou, com
     CONFIG_ALERTAS_PADRAO no que faltar — e contadas em `hoje`: e a
-    situacao de agora das OS abertas no periodo.
+    situacao de agora das OS abertas no periodo. `por_procedimento` sao os
+    prazos por procedimento (ver sequencias_por_procedimento), os mesmos
+    que os alertas usam.
     """
     prazos = {**CONFIG_ALERTAS_PADRAO, **(config or {})}
+    por_procedimento = por_procedimento or {}
     # Por id da OS: ela entra no geral, em cada gerencia e equipe que
     # alcanca e no comparativo, e a regra roda uma vez so. O dict da OS
     # vem do cache da listagem, por isso a pendencia nao e gravada nele.
-    pendencias = {id(o): _pendencias(o, hoje, prazos) for o in ordens}
+    pendencias = {
+        id(o): _pendencias(o, hoje, prazos, por_procedimento.get(o.get("numero_os")))
+        for o in ordens
+    }
     geral = _metricas_desempenho(ordens, pendencias)
 
     # ── Gerencias: todas as do cadastro, mesmo sem OS no periodo ──
@@ -2967,6 +3045,7 @@ def gerar_alertas(
     hoje: date,
     config: dict[str, int] | None = None,
     incluir_sem_designacao: bool = False,
+    por_procedimento: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Alertas sobre as OS do ATF que o usuario enxerga.
@@ -2993,7 +3072,10 @@ def gerar_alertas(
       contando do ultimo evento ou, se ainda nao houve nenhum, da primeira
       ciencia. Vale o mais recente dos dois: um fiscal designado depois
       do ultimo evento conta da ciencia dele. Sem ciencia nenhuma nao ha
-      alerta de evento — a pendencia ainda e a ciencia.
+      alerta de evento — a pendencia ainda e a ciencia. Quando a gerencia
+      da OS deu prazo para o procedimento do ultimo evento
+      (`por_procedimento`, ver sequencias_por_procedimento), vale esse
+      prazo, e eventos seguidos do mesmo procedimento contam como um so.
 
     Nao ha severidade: a area pediu para tirar a classificacao
     alta/media/baixa. `data` e quando o problema comecou, e o mais antigo
@@ -3008,11 +3090,13 @@ def gerar_alertas(
     desempenho tambem usa: aqui so se escreve o texto.
     """
     prazos = {**CONFIG_ALERTAS_PADRAO, **(config or {})}
+    por_procedimento = por_procedimento or {}
     alertas: list[dict[str, Any]] = []
 
     for o in ordens:
-        pendencia = _pendencias(o, hoje, prazos)
         numero = o.get("numero_os") or ""
+        sequencia = por_procedimento.get(numero)
+        pendencia = _pendencias(o, hoje, prazos, sequencia)
         razao = o.get("razao_social") or "Contribuinte nao informado"
         ie = o.get("ie") or "-"
 
@@ -3064,7 +3148,23 @@ def gerar_alertas(
         if inicio:
             dias = _dias_desde(inicio, hoje)
             ultimo_evento = o.get("data_ultimo_evento")
-            if inicio == ultimo_evento:
+            if sequencia:
+                nome = sequencia["procedimento"]
+                if inicio != sequencia["desde"]:
+                    desde = (
+                        f"Os eventos de {nome} comecaram em {_data_br(sequencia['desde'])}, "
+                        f"antes da ciencia de {_data_br(inicio)}, que e de onde a contagem parte."
+                    )
+                elif sequencia["eventos"] > 1:
+                    desde = (
+                        f"Os ultimos {sequencia['eventos']} eventos sao todos de {nome}, o "
+                        f"primeiro em {_data_br(inicio)}: repetir o procedimento nao conta "
+                        "como andamento."
+                    )
+                else:
+                    desde = f"Ultimo evento em {_data_br(inicio)}, de {nome}."
+                desde += f" O prazo da gerencia para {nome} e de {sequencia['prazo']} dias."
+            elif inicio == ultimo_evento:
                 desde = f"Ultimo evento em {_data_br(inicio)}."
             elif ultimo_evento:
                 desde = (
@@ -3289,7 +3389,10 @@ def _parse_resposta_eventos_soap(xml_text: str) -> list[dict[str, Any]]:
             "equipe_fiscal": _txt(e_el, "noEquipeFisc"),
             # Codigo antigo vira o atual, como na listagem de OS.
             "equipe_fiscal_codigo": equipe_atual(_int_ou_none(_txt(e_el, "cdEquipeFisc"))),
-            "procedimento": _txt(e_el, "noProcedimento"),
+            # Alguns nomes chegam com o travessao do Windows-1252 (0x96)
+            # lido como Latin-1 ("AUDITORIA \x96 DEBITOS", medido em
+            # producao em 13/10/2026); na tela vira caractere de controle.
+            "procedimento": _txt(e_el, "noProcedimento").replace("\x96", "\u2013"),
             "procedimento_codigo": _int_ou_none(_txt(e_el, "cdProcedimento")),
             "data_abertura": _data_do_atf(_txt(e_el, "dataAberturaOS")) or None,
             "data_inicio_fiscalizacao": (

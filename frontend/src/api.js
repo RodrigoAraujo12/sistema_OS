@@ -251,6 +251,20 @@ class ApiClient {
     });
   }
 
+  /** Prazos do "sem evento" por gerencia e procedimento (admin):
+   *  [{gerencia_id, prazos: [{procedimento_codigo, dias}]}]. */
+  listarPrazosProcedimento() {
+    return this.request("/admin/alertas/prazos-procedimento");
+  }
+
+  /** Troca a tabela inteira de uma gerencia; o que nao vier volta ao prazo geral. */
+  salvarPrazosProcedimento(gerenciaId, prazos) {
+    return this.request(`/admin/alertas/prazos-procedimento/${gerenciaId}`, {
+      method: "PUT",
+      body: JSON.stringify(prazos)
+    });
+  }
+
   // Dashboard (admin only)
   getDashboard({ dataInicio, dataFim } = {}) {
     const params = new URLSearchParams();
