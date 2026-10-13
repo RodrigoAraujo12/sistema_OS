@@ -225,6 +225,9 @@ class AlertaResponse(BaseModel):
     descricao: str
     referencia: str
     data: str
+    # Nome de quem o alerta cobra (ver gerar_alertas). A OS do alerta e
+    # `referencia`: a tela abre o detalhe dela por ali.
+    fiscais: list[str] = []
 
 
 class ConfigAlertas(BaseModel):

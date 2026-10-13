@@ -8,9 +8,13 @@
  *
  * Sem classificacao alta/media/baixa desde 05/10/2026, a pedido da area:
  * o que distingue um alerta do outro e o tipo.
+ *
+ * Cada alerta mostra o fiscal que ele cobra e, no clique, abre o detalhe
+ * da OS — o mesmo modal da tela de OS (DetalheOS).
  */
 
 import React, { useEffect, useRef, useState } from "react";
+import DetalheOS from "./DetalheOS.jsx";
 
 /**
  * Com dados reais passa de mil alertas. Os alertas ja chegam todos de uma
@@ -23,6 +27,12 @@ const ROTULO_TIPO = {
   os_sem_ciencia: "sem ciencia",
   os_sem_eventos: "sem evento",
 };
+
+/** "Fiscal: FULANO", "Fiscais: A, B"; sem designacao nao ha ninguem. */
+function textoFiscais(fiscais) {
+  if (!fiscais?.length) return "Sem fiscal designado";
+  return `${fiscais.length > 1 ? "Fiscais" : "Fiscal"}: ${fiscais.join(", ")}`;
+}
 
 /** As regras com os prazos em vigor, na ordem em que a OS anda. */
 function descreverRegras(config, isAdmin) {
@@ -40,6 +50,8 @@ function descreverRegras(config, isAdmin) {
 
 export default function AlertasPanel({ alertas, config, isAdmin, carregando, onAtualizar }) {
   const [pagina, setPagina] = useState(1);
+  // OS do alerta clicado ({ numero }); null = modal fechado.
+  const [osAberta, setOsAberta] = useState(null);
   const topoRef = useRef(null);
 
   // Lista nova, recomeca da primeira pagina.
@@ -54,6 +66,15 @@ export default function AlertasPanel({ alertas, config, isAdmin, carregando, onA
   function irPara(p) {
     setPagina(Math.min(Math.max(1, p), totalPaginas));
     topoRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  /** Abre o detalhe da OS do alerta. Enter e espaco valem como clique. */
+  function abrirOS(alerta, e) {
+    if (e?.type === "keydown") {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+    }
+    setOsAberta({ numero: alerta.referencia });
   }
 
   return (
@@ -82,18 +103,34 @@ export default function AlertasPanel({ alertas, config, isAdmin, carregando, onA
       ) : (
         <>
           <div className="alertas-list">
-            {daPagina.map((alerta, i) => (
-              <div key={`${alerta.tipo}-${alerta.referencia}-${i}`} className="alerta-card">
-                <div className="alerta-header">
-                  <span className="badge normal">{ROTULO_TIPO[alerta.tipo] || alerta.tipo.replace(/_/g, " ")}</span>
+            {daPagina.map((alerta, i) => {
+              // Sem numero de OS nao ha o que abrir.
+              const clicavel = Boolean(alerta.referencia);
+              return (
+                <div
+                  key={`${alerta.tipo}-${alerta.referencia}-${i}`}
+                  className={`alerta-card${clicavel ? " alerta-card-clicavel" : ""}`}
+                  {...(clicavel && {
+                    role: "button",
+                    tabIndex: 0,
+                    title: "Clique para ver os detalhes da OS",
+                    onClick: (e) => abrirOS(alerta, e),
+                    onKeyDown: (e) => abrirOS(alerta, e),
+                  })}
+                >
+                  <div className="alerta-header">
+                    <span className="badge normal">{ROTULO_TIPO[alerta.tipo] || alerta.tipo.replace(/_/g, " ")}</span>
+                  </div>
+                  <h3 className="alerta-titulo">{alerta.titulo}</h3>
+                  <p className="alerta-fiscal"><strong>{textoFiscais(alerta.fiscais)}</strong></p>
+                  <p className="alerta-descricao">{alerta.descricao}</p>
+                  <div className="alerta-rodape">
+                    <span className="muted">Ref: {alerta.referencia}</span>
+                    {clicavel && <span className="alerta-ver-os">Ver detalhes da OS ›</span>}
+                  </div>
                 </div>
-                <h3 className="alerta-titulo">{alerta.titulo}</h3>
-                <p className="alerta-descricao">{alerta.descricao}</p>
-                <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
-                  Ref: {alerta.referencia}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           {totalPaginas > 1 && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 16 }}>
@@ -108,6 +145,8 @@ export default function AlertasPanel({ alertas, config, isAdmin, carregando, onA
           )}
         </>
       )}
+
+      <DetalheOS alvo={osAberta} onClose={() => setOsAberta(null)} />
     </div>
   );
 }

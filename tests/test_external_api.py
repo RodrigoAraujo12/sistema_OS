@@ -859,6 +859,17 @@ class TestGerarAlertas(unittest.TestCase):
             [],
         )
 
+    def test_sem_evento_nomeia_os_fiscais_que_valem(self):
+        """Quem teve a designacao cancelada nao responde mais pela OS."""
+        fiscais = [
+            _fiscal("1", ciencia="2026-01-02", cancelamento="2026-06-01"),
+            _fiscal("2", ciencia="2026-08-01"),
+            _fiscal("3", ciencia="2026-08-02"),
+        ]
+        alertas = self._alertas(_os_atf("OS-1", 1, fiscais))
+        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_eventos"])
+        self.assertEqual(alertas[0]["fiscais"], ["Fiscal 2", "Fiscal 3"])
+
     def test_so_a_autorizada_cobra_evento(self):
         """Suspensa, em analise e aguardando autorizacao nao esperam evento."""
         for situacao in (0, 6, 7):
@@ -893,6 +904,7 @@ class TestGerarAlertas(unittest.TestCase):
         self.assertEqual(len(alertas), 1)
         self.assertIn("Fiscal 1", alertas[0]["descricao"])
         self.assertNotIn("Fiscal 2", alertas[0]["descricao"])
+        self.assertEqual(alertas[0]["fiscais"], ["Fiscal 1"])
 
     def test_bloqueada_sem_ciencia_aponta_o_supervisor(self):
         alertas = self._alertas(_os_atf("OS-1", 5, [_fiscal("1", ciencia=None, designacao="2026-09-01")]))
@@ -916,6 +928,7 @@ class TestGerarAlertas(unittest.TestCase):
         self.assertEqual([a["tipo"] for a in alertas], ["os_sem_designacao"])
         self.assertIn("24 dias", alertas[0]["titulo"])
         self.assertEqual(alertas[0]["data"], "2026-09-01")
+        self.assertEqual(alertas[0]["fiscais"], [])
         self.assertEqual(self._tipos(os_sem_fiscal), [])
 
     def test_sem_designacao_dentro_do_prazo_nao_alerta(self):

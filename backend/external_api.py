@@ -2957,6 +2957,11 @@ def _dias_desde(valor: str | None, hoje: date) -> int | None:
         return None
 
 
+def _nome_fiscal(f: dict[str, Any]) -> str:
+    """Nome do fiscal; a matricula quando o ATF nao manda o nome."""
+    return f.get("nome") or f.get("matricula") or "fiscal sem nome"
+
+
 def gerar_alertas(
     ordens: list[dict[str, Any]],
     hoje: date,
@@ -2994,6 +2999,11 @@ def gerar_alertas(
     alta/media/baixa. `data` e quando o problema comecou, e o mais antigo
     vem primeiro.
 
+    `fiscais` e o nome de quem o alerta cobra, para a tela mostrar sem o
+    leitor ter de garimpar a descricao: na ciencia, so quem passou do
+    prazo; no evento, todos os designados que valem; sem designacao, nao
+    ha ninguem.
+
     A conta de cada regra fica em _pendencias, que o dashboard de
     desempenho tambem usa: aqui so se escreve o texto.
     """
@@ -3022,15 +3032,15 @@ def gerar_alertas(
                 ),
                 "referencia": numero,
                 "data": inicio,
+                "fiscais": [],
             })
 
         atrasados = pendencia["sem_ciencia"]
         if atrasados:
             inicio = atrasados[0][0]
             dias = _dias_desde(inicio, hoje)
-            nomes = ", ".join(
-                f.get("nome") or f.get("matricula") or "fiscal sem nome" for _, f in atrasados
-            )
+            fiscais = [_nome_fiscal(f) for _, f in atrasados]
+            nomes = ", ".join(fiscais)
             bloqueada = _grupo_situacao(o) == "bloqueada"
             descricao = (
                 f"A OS {numero} (IE: {ie}) aguarda a ciencia de {nomes}, "
@@ -3047,6 +3057,7 @@ def gerar_alertas(
                 "descricao": descricao,
                 "referencia": numero,
                 "data": inicio,
+                "fiscais": fiscais,
             })
 
         inicio = pendencia["sem_eventos"]
@@ -3071,6 +3082,7 @@ def gerar_alertas(
                 ),
                 "referencia": numero,
                 "data": inicio,
+                "fiscais": [_nome_fiscal(f) for f in _fiscais_ativos(o)],
             })
 
     alertas.sort(key=lambda a: a["data"] or "")

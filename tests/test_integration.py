@@ -1086,6 +1086,7 @@ class TestAlertasEndpoints(IntegrationTestBase):
             "descricao": "A OS OS-001 esta autorizada e sem evento.",
             "referencia": "OS-001",
             "data": "2025-06-01",
+            "fiscais": ["Fiscal 1"],
         }
     ]
 
@@ -1096,6 +1097,7 @@ class TestAlertasEndpoints(IntegrationTestBase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(r.json()), 1)
         self.assertEqual(r.json()[0]["tipo"], "os_sem_eventos")
+        self.assertEqual(r.json()[0]["fiscais"], ["Fiscal 1"])
         # A classificacao alta/media/baixa saiu a pedido da area.
         self.assertNotIn("severidade", r.json()[0])
 
