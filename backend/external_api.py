@@ -3046,6 +3046,7 @@ def gerar_alertas(
     config: dict[str, int] | None = None,
     incluir_sem_designacao: bool = False,
     por_procedimento: dict[str, dict[str, Any]] | None = None,
+    gerencia_por_matricula: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Alertas sobre as OS do ATF que o usuario enxerga.
@@ -3086,11 +3087,18 @@ def gerar_alertas(
     prazo; no evento, todos os designados que valem; sem designacao, nao
     ha ninguem.
 
+    `gerencias` ([{id, nome}]) e onde a OS esta, para o admin filtrar os
+    alertas por gerencia: sai das matriculas dos fiscais, pela mesma regra
+    do dashboard (_chaves_gerencia), para o filtro dar o mesmo numero que
+    a linha da gerencia la. OS de fiscais de duas gerencias aparece nas
+    duas; vazia quando nenhuma gerencia do cadastro alcanca a OS.
+
     A conta de cada regra fica em _pendencias, que o dashboard de
     desempenho tambem usa: aqui so se escreve o texto.
     """
     prazos = {**CONFIG_ALERTAS_PADRAO, **(config or {})}
     por_procedimento = por_procedimento or {}
+    mapa_gerencia = gerencia_por_matricula or {}
     alertas: list[dict[str, Any]] = []
 
     for o in ordens:
@@ -3099,6 +3107,11 @@ def gerar_alertas(
         pendencia = _pendencias(o, hoje, prazos, sequencia)
         razao = o.get("razao_social") or "Contribuinte nao informado"
         ie = o.get("ie") or "-"
+        gerencias = [
+            {"id": gerencia_id, "nome": nome}
+            for gerencia_id, nome in _chaves_gerencia(o, mapa_gerencia)
+            if gerencia_id is not None
+        ]
 
         inicio = pendencia["sem_designacao"]
         if incluir_sem_designacao and inicio:
@@ -3117,6 +3130,7 @@ def gerar_alertas(
                 "referencia": numero,
                 "data": inicio,
                 "fiscais": [],
+                "gerencias": gerencias,
             })
 
         atrasados = pendencia["sem_ciencia"]
@@ -3142,6 +3156,7 @@ def gerar_alertas(
                 "referencia": numero,
                 "data": inicio,
                 "fiscais": fiscais,
+                "gerencias": gerencias,
             })
 
         inicio = pendencia["sem_eventos"]
@@ -3183,6 +3198,7 @@ def gerar_alertas(
                 "referencia": numero,
                 "data": inicio,
                 "fiscais": [_nome_fiscal(f) for f in _fiscais_ativos(o)],
+                "gerencias": gerencias,
             })
 
     alertas.sort(key=lambda a: a["data"] or "")

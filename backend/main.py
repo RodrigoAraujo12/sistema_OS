@@ -1321,6 +1321,10 @@ def list_alertas(
 
     OS sem designacao so vai para o admin: sem fiscal, a OS nao se liga a
     ninguem, e e o admin quem enxerga tudo.
+
+    Cada alerta leva a gerencia da OS, pela mesma ponte do dashboard
+    (_gerencia_por_matricula): e o que o filtro por gerencia da tela do
+    admin usa. O mapa sai do banco local, sem custo no ATF.
     """
     matriculas = _matriculas_visiveis(user)
     # Quem nao enxerga matricula nenhuma nao tem alerta: nao vale uma
@@ -1341,9 +1345,13 @@ def list_alertas(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except requests.RequestException as e:
         raise _erro_transporte_atf(e, "Alertas")
+    gerencia_por_matricula = _gerencia_por_matricula()
     alertas = gerar_alertas(
         ordens, hoje, config, incluir_sem_designacao=user["role"] == "admin",
-        por_procedimento=_sequencias_por_procedimento(ordens, data_inicio, hoje.isoformat()),
+        por_procedimento=_sequencias_por_procedimento(
+            ordens, data_inicio, hoje.isoformat(), gerencia_por_matricula,
+        ),
+        gerencia_por_matricula=gerencia_por_matricula,
     )
     return [AlertaResponse(**a) for a in alertas]
 

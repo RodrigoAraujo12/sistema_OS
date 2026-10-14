@@ -215,6 +215,12 @@ class OSResponse(BaseModel):
     data_ciencia: str | None = None
 
 
+class GerenciaDoAlerta(BaseModel):
+    """Gerencia do cadastro local em que a OS de um alerta esta."""
+    id: int
+    nome: str
+
+
 class AlertaResponse(BaseModel):
     """
     Alerta gerado automaticamente a partir das regras de negocio. Sem
@@ -228,6 +234,9 @@ class AlertaResponse(BaseModel):
     # Nome de quem o alerta cobra (ver gerar_alertas). A OS do alerta e
     # `referencia`: a tela abre o detalhe dela por ali.
     fiscais: list[str] = []
+    # Onde a OS esta, para o filtro por gerencia do admin. Vazia = nenhuma
+    # gerencia do cadastro alcanca a OS.
+    gerencias: list[GerenciaDoAlerta] = []
 
 
 class PrazoProcedimento(BaseModel):

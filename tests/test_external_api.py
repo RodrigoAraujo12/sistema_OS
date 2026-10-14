@@ -984,6 +984,36 @@ class TestGerarAlertas(unittest.TestCase):
         )
         self.assertTrue(all("severidade" not in a for a in alertas))
 
+    # ── gerencia, para o filtro do admin ─────────────────────────
+
+    def test_alerta_leva_a_gerencia_dos_fiscais_como_o_dashboard(self):
+        """Uma vez por gerencia, mesmo com dois fiscais dela na mesma OS."""
+        mapa = {
+            "1": {"id": 1, "nome": "GOFE"}, "2": {"id": 1, "nome": "GOFE"},
+            "3": {"id": 2, "nome": "GOAC"},
+        }
+        alertas = self._alertas(
+            _os_atf("UMA", 1, [_fiscal("1"), _fiscal("2")], data_ultimo_evento="2026-09-01"),
+            _os_atf("DUAS", 7, [
+                _fiscal("1", ciencia=None, designacao="2026-09-01"),
+                _fiscal("3", ciencia=None, designacao="2026-09-01"),
+            ]),
+            gerencia_por_matricula=mapa,
+        )
+        por_os = {a["referencia"]: a["gerencias"] for a in alertas}
+        self.assertEqual(por_os["UMA"], [{"id": 1, "nome": "GOFE"}])
+        self.assertEqual(por_os["DUAS"], [{"id": 1, "nome": "GOFE"}, {"id": 2, "nome": "GOAC"}])
+
+    def test_os_que_nenhuma_gerencia_alcanca_sai_sem_gerencia(self):
+        mapa = {"9": {"id": 1, "nome": "GOFE"}}
+        alertas = self._alertas(
+            _os_atf("OS-1", 1, [_fiscal("1")], data_ultimo_evento="2026-09-01"),
+            _os_atf("OS-2", 0, [], data_abertura="2026-09-01"),
+            gerencia_por_matricula=mapa, incluir_sem_designacao=True,
+        )
+        self.assertEqual(len(alertas), 2)
+        self.assertTrue(all(a["gerencias"] == [] for a in alertas))
+
 
 class TestGerarDashboardDesempenho(unittest.TestCase):
     """

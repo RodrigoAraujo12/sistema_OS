@@ -1119,6 +1119,18 @@ class TestAlertasEndpoints(IntegrationTestBase):
             self.client.get("/alertas", headers=self._auth_header(token))
             self.assertFalse(gerar.call_args.kwargs["incluir_sem_designacao"])
 
+    def test_alertas_levam_a_gerencia_pela_ponte_do_dashboard(self):
+        mapa = {"1": {"id": 7, "nome": "GOFE"}}
+        with patch("backend.main._gerencia_por_matricula", return_value=mapa):
+            with patch("backend.main.gerar_alertas", return_value=[]) as gerar:
+                self.client.get("/alertas", headers=self._admin_header())
+        self.assertEqual(gerar.call_args.kwargs["gerencia_por_matricula"], mapa)
+
+        alerta = {**self._MOCK_ALERTAS[0], "gerencias": [{"id": 7, "nome": "GOFE"}]}
+        with patch("backend.main.gerar_alertas", return_value=[alerta]):
+            r = self.client.get("/alertas", headers=self._admin_header())
+        self.assertEqual(r.json()[0]["gerencias"], [{"id": 7, "nome": "GOFE"}])
+
     def test_alertas_usam_a_janela_e_os_prazos_gravados(self):
         H = self._admin_header()
         config = {
