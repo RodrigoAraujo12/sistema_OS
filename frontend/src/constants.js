@@ -140,10 +140,11 @@ export const orgaoExecutorOptions = Object.entries(orgaoExecutorLabels)
 /** Procedimentos de evento do ATF (cdProcedimento => noProcedimento).
  *  Os 29 que aparecem nos eventos de OS abertas de 10/2025 a 10/2026,
  *  medido em producao em 13/10/2026 — o ATF nao expoe a tabela, e os
- *  codigos que faltam (4, 5, 8...) nao tiveram evento no periodo. E a
- *  lista da tabela de prazos por procedimento dos alertas: procedimento
- *  novo so ganha prazo depois de entrar aqui. Os nomes vao como o ATF
- *  escreve, com o travessao que ele manda quebrado ja corrigido. */
+ *  codigos que faltam (4, 5, 8...) nao tiveram evento no periodo. E o
+ *  "mostrar todos" da tabela de prazos por procedimento dos alertas; um
+ *  procedimento novo que a supervisao lancar aparece la mesmo sem estar
+ *  aqui, com o nome que o ATF mandar. Os nomes vao como o ATF escreve,
+ *  com o travessao que ele manda quebrado ja corrigido. */
 export const procedimentoLabels = {
   1: "AUDITORIA DA CONTA CAIXA",
   2: "AUDITORIA DA CONTA BANCOS",

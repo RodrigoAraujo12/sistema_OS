@@ -125,17 +125,25 @@ class Database:
                 )
                 """
             )
-            # Prazo do alerta "sem evento" por gerencia e procedimento do
-            # ATF (13/10/2026). Linha que nao existe = vale o prazo geral
-            # de config_alertas, por isso a tabela tambem nasce vazia.
+            # Prazo do alerta "sem evento" por supervisao e procedimento do
+            # ATF. Linha que nao existe = vale o prazo geral de
+            # config_alertas, por isso a tabela tambem nasce vazia.
+            #
+            # A supervisao e a equipe fiscal do ATF, pelo codigo dela. Sem
+            # chave estrangeira de proposito: o importador recria
+            # equipes_fiscais a cada carga, e o prazo tem que sobreviver.
+            #
+            # Substitui a `prazos_procedimento`, que era por gerencia
+            # (13/10/2026): em 15/10/2026 o Rodrigo passou o prazo para a
+            # supervisao, sem a gerencia como reserva. Num banco antigo
+            # aquela tabela continua existindo, sem uso.
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS prazos_procedimento (
-                    gerencia_id INTEGER NOT NULL,
+                CREATE TABLE IF NOT EXISTS prazos_procedimento_equipe (
+                    equipe_codigo INTEGER NOT NULL,
                     procedimento_codigo INTEGER NOT NULL,
                     dias INTEGER NOT NULL,
-                    PRIMARY KEY (gerencia_id, procedimento_codigo),
-                    FOREIGN KEY (gerencia_id) REFERENCES gerencias (id)
+                    PRIMARY KEY (equipe_codigo, procedimento_codigo)
                 )
                 """
             )
@@ -970,34 +978,36 @@ class ConfigAlertasRepository:
 
 class PrazosProcedimentoRepository:
     """
-    Prazo do alerta "sem evento" por gerencia e procedimento do ATF, em
-    dias. So existe o que o admin preencheu: o que falta cai no prazo
-    geral (dias_sem_eventos).
+    Prazo do alerta "sem evento" por supervisao (equipe fiscal do ATF) e
+    procedimento do ATF, em dias. So existe o que o admin preencheu: o que
+    falta cai no prazo geral (dias_sem_eventos).
     """
 
     def __init__(self, db: Database) -> None:
         self._db = db
 
     def listar(self) -> dict[int, dict[int, int]]:
-        """gerencia_id -> {procedimento_codigo: dias}, so o que foi gravado."""
+        """equipe_codigo -> {procedimento_codigo: dias}, so o que foi gravado."""
         with self._db.connect() as conn:
             rows = conn.execute(
-                "SELECT gerencia_id, procedimento_codigo, dias FROM prazos_procedimento"
+                "SELECT equipe_codigo, procedimento_codigo, dias FROM prazos_procedimento_equipe"
             ).fetchall()
         prazos: dict[int, dict[int, int]] = {}
         for row in rows:
-            prazos.setdefault(row["gerencia_id"], {})[row["procedimento_codigo"]] = row["dias"]
+            prazos.setdefault(row["equipe_codigo"], {})[row["procedimento_codigo"]] = row["dias"]
         return prazos
 
-    def salvar_gerencia(self, gerencia_id: int, prazos: dict[int, int]) -> None:
+    def salvar_equipe(self, equipe_codigo: int, prazos: dict[int, int]) -> None:
         """
-        Troca a tabela inteira de uma gerencia, numa transacao so: o que
+        Troca a tabela inteira de uma supervisao, numa transacao so: o que
         nao veio sai, e volta a valer o prazo geral.
         """
         with self._db.connect() as conn:
-            conn.execute("DELETE FROM prazos_procedimento WHERE gerencia_id = ?", (gerencia_id,))
+            conn.execute(
+                "DELETE FROM prazos_procedimento_equipe WHERE equipe_codigo = ?", (equipe_codigo,),
+            )
             conn.executemany(
-                "INSERT INTO prazos_procedimento (gerencia_id, procedimento_codigo, dias) "
+                "INSERT INTO prazos_procedimento_equipe (equipe_codigo, procedimento_codigo, dias) "
                 "VALUES (?, ?, ?)",
-                [(gerencia_id, codigo, dias) for codigo, dias in prazos.items()],
+                [(equipe_codigo, codigo, dias) for codigo, dias in prazos.items()],
             )

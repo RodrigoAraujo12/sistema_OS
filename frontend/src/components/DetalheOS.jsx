@@ -381,6 +381,7 @@ export default function DetalheOS({ alvo, onClose }) {
                           {ev.arquivo && <p className="os-mov-desc">&#128206; {ev.arquivo}</p>}
                           <span className="os-mov-resp">
                             {[
+                              ev.data_inclusao ? `Incluído em ${formatarData(ev.data_inclusao)}` : "",
                               periodoTexto({ inicio: ev.referencia_inicial, fim: ev.referencia_final }),
                               ev.valor_levantado != null ? `Levantado: ${formatarValor(ev.valor_levantado)}` : "",
                             ].filter(Boolean).join("  ·  ")}

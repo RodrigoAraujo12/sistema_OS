@@ -12,57 +12,21 @@
  * Cada alerta mostra o fiscal que ele cobra e, no clique, abre o detalhe
  * da OS — o mesmo modal da tela de OS (DetalheOS).
  *
- * O admin recebe os alertas de todas as gerencias e pode filtrar por uma
- * (14/10/2026). Comeca em todas. O filtro e so de tela, como a paginacao:
- * a gerencia vem em cada alerta, pela mesma regra do dashboard.
+ * Filtros de 14/10/2026, os dois comecando em todos: por tipo, para
+ * qualquer um, e por gerencia, so para o admin, que recebe os alertas de
+ * todas. Sao so de tela, como a paginacao: a gerencia vem em cada alerta,
+ * pela mesma regra do dashboard. A conta fica em alertasFiltros.js.
  */
 
 import React, { useEffect, useRef, useState } from "react";
 import DetalheOS from "./DetalheOS.jsx";
+import { filtrarAlertas, opcoesGerencia, opcoesTipo, rotuloTipo } from "../alertasFiltros.js";
 
 /**
  * Com dados reais passa de mil alertas. Os alertas ja chegam todos de uma
  * vez, entao a paginacao e so de tela: trocar de pagina nao vai ao ATF.
  */
 const POR_PAGINA = 20;
-
-const ROTULO_TIPO = {
-  os_sem_designacao: "sem designacao",
-  os_sem_ciencia: "sem ciencia",
-  os_sem_eventos: "sem evento",
-};
-
-/** Valor do filtro para as OS que nenhuma gerencia do cadastro alcanca. */
-const SEM_GERENCIA = "sem";
-
-/** O alerta esta na gerencia do filtro? "" e todas. */
-function daGerencia(alerta, filtro) {
-  if (!filtro) return true;
-  const gerencias = alerta.gerencias || [];
-  if (filtro === SEM_GERENCIA) return gerencias.length === 0;
-  return gerencias.some((g) => String(g.id) === filtro);
-}
-
-/**
- * Opcoes do filtro: as gerencias que tem alerta, em ordem de nome, com
- * quantos alertas cada uma tem, e por ultimo as OS sem gerencia — a
- * ausencia e informacao, nao some da tela. Uma OS de duas gerencias conta
- * nas duas, como no dashboard.
- */
-function opcoesGerencia(lista) {
-  const porId = new Map();
-  let semGerencia = 0;
-  for (const a of lista) {
-    if (!a.gerencias?.length) semGerencia += 1;
-    for (const g of a.gerencias || []) {
-      const atual = porId.get(g.id) || { valor: String(g.id), nome: g.nome, total: 0 };
-      porId.set(g.id, { ...atual, total: atual.total + 1 });
-    }
-  }
-  const opcoes = [...porId.values()].sort((x, y) => x.nome.localeCompare(y.nome));
-  if (semGerencia) opcoes.push({ valor: SEM_GERENCIA, nome: "Sem gerencia cadastrada", total: semGerencia });
-  return opcoes;
-}
 
 /** "Fiscal: FULANO", "Fiscais: A, B"; sem designacao nao ha ninguem. */
 function textoFiscais(fiscais) {
@@ -76,7 +40,8 @@ function descreverRegras(config, isAdmin) {
   const regras = [
     isAdmin && `OS sem fiscal designado ha mais de ${config.dias_sem_designacao} dias da abertura (so o admin ve)`,
     `fiscal sem ciencia ha mais de ${config.dias_sem_ciencia} dias da designacao`,
-    `OS autorizada sem evento ha mais de ${config.dias_sem_eventos} dias, contando do ultimo evento, ou da ciencia quando ainda nao teve nenhum`
+    `OS autorizada sem nenhum evento ha mais de ${config.dias_sem_eventos} dias da ciencia`,
+    `OS autorizada que ja teve evento, mas nenhum novo ha mais de ${config.dias_sem_eventos} dias`
       + " (onde a gerencia deu prazo para o procedimento do ultimo evento, vale ele, e eventos seguidos do mesmo procedimento contam como um so)",
   ].filter(Boolean);
   return (
@@ -87,28 +52,41 @@ function descreverRegras(config, isAdmin) {
 
 export default function AlertasPanel({ alertas, config, isAdmin, carregando, onAtualizar }) {
   const [pagina, setPagina] = useState(1);
-  // Filtro do admin: id da gerencia, SEM_GERENCIA ou "" (todas).
+  // Filtros: tipo do alerta, e gerencia (id, SEM_GERENCIA) so do admin.
+  // "" e todos.
+  const [tipo, setTipo] = useState("");
   const [gerencia, setGerencia] = useState("");
   // OS do alerta clicado ({ numero }); null = modal fechado.
   const [osAberta, setOsAberta] = useState(null);
   const topoRef = useRef(null);
 
-  // Lista nova, recomeca da primeira pagina. O filtro fica, a nao ser que
-  // a gerencia escolhida nao tenha mais alerta nenhum.
+  // Lista nova, recomeca da primeira pagina. Os filtros ficam, a nao ser
+  // que o escolhido nao tenha mais alerta nenhum.
   useEffect(() => {
+    const nova = alertas || [];
+    const sumiu = (opcoes, valor) => valor && !opcoes.some((o) => o.valor === valor);
     setPagina(1);
-    setGerencia((g) => (g && !opcoesGerencia(alertas || []).some((o) => o.valor === g) ? "" : g));
+    setTipo((t) => (sumiu(opcoesTipo(nova), t) ? "" : t));
+    setGerencia((g) => (sumiu(opcoesGerencia(nova), g) ? "" : g));
   }, [alertas]);
 
   const lista = alertas || [];
-  const opcoes = isAdmin ? opcoesGerencia(lista) : [];
-  const filtrados = lista.filter((a) => daGerencia(a, gerencia));
+  const filtrando = Boolean(tipo || gerencia);
+  const { filtrados, tipos, totalTipos, gerencias, totalGerencias } =
+    filtrarAlertas(lista, { tipo, gerencia }, isAdmin);
   const porTipo = filtrados.reduce((acc, a) => ({ ...acc, [a.tipo]: (acc[a.tipo] || 0) + 1 }), {});
   const totalPaginas = Math.max(1, Math.ceil(filtrados.length / POR_PAGINA));
   const daPagina = filtrados.slice((pagina - 1) * POR_PAGINA, pagina * POR_PAGINA);
 
-  function trocarGerencia(valor) {
-    setGerencia(valor);
+  /** Aplica um filtro (setTipo, setGerencia) e volta a primeira pagina. */
+  function filtrar(setFiltro, valor) {
+    setFiltro(valor);
+    setPagina(1);
+  }
+
+  function limparFiltros() {
+    setTipo("");
+    setGerencia("");
     setPagina(1);
   }
 
@@ -130,7 +108,7 @@ export default function AlertasPanel({ alertas, config, isAdmin, carregando, onA
   return (
     <div className="card" ref={topoRef}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-        <h2>Alertas {alertas ? `(${gerencia ? `${filtrados.length} de ${lista.length}` : lista.length})` : ""}</h2>
+        <h2>Alertas {alertas ? `(${filtrando ? `${filtrados.length} de ${lista.length}` : lista.length})` : ""}</h2>
         <button className="btn btn-outline" onClick={onAtualizar} disabled={carregando}>
           {carregando ? "Consultando o ATF..." : "Atualizar"}
         </button>
@@ -138,29 +116,45 @@ export default function AlertasPanel({ alertas, config, isAdmin, carregando, onA
       <p className="muted" style={{ marginBottom: 16 }}>
         {descreverRegras(config, isAdmin)}
         {alertas && filtrados.length > 0 && (
-          <> {Object.entries(porTipo).map(([tipo, n]) => `${n} ${ROTULO_TIPO[tipo] || tipo}`).join(" · ")}.</>
+          <> {Object.entries(porTipo).map(([t, n]) => `${n} ${rotuloTipo(t)}`).join(" · ")}.</>
         )}
       </p>
 
-      {opcoes.length > 0 && (
+      {lista.length > 0 && (
         <div className="dash-filter-row">
           <div className="dash-filter-group">
-            <label className="dash-filter-label" htmlFor="alertas-gerencia">Gerencia:</label>
+            <label className="dash-filter-label" htmlFor="alertas-tipo">Tipo:</label>
             <select
-              id="alertas-gerencia"
-              value={gerencia}
-              onChange={(e) => trocarGerencia(e.target.value)}
+              id="alertas-tipo"
+              value={tipo}
+              onChange={(e) => filtrar(setTipo, e.target.value)}
               className="dash-filter-select"
             >
-              <option value="">Todas as gerencias ({lista.length})</option>
-              {opcoes.map((o) => (
+              <option value="">Todos os tipos ({totalTipos})</option>
+              {tipos.map((o) => (
                 <option key={o.valor} value={o.valor}>{o.nome} ({o.total})</option>
               ))}
             </select>
           </div>
-          {gerencia && (
-            <button className="btn btn-outline dash-filter-clear" onClick={() => trocarGerencia("")}>
-              Limpar filtro
+          {gerencias.length > 0 && (
+            <div className="dash-filter-group">
+              <label className="dash-filter-label" htmlFor="alertas-gerencia">Gerencia:</label>
+              <select
+                id="alertas-gerencia"
+                value={gerencia}
+                onChange={(e) => filtrar(setGerencia, e.target.value)}
+                className="dash-filter-select"
+              >
+                <option value="">Todas as gerencias ({totalGerencias})</option>
+                {gerencias.map((o) => (
+                  <option key={o.valor} value={o.valor}>{o.nome} ({o.total})</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {filtrando && (
+            <button className="btn btn-outline dash-filter-clear" onClick={limparFiltros}>
+              Limpar filtros
             </button>
           )}
         </div>
@@ -173,6 +167,10 @@ export default function AlertasPanel({ alertas, config, isAdmin, carregando, onA
       ) : lista.length === 0 ? (
         <div className="empty-state">
           <p className="muted">Nenhum alerta no momento.</p>
+        </div>
+      ) : filtrados.length === 0 ? (
+        <div className="empty-state">
+          <p className="muted">Nenhum alerta com esses filtros.</p>
         </div>
       ) : (
         <>
@@ -193,7 +191,7 @@ export default function AlertasPanel({ alertas, config, isAdmin, carregando, onA
                   })}
                 >
                   <div className="alerta-header">
-                    <span className="badge normal">{ROTULO_TIPO[alerta.tipo] || alerta.tipo.replace(/_/g, " ")}</span>
+                    <span className="badge normal">{rotuloTipo(alerta.tipo)}</span>
                   </div>
                   <h3 className="alerta-titulo">{alerta.titulo}</h3>
                   <p className="alerta-fiscal"><strong>{textoFiscais(alerta.fiscais)}</strong></p>

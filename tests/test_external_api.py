@@ -35,6 +35,7 @@ from backend.external_api import (
     limpar_cache_atf,
     listar_ordens_atf,
     mesclar_detalhe_os,
+    procedimentos_por_equipe,
     sequencias_por_procedimento,
     url_base_detalhe_atf,
     validar_periodo_abertura,
@@ -415,8 +416,41 @@ class TestParseDetalheATF(unittest.TestCase):
         self.assertEqual(self.detalhe["valor_total_recolhido"], 5230.75)
 
     def test_ultimo_evento_sai_da_lista(self):
-        """Este servico nao tem dataUltimoEventoOS — a data vem dos eventos."""
+        """
+        Este servico nao tem dataUltimoEventoOS — a data vem dos eventos. O
+        evento daqui nao tem dtInclusao, entao vale o fim do periodo.
+        """
         self.assertEqual(self.detalhe["data_ultimo_evento"], "2025-02-20")
+
+    def test_eventos_saem_pela_data_de_inclusao(self):
+        """
+        dtInclusao nao esta na doc, mas vem em todo evento (producao,
+        15/10/2026), e o ATF manda parte das OS fora de ordem. O ultimo
+        evento e o de inclusao mais recente, como na listagem e nos alertas.
+        """
+        xml = (
+            "<resultado><ordServ><nrOrdemServico>OS-1</nrOrdemServico><listaEventos>"
+            "<eventos><dtInclusao>10/03/2026</dtInclusao><dtInicialEvento>01/03/2026</dtInicialEvento>"
+            "<dtFinalEvento>20/03/2026</dtFinalEvento><noProcedimento>B</noProcedimento></eventos>"
+            "<eventos><dtInclusao>05/02/2026</dtInclusao><dtInicialEvento>01/02/2026</dtInicialEvento>"
+            "<dtFinalEvento>28/02/2026</dtFinalEvento><noProcedimento>A</noProcedimento></eventos>"
+            "</listaEventos></ordServ></resultado>"
+        )
+        detalhe = _parse_detalhe_soap(xml)
+        self.assertEqual([e["procedimento"] for e in detalhe["eventos"]], ["A", "B"])
+        self.assertEqual(detalhe["eventos"][0]["data_inclusao"], "2026-02-05")
+        # O fim do periodo (20/03) e posterior, mas nao e o ultimo evento da listagem.
+        self.assertEqual(detalhe["data_ultimo_evento"], "2026-03-10")
+
+    def test_travessao_quebrado_do_procedimento_e_corrigido(self):
+        """Como no servico de eventos: 0x96 lido como Latin-1 vira o travessao."""
+        xml = (
+            "<resultado><ordServ><nrOrdemServico>OS-1</nrOrdemServico><listaEventos>"
+            "<eventos><noProcedimento>AUDITORIA \x96 DEBITOS</noProcedimento></eventos>"
+            "</listaEventos></ordServ></resultado>"
+        )
+        evento = _parse_detalhe_soap(xml)["eventos"][0]
+        self.assertEqual(evento["procedimento"], "AUDITORIA – DEBITOS")
 
     def test_fiscal_alimenta_o_filtro_de_hierarquia(self):
         """
@@ -824,10 +858,34 @@ class TestGerarAlertas(unittest.TestCase):
 
     def test_autorizada_sem_evento_ha_mais_do_prazo(self):
         alertas = self._alertas(_os_atf("OS-1", 1, [_fiscal("1")], data_ultimo_evento="2026-09-01"))
-        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_eventos"])
+        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_evento_novo"])
         self.assertIn("24 dias", alertas[0]["titulo"])
         self.assertEqual(alertas[0]["data"], "2026-09-01")
         self.assertIn("01/09/2026", alertas[0]["descricao"])
+
+    def test_nunca_teve_evento_e_parou_sao_tipos_diferentes(self):
+        """Pedido de 14/10/2026: o fiscal que nem comecou e o que comecou e parou."""
+        alertas = {
+            a["referencia"]: a for a in self._alertas(
+                _os_atf("NUNCA", 1, [_fiscal("1", ciencia="2026-08-01")]),
+                _os_atf("PAROU", 1, [_fiscal("2", ciencia="2026-08-01")], data_ultimo_evento="2026-08-20"),
+            )
+        }
+        self.assertEqual(alertas["NUNCA"]["tipo"], "os_sem_eventos")
+        self.assertIn("sem nenhum evento", alertas["NUNCA"]["titulo"])
+        self.assertEqual(alertas["PAROU"]["tipo"], "os_sem_evento_novo")
+        self.assertIn("sem evento novo", alertas["PAROU"]["titulo"])
+
+    def test_evento_anterior_a_ciencia_do_fiscal_novo_e_sem_evento_novo(self):
+        """A OS teve evento, so que de quem saiu: conta da ciencia, mas nao e "nenhum"."""
+        fiscais = [
+            _fiscal("1", ciencia="2026-01-02", cancelamento="2026-06-01"),
+            _fiscal("2", designacao="2026-07-01", ciencia="2026-07-02"),
+        ]
+        alertas = self._alertas(_os_atf("OS-1", 1, fiscais, data_ultimo_evento="2026-05-01"))
+        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_evento_novo"])
+        self.assertEqual(alertas[0]["data"], "2026-07-02")
+        self.assertIn("anterior a ciencia", alertas[0]["descricao"])
 
     def test_evento_recente_nao_alerta(self):
         self.assertEqual(
@@ -1143,16 +1201,20 @@ class TestGerarDashboardDesempenho(unittest.TestCase):
             _os_atf("S", 0, [], data_abertura="2026-01-20"),
             _os_atf("T", 1, [_fiscal("10", cancelamento="2026-02-25")], data_abertura="2026-01-20"),
             _os_atf("U", 1, [_fiscal("20")], data_abertura="2026-01-20", data_ultimo_evento="2026-02-20"),
+            _os_atf("V", 1, [_fiscal("20")], data_abertura="2026-01-20", data_ultimo_evento="2026-02-01"),
         ]
         config = {"dias_sem_designacao": 10, "dias_sem_ciencia": 3, "dias_sem_eventos": 15}
         v = self._gerar(ordens, config=config)["visao_geral"]
         tipos = Counter(
             a["tipo"] for a in gerar_alertas(ordens, self.HOJE, config, incluir_sem_designacao=True)
         )
+        # O painel soma os dois tipos de evento num "sem evento" so.
         self.assertEqual(
             (v["os_sem_designacao"], v["os_sem_ciencia"], v["os_sem_eventos"]),
-            (tipos["os_sem_designacao"], tipos["os_sem_ciencia"], tipos["os_sem_eventos"]),
+            (tipos["os_sem_designacao"], tipos["os_sem_ciencia"],
+             tipos["os_sem_eventos"] + tipos["os_sem_evento_novo"]),
         )
+        self.assertTrue(tipos["os_sem_evento_novo"])  # V teve evento, ha 28 dias
         self.assertEqual(tipos["os_sem_designacao"], 1)  # S; T perdeu o fiscal ha 4 dias
 
     def test_prazos_em_vigor_vao_na_resposta(self):
@@ -1481,20 +1543,23 @@ def _evento(numero: str, procedimento: int, inclusao: str, codigo: int = 0) -> d
 
 class TestPrazosPorProcedimento(unittest.TestCase):
     """
-    Prazo do "sem evento" por gerencia e procedimento do ultimo evento
-    (13/10/2026). Eventos seguidos do mesmo procedimento contam como um so:
-    a OS nao andou.
+    Prazo do "sem evento" por supervisao e procedimento do ultimo evento
+    (13/10/2026 por gerencia; por supervisao desde 15/10/2026). Eventos
+    seguidos do mesmo procedimento contam como um so: a OS nao andou.
     """
 
     HOJE = date(2026, 9, 25)
-    # Fiscal 1 e da gerencia 7, fiscal 2 da 8, fiscal 3 de nenhuma.
-    GERENCIAS = {"1": {"id": 7, "nome": "G7"}, "2": {"id": 8, "nome": "G8"}}
+    ATACADO = {"codigo": 422, "nome": "GOFE - ATACADO"}
+    VAREJO = {"codigo": 427, "nome": "GOFE - VAREJO"}
+    # Fiscal 1 e do Atacado, 2 do Varejo, 3 de nenhuma, 4 das duas.
+    EQUIPES = {"1": [ATACADO], "2": [VAREJO], "4": [ATACADO, VAREJO]}
+    GERENCIAS = {"1": {"id": 7, "nome": "G7"}}
 
     def _os(self, *fiscais, ultimo="2026-09-20"):
         return _os_atf("OS-1", 1, fiscais or [_fiscal("1")], data_ultimo_evento=ultimo)
 
     def _seq(self, ordens, eventos, prazos):
-        return sequencias_por_procedimento(ordens, eventos, self.GERENCIAS, prazos)
+        return sequencias_por_procedimento(ordens, eventos, self.EQUIPES, prazos)
 
     def test_eventos_seguidos_do_mesmo_procedimento_contam_do_primeiro(self):
         os_ = self._os()
@@ -1503,40 +1568,54 @@ class TestPrazosPorProcedimento(unittest.TestCase):
             _evento("OS-1", 19, "2026-09-01"),
             _evento("OS-1", 19, "2026-09-20"),
         ]
-        seq = self._seq([os_], eventos, {7: {19: 10}})
+        seq = self._seq([os_], eventos, {422: {19: 10}})
         self.assertEqual(
             seq["OS-1"],
             {"procedimento_codigo": 19, "procedimento": "PROCEDIMENTO 19",
-             "desde": "2026-09-01", "eventos": 2, "prazo": 10},
+             "desde": "2026-09-01", "eventos": 2, "prazo": 10, "supervisao": "GOFE - ATACADO"},
         )
         # Pelo prazo geral (15 dias do ultimo evento, 20/09) nao haveria alerta.
         self.assertEqual(gerar_alertas([os_], self.HOJE), [])
         alertas = gerar_alertas([os_], self.HOJE, por_procedimento=seq)
-        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_eventos"])
+        self.assertEqual([a["tipo"] for a in alertas], ["os_sem_evento_novo"])
         self.assertEqual(alertas[0]["data"], "2026-09-01")
         self.assertIn("24 dias", alertas[0]["titulo"])
         self.assertIn("ultimos 2 eventos", alertas[0]["descricao"])
-        self.assertIn("10 dias", alertas[0]["descricao"])
+        self.assertIn("O prazo de GOFE - ATACADO para PROCEDIMENTO 19 e de 10 dias", alertas[0]["descricao"])
 
     def test_prazo_maior_que_o_geral_segura_o_alerta(self):
         os_ = self._os(ultimo="2026-09-01")
-        seq = self._seq([os_], [_evento("OS-1", 19, "2026-09-01")], {7: {19: 30}})
+        seq = self._seq([os_], [_evento("OS-1", 19, "2026-09-01")], {422: {19: 30}})
         self.assertEqual(seq["OS-1"]["eventos"], 1)
         self.assertEqual(len(gerar_alertas([os_], self.HOJE)), 1)
         self.assertEqual(gerar_alertas([os_], self.HOJE, por_procedimento=seq), [])
 
     def test_procedimento_sem_prazo_fica_na_regra_geral(self):
         eventos = [_evento("OS-1", 19, "2026-09-01"), _evento("OS-1", 10, "2026-09-20")]
-        self.assertEqual(self._seq([self._os()], eventos, {7: {19: 5}}), {})
+        self.assertEqual(self._seq([self._os()], eventos, {422: {19: 5}}), {})
 
-    def test_prazo_de_outra_gerencia_nao_vale(self):
-        os_ = self._os(_fiscal("3"))
-        self.assertEqual(self._seq([os_], [_evento("OS-1", 19, "2026-09-01")], {7: {19: 5}}), {})
+    def test_prazo_de_outra_supervisao_nao_vale(self):
+        """Nem de outra supervisao, nem de fiscal que nao esta em nenhuma."""
+        evento = [_evento("OS-1", 19, "2026-09-01")]
+        self.assertEqual(self._seq([self._os(_fiscal("2"))], evento, {422: {19: 5}}), {})
+        self.assertEqual(self._seq([self._os(_fiscal("3"))], evento, {422: {19: 5}}), {})
 
-    def test_os_em_duas_gerencias_fica_com_o_menor_prazo(self):
+    def test_os_em_duas_supervisoes_fica_com_o_menor_prazo(self):
         os_ = self._os(_fiscal("1"), _fiscal("2"))
-        seq = self._seq([os_], [_evento("OS-1", 19, "2026-09-01")], {7: {19: 20}, 8: {19: 5}})
+        seq = self._seq([os_], [_evento("OS-1", 19, "2026-09-01")], {422: {19: 20}, 427: {19: 5}})
+        self.assertEqual((seq["OS-1"]["prazo"], seq["OS-1"]["supervisao"]), (5, "GOFE - VAREJO"))
+
+    def test_fiscal_em_duas_equipes_leva_as_duas(self):
+        os_ = self._os(_fiscal("4"))
+        seq = self._seq([os_], [_evento("OS-1", 19, "2026-09-01")], {422: {19: 20}, 427: {19: 5}})
         self.assertEqual(seq["OS-1"]["prazo"], 5)
+
+    def test_fiscal_cancelado_nao_traz_a_supervisao_dele(self):
+        """Quem esta parado e quem ficou: o prazo e o da supervisao de quem ficou."""
+        os_ = self._os(_fiscal("1", cancelamento="2026-09-10"), _fiscal("2"))
+        evento = [_evento("OS-1", 19, "2026-09-01")]
+        self.assertEqual(self._seq([os_], evento, {422: {19: 5}}), {})
+        self.assertEqual(self._seq([os_], evento, {427: {19: 7}})["OS-1"]["prazo"], 7)
 
     def test_ordem_e_pela_data_de_inclusao(self):
         """O servico nao devolve em ordem; o ultimo e o de inclusao mais recente."""
@@ -1545,14 +1624,14 @@ class TestPrazosPorProcedimento(unittest.TestCase):
             _evento("OS-1", 10, "2026-08-01", codigo=1),
             _evento("OS-1", 19, "2026-09-01", codigo=2),
         ]
-        seq = self._seq([self._os()], eventos, {7: {19: 10}})
+        seq = self._seq([self._os()], eventos, {422: {19: 10}})
         self.assertEqual((seq["OS-1"]["desde"], seq["OS-1"]["eventos"]), ("2026-09-01", 2))
 
     def test_ciencia_depois_da_sequencia_conta_da_ciencia(self):
         """Fiscal que chegou no meio da sequencia nao herda o atraso."""
         os_ = self._os(_fiscal("1", designacao="2026-09-10", ciencia="2026-09-15"))
         eventos = [_evento("OS-1", 19, "2026-08-01"), _evento("OS-1", 19, "2026-09-20")]
-        seq = self._seq([os_], eventos, {7: {19: 5}})
+        seq = self._seq([os_], eventos, {422: {19: 5}})
         alertas = gerar_alertas([os_], self.HOJE, por_procedimento=seq)
         self.assertEqual(alertas[0]["data"], "2026-09-15")
         self.assertIn("antes da ciencia", alertas[0]["descricao"])
@@ -1563,7 +1642,7 @@ class TestPrazosPorProcedimento(unittest.TestCase):
     def test_dashboard_conta_igual_aos_alertas(self):
         os_ = self._os()
         eventos = [_evento("OS-1", 19, "2026-09-01"), _evento("OS-1", 19, "2026-09-20")]
-        seq = self._seq([os_], eventos, {7: {19: 10}})
+        seq = self._seq([os_], eventos, {422: {19: 10}})
         painel = gerar_dashboard_desempenho(
             [os_], [{"id": 7, "nome": "G7"}], self.GERENCIAS, [], hoje=self.HOJE,
             por_procedimento=seq,
@@ -1575,6 +1654,32 @@ class TestPrazosPorProcedimento(unittest.TestCase):
             )["visao_geral"]["os_sem_eventos"],
             0,
         )
+
+
+class TestProcedimentosPorEquipe(unittest.TestCase):
+    """O que cada supervisao lancou: a lista da tela de prazos (15/10/2026)."""
+
+    def _evento(self, equipe, procedimento, nome=""):
+        return {"equipe_fiscal_codigo": equipe, "procedimento_codigo": procedimento,
+                "procedimento": nome or f"PROC {procedimento}"}
+
+    def test_conta_por_equipe_o_mais_lancado_primeiro(self):
+        eventos = [
+            self._evento(422, 10), self._evento(422, 19), self._evento(422, 19),
+            self._evento(427, 35),
+        ]
+        self.assertEqual(procedimentos_por_equipe(eventos), {
+            422: [
+                {"procedimento_codigo": 19, "procedimento": "PROC 19", "eventos": 2},
+                {"procedimento_codigo": 10, "procedimento": "PROC 10", "eventos": 1},
+            ],
+            427: [{"procedimento_codigo": 35, "procedimento": "PROC 35", "eventos": 1}],
+        })
+
+    def test_evento_sem_equipe_ou_sem_procedimento_fica_de_fora(self):
+        """Metade dos eventos vem sem equipe: nao ha a quem atribuir."""
+        eventos = [self._evento(None, 19), self._evento(422, None)]
+        self.assertEqual(procedimentos_por_equipe(eventos), {})
 
 
 if __name__ == "__main__":

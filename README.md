@@ -37,7 +37,7 @@ O Sistema SEFAZ PB permite que auditores fiscais, supervisores, gerentes e admin
 - **Detalhe da OS** com eventos, prorrogacoes, notificacoes, justificativas e recolhimentos, e PDF de cada OS
 - **Dashboard** com KPIs, comparativo mensal e cortes por gerencia, equipe fiscal, fiscal, motivo e tipo, alem de uma aba so de eventos de acompanhamento
 - **Termometro da Fiscalizacao** – ranking de saude por gerencia, sobre a taxa de encerramento e a ciencia atrasada das OS do ATF
-- **Alertas automaticos** para OS sem designacao, fiscal sem ciencia (incluindo OS bloqueada) e OS sem evento de acompanhamento, com os prazos em dias configurados pelo admin
+- **Alertas automaticos** para OS sem designacao, fiscal sem ciencia (incluindo OS bloqueada), OS que nunca teve evento de acompanhamento e OS sem evento novo, com os prazos em dias configurados pelo admin e filtros por tipo e, para o admin, por gerencia
 - **Relatorios exportaveis** em CSV e PDF (OS e Dashboard)
 - **Controle de acesso hierarquico** – cada perfil ve apenas o que lhe compete
 - **Importacao das equipes fiscais e dos auditores** a partir da planilha da SEFAZ
@@ -292,13 +292,47 @@ OS, e o alerta sai quando o prazo e ultrapassado:
 | ------------------- | ----------------- | -------- | ------------- | ------- |
 | `os_sem_designacao` | abertura da OS (ou o ultimo cancelamento de designacao) | nenhum fiscal designado — designacao cancelada nao conta | 15 dias | so o admin |
 | `os_sem_ciencia`    | designacao de cada fiscal | fiscal designado, e nao cancelado, sem ciencia. Se o ATF ja **bloqueou** a OS, o texto diz que o desbloqueio e do supervisor, no ATF | 3 dias | hierarquia |
-| `os_sem_eventos`    | ultimo evento, ou a primeira ciencia quando a OS ainda nao teve evento (vale o mais recente) | OS **autorizada** sem evento de acompanhamento. Sem ciencia nenhuma nao entra: a pendencia ainda e a ciencia | 15 dias | hierarquia |
+| `os_sem_eventos`    | primeira ciencia | OS **autorizada** que **nunca teve** evento de acompanhamento. Sem ciencia nenhuma nao entra: a pendencia ainda e a ciencia | 15 dias | hierarquia |
+| `os_sem_evento_novo` | ultimo evento, ou a primeira ciencia quando ela e mais recente | OS **autorizada** que ja teve evento, mas nenhum novo no prazo | 15 dias (mesmo prazo do anterior) | hierarquia |
+
+Os dois tipos de evento sao a mesma regra, separada em 14/10/2026 porque
+sao pendencias diferentes: numa o fiscal nem comecou, na outra comecou e
+parou. O dashboard continua somando os dois como "sem evento".
 
 **Prazos configuraveis.** O admin muda os tres prazos e a janela em
 Cadastros → Prazos dos alertas (`PUT /admin/alertas/config`), gravados
 na tabela `config_alertas`. Chave que nunca foi gravada vale o padrao do
 codigo (`CONFIG_ALERTAS_PADRAO`). A mudanca vale da proxima consulta em
 diante. A aba de alertas mostra as regras com os prazos em vigor.
+
+**Prazo por supervisao e procedimento.** O prazo do "sem evento" pode
+mudar conforme o procedimento do ultimo evento da OS (`cdProcedimento`,
+a unica classificacao que o evento tem no ATF). O admin escolhe uma
+**supervisao** — a equipe fiscal do ATF, como "GOFE - VAREJO" — e da os
+dias de cada procedimento, em Cadastros → Prazos dos alertas
+(`PUT /admin/alertas/prazos-procedimento/{equipe}`, tabela
+`prazos_procedimento_equipe`). A tabela mostra os procedimentos que a
+supervisao lancou nos ultimos 12 meses
+(`GET /admin/alertas/procedimentos-lancados`, uma consulta ao servico de
+eventos), os que ja tem prazo, e o resto em "mostrar todos". Em branco,
+vale o prazo geral. As regras:
+
+- a supervisao da OS sai das matriculas dos fiscais **ativos**, pela
+  composicao das equipes da planilha — como a gerencia, e nao pela equipe
+  da propria OS, que vem vazia em cerca de metade delas. OS com fiscais de
+  duas supervisoes fica com o menor prazo;
+- eventos seguidos do mesmo procedimento contam como um so: a contagem
+  parte do primeiro da sequencia final, porque a OS nao andou;
+- a ordem dos eventos e pela data de **inclusao**, a mesma que o ATF usa
+  no ultimo evento da listagem;
+- o alerta diz de quem e o prazo ("O prazo de GOFE - VAREJO para OUTROS e
+  de 30 dias");
+- sem nenhuma linha na tabela, os alertas nem consultam o servico de
+  eventos; com ele fora do ar, saem pelo prazo geral.
+
+O prazo foi por gerencia de 13 a 15/10/2026. Passou para a supervisao
+sem a gerencia como reserva, e os prazos gravados por gerencia nao foram
+migrados (ver [Prazos por supervisao](#prazos-por-supervisao-decidido-em-15102026)).
 
 **O Dashboard conta as mesmas regras.** A conta de cada regra fica em
 `_pendencias` (`backend/external_api.py`), que os alertas e o dashboard
@@ -767,6 +801,14 @@ python -m pytest tests/test_auth.py -v
 python -m pytest tests/ --cov=backend --cov-report=term-missing
 ```
 
+No frontend, os filtros da aba de alertas (`src/alertasFiltros.js`) tem
+teste proprio, no runner que ja vem com o Node — sem dependencia nova:
+
+```powershell
+cd frontend
+npm test
+```
+
 ## Integracao ATF
 
 O sistema consulta a **API ATF (SEFAZ PB)** via SOAP sobre HTTPS para ler
@@ -865,6 +907,14 @@ outro banco — ver `_buscar_detalhe_os_atf`, em `main.py`.
   listagem, pela mesclagem.
 - **"Nenhum registro satisfaz a pesquisa"** e como o ATF diz que a OS nao
   existe. Numa busca por numero isso vira 404, nao erro de negocio.
+- **O evento traz `dtInclusao`, que a doc nao lista.** Veio em todos os
+  eventos conferidos em producao em 15/10/2026, e e a mesma data de
+  inclusao do servico de eventos — a que os alertas usam. O detalhe
+  mostra "Incluido em" em cada evento, ordena a lista por ela (o ATF
+  manda parte das OS fora de ordem) e tira dela o "Ultimo Evento". Antes,
+  o ultimo evento saia do fim do periodo do evento e, como o detalhe se
+  sobrepoe a linha da listagem, o modal podia mostrar uma data diferente
+  da do alerta.
 - Ficam de fora do parser, de proposito (estes SAO documentados): os
   codigos redundantes do endereco `cdcorreios`, `cdcorreiosUf` e
   `cdibgeUf`, que repetem municipio e UF ja exibidos.
@@ -987,7 +1037,33 @@ URL no build, com o `define` `API_BASE_URL` (ver o comentario em
 
 Registro do que foi decidido e do que esta parado esperando terceiros.
 Serve para nao "corrigir" de novo algo que ja foi decidido assim de
-proposito. Ultima revisao: 29/09/2026.
+proposito. Ultima revisao: 15/10/2026.
+
+### Prazos por supervisao (decidido em 15/10/2026)
+
+Pedido de 14/10/2026: na tabela de prazo por procedimento dos alertas,
+escolher a **supervisao** em vez da gerencia, e ver so os procedimentos
+dela. As supervisoes das planilhas de eventos da area (GOFE e GOFSES) sao
+equipes fiscais do ATF — GOFE - Atacado/Industria/Servicos/Varejo sao as
+422, 425, 421 e 427 —, e os grupos e tipos de evento das planilhas nao
+existem no ATF, onde o evento so se classifica por procedimento.
+
+Decidido pelo Rodrigo em 15/10/2026:
+
+1. **A lista de procedimentos e o que a supervisao lancou** no servico de
+   eventos nos ultimos 12 meses, e nao uma lista fixa da area. Os que ja
+   tem prazo aparecem sempre, e "mostrar todos" traz o resto. Evento sem
+   equipe (cerca de metade) nao entra na lista de ninguem.
+2. **O prazo e so da supervisao.** A gerencia deixou de ter prazo, sem
+   ficar como reserva. Os prazos que estavam gravados por gerencia nao
+   foram migrados: num banco anterior a essa data eles continuam na tabela
+   `prazos_procedimento`, sem uso, e precisam ser redigitados por
+   supervisao.
+
+Escolhas da implementacao, nao confirmadas com a area: a supervisao da OS
+sai dos fiscais **ativos** (o cancelado nao traz a dele), e OS com
+fiscais de duas supervisoes fica com o menor prazo — a mesma regra que
+valia para duas gerencias.
 
 ### Esperando a SEFAZ
 

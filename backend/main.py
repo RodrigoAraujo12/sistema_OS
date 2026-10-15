@@ -67,6 +67,7 @@ from .external_api import (
     listar_eventos_atf,
     listar_ordens_atf,
     mesclar_detalhe_os,
+    procedimentos_por_equipe,
     sequencias_por_procedimento,
     universo_ordens_atf,
     validar_periodo_abertura,
@@ -87,8 +88,9 @@ from .schemas import (
     OSDetalheResponse,
     PasswordChangeRequest,
     PrazoProcedimento,
-    PrazosProcedimentoGerencia,
+    PrazosProcedimentoSupervisao,
     PasswordResetResponse,
+    ProcedimentosLancadosSupervisao,
     SupervisaoCreateRequest,
     SupervisaoResponse,
     SupervisaoUpdateRequest,
@@ -1135,6 +1137,7 @@ def get_os_pdf(
             if ev.get("observacao"):
                 _texto_longo(ev["observacao"])
             rodape = "   ".join(p for p in (
+                f"Incluido em {_fmt_data_br(ev['data_inclusao'])}" if ev.get("data_inclusao") else "",
                 _periodo(ev.get("referencia_inicial"), ev.get("referencia_final")),
                 f"Levantado: {_valor_br(ev['valor_levantado'])}" if ev.get("valor_levantado") is not None else "",
                 ev.get("arquivo") or "",
@@ -1348,28 +1351,23 @@ def list_alertas(
     gerencia_por_matricula = _gerencia_por_matricula()
     alertas = gerar_alertas(
         ordens, hoje, config, incluir_sem_designacao=user["role"] == "admin",
-        por_procedimento=_sequencias_por_procedimento(
-            ordens, data_inicio, hoje.isoformat(), gerencia_por_matricula,
-        ),
+        por_procedimento=_sequencias_por_procedimento(ordens, data_inicio, hoje.isoformat()),
         gerencia_por_matricula=gerencia_por_matricula,
     )
     return [AlertaResponse(**a) for a in alertas]
 
 
 def _sequencias_por_procedimento(
-    ordens: list[dict[str, Any]],
-    data_inicio: str,
-    data_fim: str,
-    gerencia_por_matricula: dict[str, dict[str, Any]] | None = None,
+    ordens: list[dict[str, Any]], data_inicio: str, data_fim: str,
 ) -> dict[str, dict[str, Any]]:
     """
     Prazos por procedimento das OS de `ordens`, abertas de data_inicio a
     data_fim (ver sequencias_por_procedimento).
 
-    So vai ao servico de eventos quando alguma gerencia gravou prazo: sem
-    tabela, a regra e a de sempre e nao custa chamada nenhuma. A consulta
-    e uma so, pelo mesmo periodo de abertura das OS — medida em producao
-    em 13/10/2026: um ano, 9222 eventos, 5,7 s.
+    So vai ao servico de eventos quando alguma supervisao gravou prazo:
+    sem tabela, a regra e a de sempre e nao custa chamada nenhuma. A
+    consulta e uma so, pelo mesmo periodo de abertura das OS — medida em
+    producao em 13/10/2026: um ano, 9222 eventos, 5,7 s.
 
     Se o servico de eventos falhar, alertas e dashboard saem pelo prazo
     geral em vez de nao sairem: ele ja sumiu de producao uma vez
@@ -1387,7 +1385,7 @@ def _sequencias_por_procedimento(
         )
         return {}
     return sequencias_por_procedimento(
-        ordens, eventos, gerencia_por_matricula or _gerencia_por_matricula(), prazos,
+        ordens, eventos, equipe_repo.get_equipes_por_matricula(), prazos,
     )
 
 
@@ -1400,56 +1398,108 @@ def get_config_alertas(user: dict[str, Any] = Depends(get_active_user)) -> Confi
     return ConfigAlertas(**_config_alertas())
 
 
-@app.get("/admin/alertas/prazos-procedimento", response_model=list[PrazosProcedimentoGerencia])
-def list_prazos_procedimento(
-    user: dict[str, Any] = Depends(get_active_user),
-) -> list[PrazosProcedimentoGerencia]:
-    """Prazos por procedimento de todas as gerencias que gravaram algum. Apenas admin."""
-    require_admin(user)
-    return [
-        PrazosProcedimentoGerencia(
-            gerencia_id=gerencia_id,
+def _supervisoes_com_prazo() -> dict[int, PrazosProcedimentoSupervisao]:
+    """
+    Todas as supervisoes que podem ter prazo, por codigo da equipe, com o
+    que cada uma gravou. Sao as equipes do painel (sem as de
+    EQUIPES_FORA_DO_PAINEL), em ordem de gerencia e nome.
+    """
+    gravados = prazos_procedimento_repo.listar()
+    equipes = sorted(
+        _equipes_do_painel(),
+        key=lambda e: (e["gerencia_nome"] is None, e["gerencia_nome"] or "", e["nome"]),
+    )
+    return {
+        e["codigo"]: PrazosProcedimentoSupervisao(
+            equipe_codigo=e["codigo"],
+            equipe_nome=e["nome"],
+            gerencia_nome=e["gerencia_nome"],
             prazos=[
                 PrazoProcedimento(procedimento_codigo=codigo, dias=dias)
-                for codigo, dias in sorted(prazos.items())
+                for codigo, dias in sorted((gravados.get(e["codigo"]) or {}).items())
             ],
         )
-        for gerencia_id, prazos in sorted(prazos_procedimento_repo.listar().items())
+        for e in equipes
+    }
+
+
+@app.get(
+    "/admin/alertas/prazos-procedimento", response_model=list[PrazosProcedimentoSupervisao],
+)
+def list_prazos_procedimento(
+    user: dict[str, Any] = Depends(get_active_user),
+) -> list[PrazosProcedimentoSupervisao]:
+    """
+    As supervisoes e os prazos por procedimento de cada uma, inclusive as
+    que nao gravaram nenhum: e a lista do seletor da tela. Apenas admin.
+    Sai so do banco local, sem custo no ATF.
+    """
+    require_admin(user)
+    return list(_supervisoes_com_prazo().values())
+
+
+@app.get(
+    "/admin/alertas/procedimentos-lancados",
+    response_model=list[ProcedimentosLancadosSupervisao],
+)
+def list_procedimentos_lancados(
+    user: dict[str, Any] = Depends(get_active_user),
+) -> list[ProcedimentosLancadosSupervisao]:
+    """
+    Procedimentos com evento de cada supervisao nos ultimos 12 meses, pela
+    data de inclusao do evento (ver procedimentos_por_equipe). E o que a
+    tela de prazos mostra por padrao. Apenas admin.
+
+    Separado da lista de prazos porque custa uma consulta ao servico de
+    eventos (~6 s no ano, medido em 15/10/2026): a tela abre com os
+    prazos na hora e filtra os procedimentos quando isto chegar.
+    """
+    require_admin(user)
+    hoje = date.today()
+    try:
+        eventos = listar_eventos_atf(
+            data_inclusao_ini=(hoje - timedelta(days=365)).isoformat(),
+            data_inclusao_fim=hoje.isoformat(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except requests.RequestException as e:
+        raise _erro_transporte_atf(e, "Procedimentos lancados")
+    return [
+        ProcedimentosLancadosSupervisao(equipe_codigo=codigo, procedimentos=lista)
+        for codigo, lista in sorted(procedimentos_por_equipe(eventos).items())
     ]
 
 
 @app.put(
-    "/admin/alertas/prazos-procedimento/{gerencia_id}",
-    response_model=PrazosProcedimentoGerencia,
+    "/admin/alertas/prazos-procedimento/{equipe_codigo}",
+    response_model=PrazosProcedimentoSupervisao,
 )
 def update_prazos_procedimento(
-    gerencia_id: int,
+    equipe_codigo: int,
     payload: list[PrazoProcedimento],
     user: dict[str, Any] = Depends(get_active_user),
-) -> PrazosProcedimentoGerencia:
+) -> PrazosProcedimentoSupervisao:
     """
-    Troca a tabela inteira de uma gerencia: procedimento que nao vier
+    Troca a tabela inteira de uma supervisao: procedimento que nao vier
     volta para o prazo geral. Apenas admin. Vale da proxima consulta em
     diante.
     """
     require_admin(user)
-    if gerencia_repo.get_gerencia(gerencia_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gerencia nao encontrada")
+    if equipe_codigo not in _supervisoes_com_prazo():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supervisao nao encontrada")
     prazos = {p.procedimento_codigo: p.dias for p in payload}
     if len(prazos) != len(payload):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Procedimento repetido: informe um prazo so para cada um.",
         )
-    prazos_procedimento_repo.salvar_gerencia(gerencia_id, prazos)
+    prazos_procedimento_repo.salvar_equipe(equipe_codigo, prazos)
     logger.info(
-        "Prazos por procedimento da gerencia %s alterados por '%s': %s.",
-        gerencia_id, user["username"], prazos,
+        "Prazos por procedimento da supervisao %s alterados por '%s': %s.",
+        equipe_codigo, user["username"], prazos,
     )
-    return PrazosProcedimentoGerencia(
-        gerencia_id=gerencia_id,
-        prazos=[PrazoProcedimento(procedimento_codigo=c, dias=d) for c, d in sorted(prazos.items())],
-    )
+    return _supervisoes_com_prazo()[equipe_codigo]
 
 
 @app.put("/admin/alertas/config", response_model=ConfigAlertas)
@@ -1545,9 +1595,7 @@ def _dashboard_desempenho(data_inicio: str | None, data_fim: str | None) -> dict
         _equipes_do_painel(),
         hoje=date.today(),
         config=_config_alertas(),
-        por_procedimento=_sequencias_por_procedimento(
-            ordens, data_inicio, data_fim, gerencia_por_matricula,
-        ),
+        por_procedimento=_sequencias_por_procedimento(ordens, data_inicio, data_fim),
     )
     dashboard["periodo"] = {"inicio": data_inicio, "fim": data_fim}
     return dashboard
@@ -2133,7 +2181,7 @@ def _notas_desempenho(dashboard: dict[str, Any]) -> list[str]:
             f"sem designacao ha mais de {prazos['dias_sem_designacao']} dias, sem ciencia ha mais "
             f"de {prazos['dias_sem_ciencia']}, sem evento ha mais de {prazos['dias_sem_eventos']}"
             + (
-                " (ou o prazo do procedimento do ultimo evento, onde a gerencia definiu)."
+                " (ou o prazo do procedimento do ultimo evento, onde a supervisao definiu)."
                 if prazos_procedimento_repo.listar() else "."
             )
         ),

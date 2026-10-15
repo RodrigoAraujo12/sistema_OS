@@ -58,6 +58,12 @@ erDiagram
         INTEGER valor "NOT NULL; dias"
     }
 
+    prazos_procedimento_equipe {
+        INTEGER equipe_codigo PK "supervisao = equipe fiscal do ATF"
+        INTEGER procedimento_codigo PK "cdProcedimento do ATF"
+        INTEGER dias "NOT NULL; prazo do sem evento"
+    }
+
     ordens_servico_atf {
         TEXT numero_os PK
         INTEGER modelo_codigo "1 Normal, 2 Simplificada, 7 Especial, 8 Especifica"
@@ -102,6 +108,7 @@ erDiagram
     gerencias |o--o{ equipes_fiscais : "e dona de"
     equipes_fiscais ||--o{ equipe_membros : "compoe"
     equipes_fiscais |o--o{ users : "chefiada por (manual)"
+    equipes_fiscais ||--o{ prazos_procedimento_equipe : "da prazo"
     users |o--o{ equipe_membros : "mesma matricula"
     ordens_servico_atf ||--o{ fiscais_da_os : "designa"
     users |o--o{ fiscais_da_os : "mesma matricula"
@@ -129,6 +136,13 @@ erDiagram
 > **`config_alertas` não se liga a nada.** É chave/valor com os prazos que
 > o admin grava na tela; a chave que nunca foi gravada vale o padrão do
 > código (`CONFIG_ALERTAS_PADRAO`), por isso a tabela nasce vazia.
+>
+> **`prazos_procedimento_equipe`** é o prazo do alerta "sem evento" por
+> supervisão e procedimento (desde 15/10/2026). Liga-se à equipe pelo
+> código do ATF, sem chave estrangeira: o importador recria
+> `equipes_fiscais` a cada carga, e o prazo tem de sobreviver. Num banco
+> anterior a essa data pode existir a `prazos_procedimento`, por gerência,
+> que ficou sem uso.
 
 ## Relações
 
@@ -140,6 +154,7 @@ erDiagram
 | `gerencias` | `equipes_fiscais` | 0..1:N | `gerencia_codigo` = `codigo_atf` | Gerência dona da equipe, deduzida do nome dela (`backend/gerencias_atf.py`) |
 | `equipes_fiscais` | `equipe_membros` | 1:N | `equipe_membros.codigo_equipe` | Composição da planilha da SEFAZ; um auditor pode estar em mais de uma. Substituída inteira a cada importação |
 | `equipes_fiscais` | `users` | 0..1:N | `users.equipe_codigo` | Chefia amarrada à mão; soma-se à marca `equipe_membros.supervisor` |
+| `equipes_fiscais` | `prazos_procedimento_equipe` | 1:N | `equipe_codigo` | Prazo do "sem evento" por procedimento. Vale para a OS cujos fiscais ativos são membros da equipe |
 | `users` | `equipe_membros` | 0..1:N | matrícula | Pertencer a uma equipe não dá visibilidade; chefiar dá, e só para quem é supervisor |
 | `ordens_servico_atf` | `fiscais_da_os` | 1:N | `numero_os` | Fiscais designados na OS |
 | `users` / `equipe_membros` | `fiscais_da_os` | N:N | matrícula | Base da visibilidade e dos cortes por fiscal e por gerência |
@@ -183,9 +198,11 @@ duas se correspondem ainda depende de confirmação da SEFAZ.
 | `GET /ordens`, `GET /ordens/{numero}` | listagem | visibilidade |
 | `GET /ordens/{numero}/detalhe` | detalhe | visibilidade |
 | `GET /ordens/{numero}/pdf` | listagem + detalhe | visibilidade |
-| `GET /alertas` | listagem (janela configurada, até 12 meses) | visibilidade, `config_alertas` |
+| `GET /alertas` | listagem (janela configurada, até 12 meses); eventos, só se alguma supervisão tiver prazo por procedimento | visibilidade, `config_alertas`, `prazos_procedimento_equipe`, equipes por matrícula |
 | `GET /alertas/config`, `PUT /admin/alertas/config` | — | `config_alertas` |
-| `GET /admin/dashboard` | listagem | gerência por matrícula, equipes e supervisores da planilha |
+| `GET /admin/alertas/prazos-procedimento`, `PUT .../{equipe}` | — | `prazos_procedimento_equipe`, `equipes_fiscais` |
+| `GET /admin/alertas/procedimentos-lancados` | eventos (inclusão nos últimos 12 meses) | — |
+| `GET /admin/dashboard` | listagem; eventos, como em `GET /alertas` | gerência por matrícula, equipes e supervisores da planilha, `prazos_procedimento_equipe` |
 | `GET /admin/dashboard/os` | listagem | visibilidade, gerência por matrícula |
 | `GET /admin/dashboard/eventos` | eventos | — |
 | `GET /relatorios/*` | listagem | visibilidade; gerência por matrícula no de desempenho |

@@ -249,10 +249,28 @@ class PrazoProcedimento(BaseModel):
     dias: int = Field(ge=0, le=365)
 
 
-class PrazosProcedimentoGerencia(BaseModel):
-    """Os prazos por procedimento que uma gerencia gravou."""
-    gerencia_id: int
+class PrazosProcedimentoSupervisao(BaseModel):
+    """
+    Uma supervisao (equipe fiscal do ATF) e os prazos por procedimento que
+    ela gravou — vazio quando ainda nao gravou nenhum.
+    """
+    equipe_codigo: int
+    equipe_nome: str
+    gerencia_nome: str | None = None
     prazos: list[PrazoProcedimento]
+
+
+class ProcedimentoLancado(BaseModel):
+    """Procedimento com evento da equipe no periodo, e quantos eventos."""
+    procedimento_codigo: int
+    procedimento: str
+    eventos: int
+
+
+class ProcedimentosLancadosSupervisao(BaseModel):
+    """O que uma supervisao lancou no servico de eventos, o mais lancado primeiro."""
+    equipe_codigo: int
+    procedimentos: list[ProcedimentoLancado]
 
 
 class ConfigAlertas(BaseModel):
@@ -409,6 +427,9 @@ class EventoOSATF(BaseModel):
     """Evento de acompanhamento da OS (listaEventos)."""
     tipo_codigo: str | None = None
     tipo: str = ""
+    # Quando o evento foi lancado no ATF: e por esta data que os alertas
+    # contam, e nao pelo periodo do evento.
+    data_inclusao: str | None = None
     data_inicial: str | None = None
     data_final: str | None = None
     referencia_inicial: str | None = None

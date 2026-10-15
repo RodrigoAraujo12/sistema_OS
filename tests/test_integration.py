@@ -1109,7 +1109,9 @@ class TestAlertasEndpoints(IntegrationTestBase):
         self.assertEqual(r.status_code, 200, r.text)
         tipos = {a["tipo"] for a in r.json()}
         self.assertTrue(tipos)
-        self.assertLessEqual(tipos, {"os_sem_designacao", "os_sem_ciencia", "os_sem_eventos"})
+        self.assertLessEqual(
+            tipos, {"os_sem_designacao", "os_sem_ciencia", "os_sem_eventos", "os_sem_evento_novo"},
+        )
 
     def test_sem_designacao_so_vai_para_o_admin(self):
         with patch("backend.main.gerar_alertas", return_value=[]) as gerar:
@@ -2421,35 +2423,51 @@ class TestEndurecimentoHTTP(IntegrationTestBase):
 
 
 class TestPrazosProcedimentoEndpoints(IntegrationTestBase):
-    """Tabela gerencia x procedimento -> dias do alerta sem evento. So o admin."""
+    """
+    Tabela supervisao x procedimento -> dias do alerta sem evento. So o
+    admin. A supervisao e a equipe fiscal do ATF (15/10/2026).
+    """
 
-    def _gerencia_id(self):
-        return self.client.get("/admin/gerencias", headers=self._admin_header()).json()[0]["id"]
+    def setUp(self):
+        super().setUp()
+        import backend.main as main_module
 
-    def test_admin_grava_e_le(self):
+        # 614 e uma das equipes fora do painel: nao pode ter prazo.
+        main_module.equipe_repo.substituir_tudo(
+            [(422, "GOFE - ATACADO"), (427, "GOFE - VAREJO"), (614, "GEST_ITCD_AUDITORES")],
+            [(422, "34567", "FISCAL A")],
+        )
+
+    def test_lista_todas_as_supervisoes_e_grava(self):
         H = self._admin_header()
-        gid = self._gerencia_id()
-        self.assertEqual(self.client.get("/admin/alertas/prazos-procedimento", headers=H).json(), [])
+        lista = self.client.get("/admin/alertas/prazos-procedimento", headers=H).json()
+        self.assertEqual({s["equipe_codigo"] for s in lista}, {422, 427})
+        self.assertTrue(all(s["prazos"] == [] for s in lista))
+
         prazos = [{"procedimento_codigo": 19, "dias": 10}, {"procedimento_codigo": 10, "dias": 30}]
-        r = self.client.put(f"/admin/alertas/prazos-procedimento/{gid}", json=prazos, headers=H)
+        r = self.client.put("/admin/alertas/prazos-procedimento/422", json=prazos, headers=H)
         self.assertEqual(r.status_code, 200, r.text)
-        esperado = [{"gerencia_id": gid, "prazos": sorted(prazos, key=lambda p: p["procedimento_codigo"])}]
-        self.assertEqual(self.client.get("/admin/alertas/prazos-procedimento", headers=H).json(), esperado)
+        esperado = sorted(prazos, key=lambda p: p["procedimento_codigo"])
+        self.assertEqual(r.json()["equipe_nome"], "GOFE - ATACADO")
+        self.assertEqual(r.json()["prazos"], esperado)
+        lista = self.client.get("/admin/alertas/prazos-procedimento", headers=H).json()
+        por_codigo = {s["equipe_codigo"]: s["prazos"] for s in lista}
+        self.assertEqual(por_codigo, {422: esperado, 427: []})
 
     def test_quem_nao_e_admin_nao_le_nem_grava(self):
         H = self._auth_header(self._login_como("Carlos Mendes"))
-        gid = self._gerencia_id()
         self.assertEqual(self.client.get("/admin/alertas/prazos-procedimento", headers=H).status_code, 403)
-        r = self.client.put(f"/admin/alertas/prazos-procedimento/{gid}", json=[], headers=H)
+        self.assertEqual(self.client.get("/admin/alertas/procedimentos-lancados", headers=H).status_code, 403)
+        r = self.client.put("/admin/alertas/prazos-procedimento/422", json=[], headers=H)
         self.assertEqual(r.status_code, 403)
 
-    def test_recusa_gerencia_inexistente_repetido_e_fora_dos_limites(self):
+    def test_recusa_supervisao_inexistente_fora_do_painel_repetido_e_fora_dos_limites(self):
         H = self._admin_header()
-        gid = self._gerencia_id()
-        url = f"/admin/alertas/prazos-procedimento/{gid}"
-        self.assertEqual(
-            self.client.put("/admin/alertas/prazos-procedimento/9999", json=[], headers=H).status_code, 404,
-        )
+        for codigo in (9999, 614):
+            with self.subTest(codigo=codigo):
+                r = self.client.put(f"/admin/alertas/prazos-procedimento/{codigo}", json=[], headers=H)
+                self.assertEqual(r.status_code, 404)
+        url = "/admin/alertas/prazos-procedimento/422"
         repetido = [{"procedimento_codigo": 19, "dias": 10}, {"procedimento_codigo": 19, "dias": 5}]
         self.assertEqual(self.client.put(url, json=repetido, headers=H).status_code, 400)
         for dias in (-1, 366):
@@ -2463,7 +2481,7 @@ class TestPrazosProcedimentoEndpoints(IntegrationTestBase):
             self.client.get("/alertas", headers=H)
             eventos.assert_not_called()
             self.client.put(
-                f"/admin/alertas/prazos-procedimento/{self._gerencia_id()}",
+                "/admin/alertas/prazos-procedimento/422",
                 json=[{"procedimento_codigo": 19, "dias": 10}], headers=H,
             )
             r = self.client.get("/alertas", headers=H)
@@ -2477,13 +2495,36 @@ class TestPrazosProcedimentoEndpoints(IntegrationTestBase):
 
         H = self._admin_header()
         self.client.put(
-            f"/admin/alertas/prazos-procedimento/{self._gerencia_id()}",
+            "/admin/alertas/prazos-procedimento/422",
             json=[{"procedimento_codigo": 19, "dias": 10}], headers=H,
         )
         com_tabela = patch("backend.main.listar_eventos_atf", side_effect=requests.ConnectionError())
         with com_tabela, self.assertLogs("sefaz.main", level="WARNING"):
             r = self.client.get("/alertas", headers=H)
         self.assertEqual(r.status_code, 200, r.text)
+
+    def test_procedimentos_lancados_pela_inclusao_dos_ultimos_12_meses(self):
+        H = self._admin_header()
+        eventos = [
+            {"equipe_fiscal_codigo": 422, "procedimento_codigo": 19, "procedimento": "OUTROS"},
+            {"equipe_fiscal_codigo": 422, "procedimento_codigo": 19, "procedimento": "OUTROS"},
+            {"equipe_fiscal_codigo": None, "procedimento_codigo": 10, "procedimento": "X"},
+        ]
+        with patch("backend.main.listar_eventos_atf", return_value=eventos) as chamada:
+            r = self.client.get("/admin/alertas/procedimentos-lancados", headers=H)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json(), [{
+            "equipe_codigo": 422,
+            "procedimentos": [{"procedimento_codigo": 19, "procedimento": "OUTROS", "eventos": 2}],
+        }])
+        self.assertEqual(set(chamada.call_args.kwargs), {"data_inclusao_ini", "data_inclusao_fim"})
+
+    def test_procedimentos_lancados_com_o_atf_fora_da_502(self):
+        import requests
+
+        with patch("backend.main.listar_eventos_atf", side_effect=requests.ConnectionError()):
+            r = self.client.get("/admin/alertas/procedimentos-lancados", headers=self._admin_header())
+        self.assertEqual(r.status_code, 502)
 
 
 if __name__ == "__main__":

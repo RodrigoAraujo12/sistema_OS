@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from backend.db import (
     Database,
+    EquipeFiscalRepository,
     GerenciaRepository,
     PrazosProcedimentoRepository,
     SupervisaoRepository,
@@ -224,32 +225,37 @@ class TestSupervisaoRepository(unittest.TestCase):
 
 
 class TestPrazosProcedimentoRepository(unittest.TestCase):
-    """Prazo do "sem evento" por gerencia e procedimento."""
+    """Prazo do "sem evento" por supervisao (equipe fiscal) e procedimento."""
 
     def setUp(self):
         self.db = InMemoryDatabase()
         self.db.init_schema()
         self.repo = PrazosProcedimentoRepository(self.db)
-        gerencias = GerenciaRepository(self.db)
-        self.g1 = gerencias.create_gerencia("G1")
-        self.g2 = gerencias.create_gerencia("G2")
 
     def test_vazio_enquanto_ninguem_grava(self):
         self.assertEqual(self.repo.listar(), {})
 
-    def test_grava_por_gerencia(self):
-        self.repo.salvar_gerencia(self.g1, {19: 10, 10: 30})
-        self.repo.salvar_gerencia(self.g2, {19: 5})
-        self.assertEqual(self.repo.listar(), {self.g1: {19: 10, 10: 30}, self.g2: {19: 5}})
+    def test_grava_por_supervisao(self):
+        self.repo.salvar_equipe(422, {19: 10, 10: 30})
+        self.repo.salvar_equipe(427, {19: 5})
+        self.assertEqual(self.repo.listar(), {422: {19: 10, 10: 30}, 427: {19: 5}})
 
-    def test_salvar_troca_a_tabela_inteira_da_gerencia(self):
-        """O que nao veio sai e volta ao prazo geral; a outra gerencia fica."""
-        self.repo.salvar_gerencia(self.g1, {19: 10, 10: 30})
-        self.repo.salvar_gerencia(self.g2, {19: 5})
-        self.repo.salvar_gerencia(self.g1, {10: 20})
-        self.assertEqual(self.repo.listar(), {self.g1: {10: 20}, self.g2: {19: 5}})
-        self.repo.salvar_gerencia(self.g1, {})
-        self.assertEqual(self.repo.listar(), {self.g2: {19: 5}})
+    def test_salvar_troca_a_tabela_inteira_da_supervisao(self):
+        """O que nao veio sai e volta ao prazo geral; a outra supervisao fica."""
+        self.repo.salvar_equipe(422, {19: 10, 10: 30})
+        self.repo.salvar_equipe(427, {19: 5})
+        self.repo.salvar_equipe(422, {10: 20})
+        self.assertEqual(self.repo.listar(), {422: {10: 20}, 427: {19: 5}})
+        self.repo.salvar_equipe(422, {})
+        self.assertEqual(self.repo.listar(), {427: {19: 5}})
+
+    def test_prazo_sobrevive_a_reimportacao_das_equipes(self):
+        """O importador recria equipes_fiscais; o prazo e pelo codigo do ATF."""
+        equipes = EquipeFiscalRepository(self.db)
+        equipes.substituir_tudo([(422, "GOFE - ATACADO")], [])
+        self.repo.salvar_equipe(422, {19: 10})
+        equipes.substituir_tudo([(422, "GOFE - ATACADO")], [])
+        self.assertEqual(self.repo.listar(), {422: {19: 10}})
 
 
 if __name__ == "__main__":

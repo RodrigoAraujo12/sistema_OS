@@ -245,7 +245,6 @@ export default function App() {
 
         {authData.role === "admin" && activeMenu === "alertas-config" && (
           <AlertasConfig
-            gerencias={gerencias}
             onSaved={(config) => {
               // Os alertas ja carregados sairam dos prazos antigos: a
               // proxima abertura da aba consulta de novo. A tabela por

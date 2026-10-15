@@ -3,7 +3,7 @@
  *
  * Os dias de cada regra de alerta e a janela de busca, gravados no banco
  * local (PUT /admin/alertas/config), e a tabela de prazo por procedimento
- * de cada gerencia (PUT /admin/alertas/prazos-procedimento/{id}). Valem da
+ * de cada supervisao (PUT /admin/alertas/prazos-procedimento/{equipe}). Valem da
  * proxima consulta de alertas em diante: ao salvar, o App descarta os
  * alertas ja carregados.
  */
@@ -11,6 +11,7 @@
 import React, { useEffect, useState } from "react";
 import apiClient from "../api.js";
 import { procedimentoLabels } from "../constants.js";
+import { linhasDaSupervisao } from "../prazosProcedimento.js";
 
 const CAMPOS = [
   {
@@ -28,7 +29,7 @@ const CAMPOS = [
   {
     chave: "dias_sem_eventos",
     rotulo: "OS sem eventos",
-    ajuda: "Dias sem evento na OS autorizada, contando do ultimo evento, ou da ciencia quando ainda nao teve nenhum.",
+    ajuda: "Dias sem evento na OS autorizada, contando do ultimo evento, ou da ciencia quando ainda nao teve nenhum. Vale para os dois alertas: \"nenhum evento\" e \"sem evento novo\".",
     min: 0,
   },
   {
@@ -41,10 +42,6 @@ const CAMPOS = [
 
 const MAXIMO = 365;
 
-const PROCEDIMENTOS = Object.entries(procedimentoLabels)
-  .map(([codigo, nome]) => ({ codigo: Number(codigo), nome }))
-  .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
-
 /** {codigo: dias} gravado -> {codigo: "texto"} do formulario. */
 function paraTexto(prazos) {
   return Object.fromEntries(Object.entries(prazos || {}).map(([c, d]) => [c, String(d)]));
@@ -55,51 +52,59 @@ function preenchidos(rascunho) {
   return Object.entries(rascunho || {}).filter(([, v]) => String(v).trim() !== "");
 }
 
-/**
- * Tabela gerencia x procedimento -> dias do alerta "sem evento".
- *
- * Uma gerencia por vez, escolhida no select. O que se digita fica num
- * rascunho por gerencia: trocar de gerencia nao perde nada, e o select
- * marca as que tem alteracao por salvar. Salvar grava so a gerencia da
- * tela, e troca a tabela inteira dela — procedimento deixado em branco
- * volta ao prazo geral.
- */
-function PrazosPorProcedimento({ gerencias, prazoGeral, onSaved, onMessage, onError }) {
-  const [gravado, setGravado] = useState(null); // {gerencia_id: {codigo: dias}}
-  const [rascunhos, setRascunhos] = useState({}); // {gerencia_id: {codigo: "texto"}}
-  const [gerenciaId, setGerenciaId] = useState("");
-  const [salvando, setSalvando] = useState(false);
+/** [{procedimento_codigo, dias}] da API -> {codigo: dias}. */
+function porCodigo(prazos) {
+  return Object.fromEntries(prazos.map((p) => [p.procedimento_codigo, p.dias]));
+}
 
-  const ordenadas = [...(gerencias || [])].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+/**
+ * Tabela supervisao x procedimento -> dias do alerta "sem evento".
+ *
+ * Uma supervisao (equipe fiscal do ATF) por vez, escolhida no select,
+ * agrupado por gerencia. A tabela mostra os procedimentos que ela lancou
+ * nos ultimos 12 meses — consulta ao ATF de alguns segundos, que chega
+ * depois da lista de supervisoes —, os que ja tem prazo, e o resto em
+ * "mostrar todos". O que se digita fica num rascunho por supervisao:
+ * trocar de supervisao nao perde nada, e o select marca as que tem
+ * alteracao por salvar. Salvar grava so a supervisao da tela, e troca a
+ * tabela inteira dela — procedimento deixado em branco volta ao prazo
+ * geral.
+ */
+function PrazosPorProcedimento({ prazoGeral, onSaved, onMessage, onError }) {
+  const [supervisoes, setSupervisoes] = useState(null); // [{equipe_codigo, equipe_nome, gerencia_nome}]
+  const [gravado, setGravado] = useState({}); // {equipe_codigo: {codigo: dias}}
+  const [rascunhos, setRascunhos] = useState({}); // {equipe_codigo: {codigo: "texto"}}
+  const [equipe, setEquipe] = useState("");
+  const [lancados, setLancados] = useState(undefined); // undefined: carregando; null: falhou
+  const [todos, setTodos] = useState(false);
+  const [salvando, setSalvando] = useState(false);
 
   useEffect(() => {
     apiClient.listarPrazosProcedimento()
       .then((lista) => {
-        const porGerencia = Object.fromEntries(lista.map((g) => [
-          g.gerencia_id,
-          Object.fromEntries(g.prazos.map((p) => [p.procedimento_codigo, p.dias])),
-        ]));
-        setGravado(porGerencia);
+        const porEquipe = Object.fromEntries(lista.map((s) => [s.equipe_codigo, porCodigo(s.prazos)]));
+        setSupervisoes(lista);
+        setGravado(porEquipe);
         setRascunhos(Object.fromEntries(
-          Object.entries(porGerencia).map(([id, prazos]) => [id, paraTexto(prazos)])
+          Object.entries(porEquipe).map(([codigo, prazos]) => [codigo, paraTexto(prazos)])
         ));
+        if (lista.length) setEquipe(String(lista[0].equipe_codigo));
       })
       .catch((err) => onError(err.message));
+    // Sem esta lista a tabela mostra todos os procedimentos, como antes.
+    apiClient.listarProcedimentosLancados()
+      .then((lista) => setLancados(Object.fromEntries(lista.map((s) => [s.equipe_codigo, s.procedimentos]))))
+      .catch(() => setLancados(null));
   }, []);
 
-  // Primeira gerencia da lista assim que ela chegar.
-  useEffect(() => {
-    if (!gerenciaId && ordenadas.length) setGerenciaId(String(ordenadas[0].id));
-  }, [gerencias]);
-
-  function alterado(id) {
-    const salvo = paraTexto(gravado?.[id]);
-    const atual = Object.fromEntries(preenchidos(rascunhos[id]).map(([c, v]) => [c, String(v).trim()]));
+  function alterado(codigo) {
+    const salvo = paraTexto(gravado[codigo]);
+    const atual = Object.fromEntries(preenchidos(rascunhos[codigo]).map(([c, v]) => [c, String(v).trim()]));
     return JSON.stringify(Object.entries(salvo).sort()) !== JSON.stringify(Object.entries(atual).sort());
   }
 
   function mudarDias(codigo, valor) {
-    setRascunhos((r) => ({ ...r, [gerenciaId]: { ...(r[gerenciaId] || {}), [codigo]: valor } }));
+    setRascunhos((r) => ({ ...r, [equipe]: { ...(r[equipe] || {}), [codigo]: valor } }));
   }
 
   async function salvar(e) {
@@ -107,23 +112,23 @@ function PrazosPorProcedimento({ gerencias, prazoGeral, onSaved, onMessage, onEr
     onError("");
     onMessage("");
     const prazos = [];
-    for (const [codigo, valor] of preenchidos(rascunhos[gerenciaId])) {
+    for (const [codigo, valor] of preenchidos(rascunhos[equipe])) {
       const dias = Number(valor);
       if (!Number.isInteger(dias) || dias < 0 || dias > MAXIMO) {
-        onError(`${procedimentoLabels[codigo] || codigo}: informe um numero inteiro de 0 a ${MAXIMO}, ou deixe em branco.`);
+        const nome = procedimentoLabels[codigo] || `Procedimento ${codigo}`;
+        onError(`${nome}: informe um numero inteiro de 0 a ${MAXIMO}, ou deixe em branco.`);
         return;
       }
       prazos.push({ procedimento_codigo: Number(codigo), dias });
     }
     setSalvando(true);
     try {
-      const salvo = await apiClient.salvarPrazosProcedimento(gerenciaId, prazos);
-      const novos = Object.fromEntries(salvo.prazos.map((p) => [p.procedimento_codigo, p.dias]));
-      setGravado((g) => ({ ...g, [gerenciaId]: novos }));
-      setRascunhos((r) => ({ ...r, [gerenciaId]: paraTexto(novos) }));
+      const salvo = await apiClient.salvarPrazosProcedimento(equipe, prazos);
+      const novos = porCodigo(salvo.prazos);
+      setGravado((g) => ({ ...g, [equipe]: novos }));
+      setRascunhos((r) => ({ ...r, [equipe]: paraTexto(novos) }));
       onSaved();
-      const nome = ordenadas.find((g) => String(g.id) === gerenciaId)?.name;
-      onMessage(`Prazos por procedimento de ${nome} salvos. Valem a partir da proxima consulta de alertas.`);
+      onMessage(`Prazos por procedimento de ${salvo.equipe_nome} salvos. Valem a partir da proxima consulta de alertas.`);
     } catch (err) {
       onError(err.message);
     } finally {
@@ -131,72 +136,114 @@ function PrazosPorProcedimento({ gerencias, prazoGeral, onSaved, onMessage, onEr
     }
   }
 
-  const rascunho = rascunhos[gerenciaId] || {};
+  // Gerencia -> supervisoes, na ordem em que a API manda (gerencia, nome).
+  const grupos = [];
+  for (const s of supervisoes || []) {
+    const rotulo = s.gerencia_nome || "Sem gerencia cadastrada";
+    if (grupos.at(-1)?.rotulo !== rotulo) grupos.push({ rotulo, itens: [] });
+    grupos.at(-1).itens.push(s);
+  }
+
+  const rascunho = rascunhos[equipe] || {};
+  const carregando = lancados === undefined && !todos;
+  const linhas = carregando ? [] : linhasDaSupervisao({
+    catalogo: procedimentoLabels,
+    lancados: lancados ? lancados[equipe] || [] : null,
+    gravado: gravado[equipe],
+    rascunho,
+    todos,
+  });
 
   return (
     <div className="card">
       <h2>Prazo por procedimento</h2>
       <p className="muted" style={{ marginBottom: 16 }}>
         Quantos dias a OS pode ficar sem evento novo, conforme o procedimento do ultimo evento.
-        Vale para as OS da gerencia, que sai dos fiscais da OS. Eventos seguidos do mesmo
+        Vale para as OS da supervisao, que sai da equipe dos fiscais da OS. Eventos seguidos do mesmo
         procedimento contam como um so: a contagem parte do primeiro, porque a OS nao andou.
         Em branco, vale o prazo geral de "OS sem eventos"
         {prazoGeral !== undefined && prazoGeral !== "" ? ` (${prazoGeral} dias)` : ""}.
       </p>
-      {!gravado ? (
+      {!supervisoes ? (
         <p className="muted">Carregando...</p>
-      ) : !ordenadas.length ? (
-        <p className="muted">Nenhuma gerencia cadastrada.</p>
+      ) : !supervisoes.length ? (
+        <p className="muted">Nenhuma equipe fiscal importada.</p>
       ) : (
         <form onSubmit={salvar} className="form" style={{ maxWidth: 720 }}>
           <label style={{ maxWidth: 520 }}>
-            Gerencia
-            <select value={gerenciaId} onChange={(e) => setGerenciaId(e.target.value)}>
-              {ordenadas.map((g) => {
-                const n = preenchidos(rascunhos[g.id]).length;
-                return (
-                  <option key={g.id} value={g.id}>
-                    {g.name}
-                    {n ? ` (${n} com prazo)` : ""}
-                    {alterado(g.id) ? " - nao salvo" : ""}
-                  </option>
-                );
-              })}
+            Supervisao
+            <select value={equipe} onChange={(e) => setEquipe(e.target.value)}>
+              {grupos.map((g) => (
+                <optgroup key={g.rotulo} label={g.rotulo}>
+                  {g.itens.map((s) => {
+                    const n = preenchidos(rascunhos[s.equipe_codigo]).length;
+                    return (
+                      <option key={s.equipe_codigo} value={s.equipe_codigo}>
+                        {s.equipe_nome}
+                        {n ? ` (${n} com prazo)` : ""}
+                        {alterado(s.equipe_codigo) ? " - nao salvo" : ""}
+                      </option>
+                    );
+                  })}
+                </optgroup>
+              ))}
             </select>
           </label>
-          <div className="table-container">
-            <table>
-              <thead>
-                <tr>
-                  <th>Procedimento</th>
-                  <th style={{ width: 120 }}>Dias</th>
-                </tr>
-              </thead>
-              <tbody>
-                {PROCEDIMENTOS.map(({ codigo, nome }) => (
-                  <tr key={codigo}>
-                    <td>{nome}</td>
-                    <td>
-                      <input
-                        type="number"
-                        min={0}
-                        max={MAXIMO}
-                        step={1}
-                        value={rascunho[codigo] ?? ""}
-                        placeholder="geral"
-                        aria-label={`Dias para ${nome}`}
-                        onChange={(e) => mudarDias(codigo, e.target.value)}
-                        style={{ width: 100, padding: "6px 8px" }}
-                      />
-                    </td>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+            <input type="checkbox" checked={todos} onChange={(e) => setTodos(e.target.checked)} />
+            <span>Mostrar todos os procedimentos, e nao so os que a supervisao lancou nos ultimos 12 meses</span>
+          </label>
+          {lancados === null && !todos && (
+            <p className="muted" style={{ margin: 0 }}>
+              Nao foi possivel consultar os eventos no ATF: a tabela mostra todos os procedimentos.
+            </p>
+          )}
+          {carregando ? (
+            <p className="muted" style={{ margin: 0 }}>
+              Consultando no ATF os procedimentos que a supervisao lancou...
+            </p>
+          ) : !linhas.length ? (
+            <p className="muted" style={{ margin: 0 }}>
+              A supervisao nao lancou evento com procedimento nos ultimos 12 meses. Marque "mostrar
+              todos" para dar prazo a um procedimento.
+            </p>
+          ) : (
+            <div className="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Procedimento</th>
+                    <th style={{ width: 150 }}>Eventos em 12 meses</th>
+                    <th style={{ width: 120 }}>Dias</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {linhas.map(({ codigo, nome, eventos }) => (
+                    <tr key={codigo}>
+                      <td>{nome}</td>
+                      <td>{lancados ? eventos : "-"}</td>
+                      <td>
+                        <input
+                          type="number"
+                          min={0}
+                          max={MAXIMO}
+                          step={1}
+                          value={rascunho[codigo] ?? ""}
+                          placeholder="geral"
+                          aria-label={`Dias para ${nome}`}
+                          onChange={(e) => mudarDias(codigo, e.target.value)}
+                          style={{ width: 100, padding: "6px 8px" }}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           <div>
-            <button type="submit" disabled={salvando || !alterado(gerenciaId)}>
-              {salvando ? "Salvando..." : "Salvar prazos da gerencia"}
+            <button type="submit" disabled={salvando || !alterado(equipe)}>
+              {salvando ? "Salvando..." : "Salvar prazos da supervisao"}
             </button>
           </div>
         </form>
@@ -205,7 +252,7 @@ function PrazosPorProcedimento({ gerencias, prazoGeral, onSaved, onMessage, onEr
   );
 }
 
-export default function AlertasConfig({ gerencias, onSaved, onMessage, onError }) {
+export default function AlertasConfig({ onSaved, onMessage, onError }) {
   const [form, setForm] = useState(null);
   const [salvando, setSalvando] = useState(false);
 
@@ -279,7 +326,6 @@ export default function AlertasConfig({ gerencias, onSaved, onMessage, onError }
     </div>
 
     <PrazosPorProcedimento
-      gerencias={gerencias}
       prazoGeral={form?.dias_sem_eventos}
       onSaved={() => onSaved()}
       onMessage={onMessage}

@@ -622,6 +622,8 @@ def _detalhe_mock_atf(numero_os: str) -> dict[str, Any] | None:
         eventos.append({
             "tipo_codigo": tipo_cd,
             "tipo": tipo_ds,
+            # Incluido no dia em que termina, como no _mock_eventos_atf.
+            "data_inclusao": (inicio_evento + timedelta(days=1)).strftime("%Y-%m-%d"),
             "data_inicial": inicio_evento.strftime("%Y-%m-%d"),
             "data_final": (inicio_evento + timedelta(days=1)).strftime("%Y-%m-%d"),
             "referencia_inicial": abertura.strftime("%m/%Y"),
@@ -1589,21 +1591,31 @@ def _parse_detalhe_soap(xml_text: str) -> dict[str, Any] | None:
         for f_el in os_el.findall(".//fiscal")
     ]
 
+    # dtInclusao nao esta na doc do detalhe, mas vem em todo evento
+    # (conferido em producao em 15/10/2026) e e a mesma dataInclusaoEventoOS
+    # do servico de eventos — a data pela qual os alertas contam. O ATF
+    # devolve os eventos fora de ordem em parte das OS (3 de 8 conferidas):
+    # aqui saem pela inclusao, a mesma ordem dos alertas, e o sort estavel
+    # deixa os do mesmo dia como o ATF mandou.
     eventos = [
         {
             "tipo_codigo": _txt_ou_none(e_el, "tpEventoAcompOS"),
             "tipo": _txt(e_el, "dsTpEventoAcompOS"),
+            "data_inclusao": _data_do_atf(_txt(e_el, "dtInclusao")) or None,
             "data_inicial": _data_do_atf(_txt(e_el, "dtInicialEvento")) or None,
             "data_final": _data_do_atf(_txt(e_el, "dtFinalEvento")) or None,
             "referencia_inicial": _txt_ou_none(e_el, "dtReferInicial"),
             "referencia_final": _txt_ou_none(e_el, "dtReferFinal"),
-            "procedimento": _txt(e_el, "noProcedimento"),
+            # O mesmo travessao quebrado (0x96) do servico de eventos: em
+            # producao, "AUDITORIA \x96 DEBITOS" chega igual no detalhe.
+            "procedimento": _txt(e_el, "noProcedimento").replace("\x96", "–"),
             "valor_levantado": _float_ou_none(_txt(e_el, "vlLevantado")),
             "observacao": _txt_ou_none(e_el, "dsObservacao"),
             "arquivo": _txt_ou_none(e_el, "arquivoEvento"),
         }
         for e_el in os_el.findall(".//eventos")
     ]
+    eventos.sort(key=lambda e: (e["data_inclusao"] is None, e["data_inclusao"] or ""))
 
     prorrogacoes = [
         {
@@ -1806,8 +1818,14 @@ def _parse_detalhe_soap(xml_text: str) -> dict[str, Any] | None:
         detalhe["razao_social"] = contribuinte["nome"]
 
     # dataUltimoEventoOS nao existe neste servico: o ultimo evento sai da
-    # propria lista, que aqui vem completa.
-    datas_evento = [d for d in (e["data_final"] or e["data_inicial"] for e in eventos) if d]
+    # propria lista, que aqui vem completa. Pela INCLUSAO, que e o que a
+    # listagem chama de ultimo evento: ate 15/10/2026 saia do fim do
+    # periodo do evento e, como o detalhe se sobrepoe a linha, o modal
+    # mostrava outra data que nao a dos alertas. O periodo fica de reserva
+    # para evento sem inclusao.
+    datas_evento = [
+        d for d in (e["data_inclusao"] or e["data_final"] or e["data_inicial"] for e in eventos) if d
+    ]
     if datas_evento:
         detalhe["data_ultimo_evento"] = max(datas_evento)
 
@@ -2549,29 +2567,37 @@ def _fiscais_ativos(o: dict[str, Any]) -> list[dict[str, Any]]:
 def sequencias_por_procedimento(
     ordens: list[dict[str, Any]],
     eventos: list[dict[str, Any]],
-    gerencia_por_matricula: dict[str, dict[str, Any]],
-    prazos_por_gerencia: dict[int, dict[int, int]],
+    equipes_por_matricula: dict[str, list[dict[str, Any]]],
+    prazos_por_equipe: dict[int, dict[int, int]],
 ) -> dict[str, dict[str, Any]]:
     """
     Por numero de OS, o procedimento em que ela esta parada e o prazo que
-    a gerencia deu para ele — so para as OS em que esse prazo existe.
+    a supervisao deu para ele — so para as OS em que esse prazo existe.
 
-    Regra pedida pelo Rodrigo em 13/10/2026: a gerencia da um prazo em
-    dias para cada procedimento do ATF, e o do ULTIMO evento substitui o
-    prazo geral de "sem evento". Eventos seguidos do mesmo procedimento
-    contam como um so ("nao andou ou fez a mesma coisa"): a contagem parte
-    do primeiro da sequencia final, e nao do ultimo.
+    Regra pedida pelo Rodrigo em 13/10/2026: um prazo em dias para cada
+    procedimento do ATF, e o do ULTIMO evento substitui o prazo geral de
+    "sem evento". Eventos seguidos do mesmo procedimento contam como um so
+    ("nao andou ou fez a mesma coisa"): a contagem parte do primeiro da
+    sequencia final, e nao do ultimo.
+
+    O prazo era da gerencia; desde 15/10/2026 e da SUPERVISAO, que e a
+    equipe fiscal do ATF (GOFE - ATACADO e uma), sem a gerencia como
+    reserva — decisao do Rodrigo. A supervisao da OS sai das matriculas
+    dos fiscais ATIVOS (`equipes_por_matricula`, matricula -> [{codigo,
+    nome}]), e nao do cdEquipeFisc da propria OS, que vem vazio em cerca
+    de metade dos eventos (medido em producao em 15/10/2026). O fiscal
+    cancelado fica de fora: quem esta parado e quem ficou. OS com fiscais
+    de duas supervisoes fica com o menor prazo.
 
     `eventos` vem do servico de eventos em lote. A ordem e pela data de
     INCLUSAO, a mesma que o ATF usa no dataUltimoEventoOS da listagem
-    (bateu em 541 de 541 OS em 13/10/2026). A gerencia da OS sai das
-    matriculas dos fiscais, como no dashboard (ver _chaves_gerencia); OS
-    em duas gerencias com prazos diferentes fica com o menor.
+    (bateu em 541 de 541 OS em 13/10/2026).
 
     Cada item: procedimento_codigo, procedimento, desde (inclusao do
-    primeiro evento da sequencia), eventos (quantos na sequencia) e prazo.
+    primeiro evento da sequencia), eventos (quantos na sequencia), prazo e
+    supervisao (nome da equipe de onde o prazo veio).
     """
-    if not prazos_por_gerencia:
+    if not prazos_por_equipe:
         return {}
     por_os: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for e in eventos:
@@ -2584,10 +2610,14 @@ def sequencias_por_procedimento(
         lista = por_os.get(numero)
         if not lista:
             continue
-        prazos_da_os: dict[int, int] = {}
-        for gerencia_id, _ in _chaves_gerencia(o, gerencia_por_matricula):
-            for codigo, dias in (prazos_por_gerencia.get(gerencia_id) or {}).items():
-                prazos_da_os[codigo] = min(dias, prazos_da_os.get(codigo, dias))
+        # procedimento -> (dias, supervisao); no empate de dias, o nome
+        # decide, para o texto do alerta nao mudar de uma consulta a outra.
+        prazos_da_os: dict[int, tuple[int, str]] = {}
+        for f in _fiscais_ativos(o):
+            for equipe in equipes_por_matricula.get((f.get("matricula") or "").strip(), []):
+                for codigo, dias in (prazos_por_equipe.get(equipe["codigo"]) or {}).items():
+                    candidato = (dias, equipe["nome"])
+                    prazos_da_os[codigo] = min(candidato, prazos_da_os.get(codigo, candidato))
         lista = sorted(lista, key=lambda e: (e.get("data_inclusao") or "", e.get("codigo_evento") or 0))
         codigo = lista[-1].get("procedimento_codigo")
         if codigo not in prazos_da_os:
@@ -2595,14 +2625,46 @@ def sequencias_por_procedimento(
         seguidos = 1
         while seguidos < len(lista) and lista[-seguidos - 1].get("procedimento_codigo") == codigo:
             seguidos += 1
+        prazo, supervisao = prazos_da_os[codigo]
         sequencias[numero] = {
             "procedimento_codigo": codigo,
             "procedimento": lista[-1].get("procedimento") or f"procedimento {codigo}",
             "desde": lista[-seguidos].get("data_inclusao"),
             "eventos": seguidos,
-            "prazo": prazos_da_os[codigo],
+            "prazo": prazo,
+            "supervisao": supervisao,
         }
     return sequencias
+
+
+def procedimentos_por_equipe(eventos: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    """
+    Procedimentos que cada equipe fiscal lancou em `eventos`, o mais
+    lancado primeiro: equipe_codigo -> [{procedimento_codigo, procedimento,
+    eventos}].
+
+    E a lista que a tela de prazos mostra para cada supervisao (pedido do
+    Rodrigo em 15/10/2026: "o que a equipe lancou", e nao todos os
+    procedimentos do ATF). A equipe aqui e o cdEquipeFisc do proprio
+    evento, porque o servico de eventos nao devolve matricula; evento sem
+    equipe ou sem procedimento fica de fora. Serve so para escolher quais
+    linhas aparecem — a tela tem "mostrar todos" para o resto.
+    """
+    contagem: dict[int, Counter] = defaultdict(Counter)
+    nomes: dict[int, str] = {}
+    for e in eventos:
+        equipe, codigo = e.get("equipe_fiscal_codigo"), e.get("procedimento_codigo")
+        if equipe is None or codigo is None:
+            continue
+        contagem[equipe][codigo] += 1
+        nomes.setdefault(codigo, (e.get("procedimento") or "").strip())
+    return {
+        equipe: [
+            {"procedimento_codigo": codigo, "procedimento": nomes[codigo], "eventos": total}
+            for codigo, total in sorted(por_codigo.items(), key=lambda par: (-par[1], par[0]))
+        ]
+        for equipe, por_codigo in contagem.items()
+    }
 
 
 def _pendencias(
@@ -2623,7 +2685,7 @@ def _pendencias(
     - sem_eventos: data de onde a OS conta sem evento, ou None.
 
     `sequencia` e o item da OS em sequencias_por_procedimento, quando a
-    gerencia dela tem prazo para o procedimento do ultimo evento: ai o
+    supervisao dela tem prazo para o procedimento do ultimo evento: ai o
     "sem evento" usa esse prazo e conta do primeiro evento da sequencia.
 
     Ate 06/10/2026 o dashboard contava qualquer fiscal sem ciencia, sem
@@ -3051,7 +3113,8 @@ def gerar_alertas(
     """
     Alertas sobre as OS do ATF que o usuario enxerga.
 
-    Tres regras, definidas pela area em 05/10/2026. Cada uma conta de um
+    Tres regras, definidas pela area em 05/10/2026, e quatro tipos: o
+    "sem evento" se divide em dois (14/10/2026). Cada regra conta de um
     marco da OS, e o prazo em dias vem de `config` — o que o admin gravou
     na tela de prazos, com CONFIG_ALERTAS_PADRAO no que faltar. O alerta
     sai quando o prazo e ultrapassado. Encerrada, cancelada e substituida
@@ -3068,15 +3131,23 @@ def gerar_alertas(
       mais de dias_sem_ciencia dias desde a propria designacao. Quando o
       ATF ja bloqueou a OS, o texto diz que o desbloqueio e do
       supervisor, no ATF.
-    - os_sem_eventos: OS AUTORIZADA — a unica situacao em que se espera o
+    - sem evento: OS AUTORIZADA — a unica situacao em que se espera o
       fiscal trabalhando — sem evento ha mais de dias_sem_eventos dias,
       contando do ultimo evento ou, se ainda nao houve nenhum, da primeira
       ciencia. Vale o mais recente dos dois: um fiscal designado depois
       do ultimo evento conta da ciencia dele. Sem ciencia nenhuma nao ha
-      alerta de evento — a pendencia ainda e a ciencia. Quando a gerencia
-      da OS deu prazo para o procedimento do ultimo evento
+      alerta de evento — a pendencia ainda e a ciencia. Quando a
+      supervisao da OS deu prazo para o procedimento do ultimo evento
       (`por_procedimento`, ver sequencias_por_procedimento), vale esse
       prazo, e eventos seguidos do mesmo procedimento contam como um so.
+      Sai em dois tipos, a pedido do Rodrigo em 14/10/2026, porque sao
+      pendencias diferentes — uma o fiscal nem comecou, a outra comecou e
+      parou:
+      - os_sem_eventos: a OS nunca teve evento nenhum;
+      - os_sem_evento_novo: ja teve evento, e o ultimo passou do prazo.
+        Inclui a OS cujo ultimo evento e anterior a ciencia de um fiscal
+        designado depois: a OS teve evento, so que nao desse fiscal.
+      O dashboard continua contando os dois juntos, como "sem evento".
 
     Nao ha severidade: a area pediu para tirar a classificacao
     alta/media/baixa. `data` e quando o problema comecou, e o mais antigo
@@ -3160,7 +3231,21 @@ def gerar_alertas(
             })
 
         inicio = pendencia["sem_eventos"]
-        if inicio:
+        if inicio and not (o.get("data_ultimo_evento") or sequencia):
+            dias = _dias_desde(inicio, hoje)
+            alertas.append({
+                "tipo": "os_sem_eventos",
+                "titulo": f"OS sem nenhum evento ha {dias} dias - {razao}",
+                "descricao": (
+                    f"A OS {numero} (IE: {ie}) esta autorizada e nao teve nenhum evento "
+                    f"de acompanhamento desde a ciencia, em {_data_br(inicio)}, ha {dias} dias."
+                ),
+                "referencia": numero,
+                "data": inicio,
+                "fiscais": [_nome_fiscal(f) for f in _fiscais_ativos(o)],
+                "gerencias": gerencias,
+            })
+        elif inicio:
             dias = _dias_desde(inicio, hoje)
             ultimo_evento = o.get("data_ultimo_evento")
             if sequencia:
@@ -3178,21 +3263,22 @@ def gerar_alertas(
                     )
                 else:
                     desde = f"Ultimo evento em {_data_br(inicio)}, de {nome}."
-                desde += f" O prazo da gerencia para {nome} e de {sequencia['prazo']} dias."
+                desde += (
+                    f" O prazo de {sequencia['supervisao']} para {nome} "
+                    f"e de {sequencia['prazo']} dias."
+                )
             elif inicio == ultimo_evento:
                 desde = f"Ultimo evento em {_data_br(inicio)}."
-            elif ultimo_evento:
+            else:
                 desde = (
                     f"O ultimo evento, em {_data_br(ultimo_evento)}, e anterior a "
                     f"ciencia de {_data_br(inicio)}, que e de onde a contagem parte."
                 )
-            else:
-                desde = f"Nenhum evento desde a ciencia, em {_data_br(inicio)}."
             alertas.append({
-                "tipo": "os_sem_eventos",
-                "titulo": f"OS sem evento ha {dias} dias - {razao}",
+                "tipo": "os_sem_evento_novo",
+                "titulo": f"OS sem evento novo ha {dias} dias - {razao}",
                 "descricao": (
-                    f"A OS {numero} (IE: {ie}) esta autorizada e sem evento de "
+                    f"A OS {numero} (IE: {ie}) esta autorizada e sem evento novo de "
                     f"acompanhamento ha {dias} dias. {desde}"
                 ),
                 "referencia": numero,

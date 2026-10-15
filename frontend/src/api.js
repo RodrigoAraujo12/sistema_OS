@@ -251,15 +251,22 @@ class ApiClient {
     });
   }
 
-  /** Prazos do "sem evento" por gerencia e procedimento (admin):
-   *  [{gerencia_id, prazos: [{procedimento_codigo, dias}]}]. */
+  /** Supervisoes e os prazos do "sem evento" por procedimento de cada uma (admin):
+   *  [{equipe_codigo, equipe_nome, gerencia_nome, prazos: [{procedimento_codigo, dias}]}]. */
   listarPrazosProcedimento() {
     return this.request("/admin/alertas/prazos-procedimento");
   }
 
-  /** Troca a tabela inteira de uma gerencia; o que nao vier volta ao prazo geral. */
-  salvarPrazosProcedimento(gerenciaId, prazos) {
-    return this.request(`/admin/alertas/prazos-procedimento/${gerenciaId}`, {
+  /** Procedimentos com evento de cada supervisao nos ultimos 12 meses (admin):
+   *  [{equipe_codigo, procedimentos: [{procedimento_codigo, procedimento, eventos}]}].
+   *  Consulta o servico de eventos do ATF: demora alguns segundos. */
+  listarProcedimentosLancados() {
+    return this.request("/admin/alertas/procedimentos-lancados");
+  }
+
+  /** Troca a tabela inteira de uma supervisao; o que nao vier volta ao prazo geral. */
+  salvarPrazosProcedimento(equipeCodigo, prazos) {
+    return this.request(`/admin/alertas/prazos-procedimento/${equipeCodigo}`, {
       method: "PUT",
       body: JSON.stringify(prazos)
     });
